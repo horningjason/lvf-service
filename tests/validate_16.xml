@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" 
+                  xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2"
+                  xml:lang="en-US" >
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Mercer County</A2>
+      <A3>Beulah</A3>
+      <RD>3RD</RD>
+      <STS>Avenue</STS>
+      <STP>Northwest</STP>
+      <HNO>205</HNO>
+      <cdx2:UNIT_PRETYPE>Unit</cdx2:UNIT_PRETYPE>
+      <cdx2:UNIT_VALUE>11</cdx2:UNIT_VALUE>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
