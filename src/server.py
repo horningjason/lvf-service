@@ -55,6 +55,7 @@ _NS_LOST = "urn:ietf:params:xml:ns:lost1"
 _NS_CA   = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
 _NS_CAE  = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
 _NS_CDX2 = "urn:nena:xml:ns:pidf:nenaCivicAddr2"
+_NS_RLI  = "urn:ietf:params:xml:ns:lost-rli1"
 
 # Namespace map declared on response root elements so QNames in
 # valid/invalid/unchecked text are resolvable by clients
@@ -71,6 +72,54 @@ for _e in ELEMENT_HIERARCHY:
     _pfx, _local = _e.pidf_lo.split(":", 1)
     _ns = {"ca": _NS_CA, "cae": _NS_CAE, "cdx2": _NS_CDX2}[_pfx]
     _CLARK_TO_FIELD[f"{{{_ns}}}{_local}"] = _e.civic_address_field
+
+# PIDF-LO prefix → namespace URI (used by completeLocation serializer)
+_PIDF_PREFIX_NS: dict[str, str] = {"ca": _NS_CA, "cae": _NS_CAE, "cdx2": _NS_CDX2}
+
+
+def _pidf_lo_to_clark(pidf_lo: str) -> str:
+    """Convert 'prefix:local' notation to Clark notation '{namespace}local'."""
+    prefix, local = pidf_lo.split(":", 1)
+    return f"{{{_PIDF_PREFIX_NS[prefix]}}}{local}"
+
+
+# CivicAddress field name → SSAPRecord attribute name, for completeLocation serialization.
+# Mirrors gate2._SSAP_FIELD; kept here so gate2 stays self-contained.
+# 'hno' is absent — handled separately (integer → string, SSAPRecord.add_number).
+_SSAP_ATTR: dict[str, str] = {
+    "country":      "country",
+    "a1":           "a1",
+    "a2":           "a2",
+    "a3":           "a3",
+    "a4":           "a4",
+    "a5":           "a5",
+    "rd":           "st_name",
+    "prm":          "st_premod",
+    "prd":          "st_predir",
+    "stp":          "st_pretyp",
+    "stps":         "st_presep",
+    "sts":          "st_postyp",
+    "pod":          "st_posdir",
+    "pom":          "st_posmod",
+    "hnp":          "addnum_pre",
+    "hns":          "addnum_suf",
+    "mp":           "distmarker",
+    "site":         "site",
+    "subsite":      "subsite",
+    "bld":          "structure",
+    "wing":         "wing",
+    "flr":          "floor",
+    "unit_pretype": "unitpretyp",
+    "unit_value":   "unitvalue",
+    "room":         "room",
+    "section":      "section",
+    "row":          "row",
+    "seat":         "seat",
+    "pn":           "locmarker",
+    "pcn":          "post_comm",
+    "pc":           "post_code",
+    "pce":          "postcodeex",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +143,13 @@ if not _default_mapping_source_id:
     )
 
 _SERVER_START_TIME: str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# EXPERIMENTAL — Similar Location Extension (draft-ietf-ecrit-similar-location-19, unpublished draft).
+# Implements Phase 1 (completeLocation) only. Disabled by default.
+# When False the extension is completely invisible — no namespace, no element, no attribute parsing.
+_enable_similar_location_extension: bool = (
+    os.environ.get("LVF_ENABLE_SIMILAR_LOCATION", "").lower() in ("1", "true", "yes")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +392,15 @@ def _load_gis_data(gpkg_path: str) -> None:
         log.info("GIS data cached to pickle: %s", pickle_path)
     except Exception as exc:
         log.warning("Could not write pickle cache: %s", exc)
+
+
+def initialize(gpkg_path: str | None = None) -> None:
+    """Load GIS data for use by handle_find_service(). Call once before the first request."""
+    path = gpkg_path or os.environ.get("LVF_GPKG_PATH")
+    if path:
+        _load_gis_data(path)
+    else:
+        log.warning("No LVF_GPKG_PATH configured — GIS data not loaded")
 
 
 def _derive_geodetic_coverage() -> None:
@@ -596,6 +661,21 @@ def _parse_request(body: bytes) -> ValidationRequest:
     )
 
 
+def _parse_return_additional_location(body: bytes) -> str:
+    """
+    Extract rli:returnAdditionalLocation from a findService request.
+    Returns "none" when the attribute is absent, unrecognised, or the XML cannot be parsed.
+    Only called when _enable_similar_location_extension is True.
+    """
+    _VALID = {"none", "similar", "complete", "any"}
+    try:
+        root = etree.fromstring(body)
+        val = root.get(f"{{{_NS_RLI}}}returnAdditionalLocation", "none")
+        return val if val in _VALID else "none"
+    except Exception:
+        return "none"
+
+
 # ---------------------------------------------------------------------------
 # XML serialization
 # ---------------------------------------------------------------------------
@@ -651,6 +731,9 @@ def _serialize_find_service_response(resp) -> etree._Element:
         el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}unchecked")
         el.text = " ".join(lv.unchecked)
 
+    if resp.complete_location_record is not None:
+        _serialize_complete_location(lv_el, resp.complete_location_record)
+
     if resp.default_mapping_returned:
         warnings_elem = etree.SubElement(root, f"{{{_NS_LOST}}}warnings")
         dmr = etree.SubElement(warnings_elem, f"{{{_NS_LOST}}}defaultMappingReturned")
@@ -699,6 +782,86 @@ def _to_xml_response(resp, status: int) -> Response:
 
     body = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", pretty_print=True)
     return Response(content=body, status_code=status, media_type="application/xml")
+
+
+def _serialize_complete_location(parent: etree._Element, record) -> None:
+    """
+    Append <rli:completeLocation> to parent using all non-null fields from record (SSAPRecord).
+
+    The rli namespace is declared on the <rli:completeLocation> element itself so it only
+    appears in the response when content is actually being returned.
+    Iterates ELEMENT_HIERARCHY in order; skips always-unchecked elements (no SSAP fields).
+    HNO is emitted as a string from the integer SSAPRecord.add_number field.
+    """
+    cl = etree.SubElement(
+        parent,
+        f"{{{_NS_RLI}}}completeLocation",
+        nsmap={"rli": _NS_RLI},
+    )
+    loc = etree.SubElement(cl, f"{{{_NS_LOST}}}location")
+    loc.set("id", "complete")
+    loc.set("profile", "civic")
+    ca_el = etree.SubElement(loc, f"{{{_NS_CA}}}civicAddress")
+
+    for elem in ELEMENT_HIERARCHY:
+        if elem.always_unchecked:
+            continue
+        clark = _pidf_lo_to_clark(elem.pidf_lo)
+        if elem.civic_address_field == "hno":
+            val = record.add_number
+            if val is not None:
+                e = etree.SubElement(ca_el, clark)
+                e.text = str(val)
+            continue
+        ssap_attr = _SSAP_ATTR.get(elem.civic_address_field)
+        if ssap_attr is None:
+            continue
+        val = getattr(record, ssap_attr, None)
+        if val is not None:
+            e = etree.SubElement(ca_el, clark)
+            e.text = str(val)
+
+
+# ---------------------------------------------------------------------------
+# Programmatic entry point (for test harnesses — bypasses HTTP)
+# ---------------------------------------------------------------------------
+
+def handle_find_service(xml_bytes: bytes) -> bytes:
+    """
+    Process a raw LoST findService XML request and return raw XML response bytes.
+
+    Mirrors the /validate endpoint without requiring an HTTP request object.
+    Raises ValueError for malformed XML. Call initialize() once before using this.
+    """
+    req = _parse_request(xml_bytes)
+
+    if req.validate_location != "true":
+        return _to_xml_response(ForbiddenResponse(), status=200).body
+
+    g0 = gate0.check(req.service_urn, _boundaries)
+    if g0 is not None:
+        return _to_xml_response(g0, status=200).body
+
+    g1 = gate1.check(req.civic_address)
+    if g1 is not None:
+        return _to_xml_response(g1, status=200).body
+
+    matched_boundaries = [
+        b for b in _boundaries
+        if b.service_urn.lower() == req.service_urn.lower()
+    ]
+    ral = _parse_return_additional_location(xml_bytes) if _enable_similar_location_extension else "none"
+    g2 = gate2.run(req.civic_address, _ssap, _rcl)
+    final = response_assembly.assemble(
+        g2,
+        matched_boundaries,
+        service_urn=req.service_urn,
+        address=req.civic_address,
+        civic_coverage_lookup=lookup_civic_coverage,
+        default_mapping_factory=_build_default_mapping,
+        return_additional_location=ral,
+    )
+    return _to_xml_response(final, status=200).body
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +1047,7 @@ async def validate(request: Request) -> Response:
         b for b in _boundaries
         if b.service_urn.lower() == req.service_urn.lower()
     ]
+    ral = _parse_return_additional_location(body) if _enable_similar_location_extension else "none"
     g2 = gate2.run(req.civic_address, _ssap, _rcl)
 
     final = response_assembly.assemble(
@@ -893,5 +1057,6 @@ async def validate(request: Request) -> Response:
         address=req.civic_address,
         civic_coverage_lookup=lookup_civic_coverage,
         default_mapping_factory=_build_default_mapping,
+        return_additional_location=ral,
     )
     return _to_xml_response(final, status=200)

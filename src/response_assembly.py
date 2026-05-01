@@ -140,6 +140,7 @@ def assemble(
     address=None,               # CivicAddress — for civic coverage lookup
     civic_coverage_lookup=None, # callable(country, a1, a2, a3, ...) → CivicCoverageEntry | None
     default_mapping_factory=None, # callable(service_urn: str) → MappingElement
+    return_additional_location: str = "none",  # draft-ietf-ecrit-similar-location-19 rli: attribute
 ) -> FindServiceResponse:
     """
     Assemble a findServiceResponse from a Gate2Result and the list of service
@@ -218,9 +219,15 @@ def assemble(
         # boundary data. Return notFound rather than a validation result.
         return NotFoundResponse()
 
+    complete_record = (
+        record
+        if result.layer == "SSAP" and return_additional_location in ("complete", "any")
+        else None
+    )
     return LocationValidationResponse(
         mapping=mappings,
         location_validation=location_validation,
+        complete_location_record=complete_record,
     )
 
 

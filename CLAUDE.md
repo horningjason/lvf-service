@@ -50,6 +50,141 @@ Python 3.x with FastAPI for the HTTP/XML service layer.
 - GIS data is loaded at startup from the path in `LVF_GPKG_PATH` (set in `.env` to `data/lvf_template_data.gpkg`)
 - VS Code launch config: `module: uvicorn`, `args: ["src.server:app", "--reload"]`, `envFile: "${workspaceFolder}/.env"`
 
+**Environment Variables:**
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `LVF_GPKG_PATH` | **Yes** | — | Path to the GeoPackage file containing SSAP, RCL, and boundary layers |
+| `LVF_DEFAULT_MAPPING_SOURCE_ID` | **Yes** | — | UUID used as `sourceId` on the default mapping element; server refuses to start if absent |
+| `LVF_SSAP_LAYER` | No | `SiteStructureAddressPoint` | GeoPackage layer name for the SSAP layer |
+| `LVF_RCL_LAYER` | No | `RoadCenterLine` | GeoPackage layer name for the RCL layer |
+| `LVF_BOUNDARY_LAYERS` | No | `PsapPolygon` | Comma-separated GeoPackage layer name(s) for service boundaries |
+| `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI placed in `<path><via source="...">` and `<errors source="...">` |
+| `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` value on `<displayName>` in mapping elements |
+| `LVF_ENABLE_SIMILAR_LOCATION` | No | `false` | Set to `true` to enable the experimental Similar Location Extension (Phase 1) |
+
+---
+
+## Testing
+
+### Regression Suite
+
+The regression suite lives in `tests/regression/`. It submits each `tests/*.xml` file through
+`handle_find_service()` directly (no HTTP) and compares the response to a golden file.
+
+```powershell
+# Run all tests
+python -m tests.regression.runner
+
+# Run one test by name (XML file stem)
+python -m tests.regression.runner --test validate_2
+```
+
+Exit code is `0` if all pass, `1` if any fail or a golden file is missing.
+
+**Seeding golden files (run once — do not re-run casually):**
+
+```powershell
+# Seed all tests that don't yet have a golden file
+python -m tests.regression.seed
+
+# Add a new test: drop a new XML file in tests/, then seed just that file
+python -m tests.regression.seed --force validate_17_complete
+
+# Force-reset the entire baseline after a deliberate behavior change
+python -m tests.regression.seed --force
+```
+
+See `tests/regression/README.md` for the full philosophy and workflow.
+
+---
+
+### Similar Location Extension — Phase 1 (`completeLocation`) *(EXPERIMENTAL)*
+
+> **Note:** This feature implements `draft-ietf-ecrit-similar-location-19`, an unpublished IETF
+> draft. The namespace, element names, and behavior may change as the draft evolves. Do not
+> deploy in production without understanding this limitation.
+
+The extension is disabled by default. Enable it by setting `LVF_ENABLE_SIMILAR_LOCATION=true`
+in `.env` (or the environment). When disabled, no `rli` namespace or elements appear anywhere
+in the response.
+
+**`.env` flag:**
+```
+LVF_ENABLE_SIMILAR_LOCATION=true
+```
+
+**How to request `completeLocation`:** add `xmlns:rli` and `rli:returnAdditionalLocation="complete"`
+(or `"any"`) to the `<findService>` element. Valid values are `none`, `similar`, `complete`, `any`.
+Absent or unrecognised values are treated as `none`.
+
+`completeLocation` is only populated on an **SSAP match** (HNO appears in `<valid>`). RCL matches
+and non-conforming results produce no `<rli:completeLocation>` regardless of the attribute value.
+
+**Example request (PowerShell against a running server):**
+```powershell
+$body = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<findService xmlns="urn:ietf:params:xml:ns:lost1"
+             xmlns:rli="urn:ietf:params:xml:ns:lost-rli1"
+             validateLocation="true"
+             rli:returnAdditionalLocation="complete">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
+'@
+Invoke-WebRequest -Uri http://localhost:8000/validate -Method POST -Body $body -ContentType "application/xml" | Select-Object -ExpandProperty Content
+```
+
+**Expected addition inside `<locationValidation>` on a successful SSAP match:**
+```xml
+<rli:completeLocation xmlns:rli="urn:ietf:params:xml:ns:lost-rli1">
+  <location id="complete" profile="civic">
+    <ca:civicAddress>
+      <ca:country>US</ca:country>
+      <ca:A1>ND</ca:A1>
+      <ca:A2>Burleigh County</ca:A2>
+      <ca:A3>Bismarck</ca:A3>
+      <ca:RD>Capitol</ca:RD>
+      <ca:STS>Way</ca:STS>
+      <ca:HNO>1661</ca:HNO>
+      <ca:PCN>Bismarck</ca:PCN>
+      <ca:PC>58501</ca:PC>
+    </ca:civicAddress>
+  </location>
+</rli:completeLocation>
+```
+
+The `rli` namespace declaration appears only on the `<rli:completeLocation>` element itself —
+never on the `<findServiceResponse>` root — so it is absent from the document entirely when
+no `completeLocation` is returned.
+
+**Quick programmatic test (no server required):**
+```powershell
+python -c "
+import os; os.environ['LVF_ENABLE_SIMILAR_LOCATION'] = 'true'
+from src.server import initialize, handle_find_service
+initialize()
+xml = open('tests/validate_2.xml', 'rb').read()
+# Inject the rli attribute by patching the bytes
+xml = xml.replace(
+    b'validateLocation=\"true\"',
+    b'xmlns:rli=\"urn:ietf:params:xml:ns:lost-rli1\" validateLocation=\"true\" rli:returnAdditionalLocation=\"complete\"'
+)
+print(handle_find_service(xml).decode())
+"
+```
+
 ---
 
 ## API Reference

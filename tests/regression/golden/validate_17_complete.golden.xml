@@ -1,0 +1,33 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<findServiceResponse xmlns="urn:ietf:params:xml:ns:lost1" xmlns:ca="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext" xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
+  <mapping expires="2198-12-31 00:00:00+00:00" lastUpdated="2025-04-17 00:00:00+00:00" source="psap.bismarcknd.gov" sourceId="{5D31178D-7195-48C8-936D-F1E5F2512815}">
+    <displayName xml:lang="en">CENTRAL DAKOTA COMMUNICATIONS CENTER</displayName>
+    <service>urn:service:sos</service>
+    <uri>sip:sos@bsblndcc1.burleigh.nd.us</uri>
+    <serviceNumber>701-223-9111</serviceNumber>
+  </mapping>
+  <locationValidation>
+    <valid>ca:country ca:A1 ca:A2 ca:A3 ca:RD ca:PRD ca:STS ca:HNO cdx2:UNIT_PRETYPE cdx2:UNIT_VALUE</valid>
+    <rli:completeLocation xmlns:rli="urn:ietf:params:xml:ns:lost-rli1">
+      <location id="completeLocation" profile="civic">
+        <ca:civicAddress>
+          <ca:country>US</ca:country>
+          <ca:A1>ND</ca:A1>
+          <ca:A2>Burleigh County</ca:A2>
+          <ca:A3>Bismarck</ca:A3>
+          <ca:RD>19th</ca:RD>
+          <ca:PRD>North</ca:PRD>
+          <ca:STS>Street</ca:STS>
+          <ca:HNO>3420</ca:HNO>
+          <cdx2:UNIT_PRETYPE>Unit</cdx2:UNIT_PRETYPE>
+          <cdx2:UNIT_VALUE>11</cdx2:UNIT_VALUE>
+          <ca:PCN>Bismarck</ca:PCN>
+          <ca:PC>58503</ca:PC>
+        </ca:civicAddress>
+      </location>
+    </rli:completeLocation>
+  </locationValidation>
+  <path>
+    <via source="lvf.ndaco.org"/>
+  </path>
+</findServiceResponse>
