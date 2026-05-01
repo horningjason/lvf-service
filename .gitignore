@@ -19,7 +19,6 @@ build/
 *.zip
 *.sqlite
 *.pickle
-nd_lvf_labdata*/
 
 # VS Code
 .vscode/
