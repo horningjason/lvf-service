@@ -1,0 +1,11 @@
+fastapi
+python-dotenv
+uvicorn
+lxml
+pydantic
+shapely
+geopandas
+pyogrio
+psycopg2-binary
+pytest
+httpx

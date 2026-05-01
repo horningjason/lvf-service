@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US" >
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>    
+      <RD>Capitol</RD>
+	  <STS>Way</STS>
+	  <HNO>1661</HNO>
+    </civicAddress>
+	<gml:Point xmlns:gml="http://www.opengis.net/gml" srsName="urn:ogc:def:crs:EPSG::4326">
+		<gml:pos>46.844881 -100.834272</gml:pos>
+	</gml:Point>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<findService xmlns="urn:ietf:params:xml:ns:lost1"
+             xmlns:ca="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+             recursive="true">
+  <location id="test1" profile="civic">
+    <ca:civicAddress>
+      <ca:country>US</ca:country>
+      <ca:A1>ND</ca:A1>
+      <ca:A2>MERCER COUNTY</ca:A2>
+      <ca:A3>BEULAH</ca:A3>
+      <ca:RD>3RD</ca:RD>
+      <ca:STS>AVENUE</ca:STS>
+      <ca:POD>NORTHWEST</ca:POD>
+      <ca:HNO>207</ca:HNO>
+      <ca:PC>58523</ca:PC>
+    </ca:civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
