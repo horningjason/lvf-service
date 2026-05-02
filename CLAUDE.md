@@ -3,7 +3,14 @@
 ## Project Purpose
 This is an implementation of the NG9-1-1 Location Validation Function (LVF) as specified in
 `LVF_Algorithm_Specification_current.docx`. The algorithm validates civic PIDF-LO addresses
-against provisioned GIS data using the LoST protocol (RFC 5222).
+against provisioned GIS data using the LoST protocol (RFC 5222). 
+
+The spec and code together are designed to address the LVF consistency problem identified in 
+NENA-INF-027, where two different LVF implementations can produce different validation results 
+for the same address because the algorithm was never fully specified. This is both an immediate
+problem for nationwide carriers working to fulfill "phase 2" requests under the FCC Report and 
+Order 24-78 and will become a future problem for both the 9-1-1 authority and OSP community 
+should a 911 authority decide to switch their LVF provider.
 
 ## Governing Standards
 - NENA-STA-004.2-2024 — CLDXF-US element definitions and business rules

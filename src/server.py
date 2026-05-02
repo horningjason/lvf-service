@@ -273,13 +273,16 @@ def _row_to_rcl(row: pd.Series, fid: Optional[int] = None) -> RCLRecord:
 
 
 def _row_to_boundary(row: pd.Series) -> ServiceBoundary:
+    nguid = _get(row, "NGUID")
+    if not nguid:
+        raise ValueError(f"Boundary record at row {row.name!r} has a missing or empty NGUID field")
     return ServiceBoundary(
         service_urn=_get(row, "ServiceURN") or "",
         expires=_get(row, "Expire"),
         last_updated=_get(row, "DateUpdate"),
         source=_get(row, "Source"),
         source_id=_get(row, "SourceId"),
-        nguid=_get(row, "NGUID"),
+        nguid=nguid,
         agency_id=_get(row, "Agency_ID"),
         service_uri=_get(row, "ServiceURI"),
         service_num=_get(row, "ServiceNum"),
@@ -688,7 +691,7 @@ def _mapping_element(parent: etree._Element, mapping) -> None:
     m.set("expires",     mapping.expires     or "NO-EXPIRATION")
     m.set("lastUpdated", mapping.last_updated or
           datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    m.set("source",   mapping.source   or _server_uri)
+    m.set("source",   _server_uri)
     m.set("sourceId", mapping.source_id or "unknown")
 
     if mapping.display_name:
@@ -775,7 +778,13 @@ def _to_xml_response(resp, status: int) -> Response:
             nsmap=_RESPONSE_NSMAP,
         )
         w = etree.SubElement(root, f"{{{_NS_LOST}}}warnings")
-        etree.SubElement(w, f"{{{_NS_LOST}}}locationValidationUnavailable")
+        w.set("source", _server_uri)
+        lvu = etree.SubElement(w, f"{{{_NS_LOST}}}locationValidationUnavailable")
+        lvu.set("message", "LVF temporarily cannot fulfill validation request")
+        lvu.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+        path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
+        via_el  = etree.SubElement(path_el, f"{{{_NS_LOST}}}via")
+        via_el.set("source", _server_uri)
         tree = root
     else:
         tree = _serialize_errors(resp)

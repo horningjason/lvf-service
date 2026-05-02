@@ -58,7 +58,7 @@ def _boundary_to_mapping(b: ServiceBoundary) -> MappingElement:
         service_urn=b.service_urn,
         expires=b.expires,
         last_updated=b.last_updated,
-        source=b.agency_id or b.source,
+        source=None,
         source_id=b.nguid or b.source_id,
         service_uri=b.service_uri,
         service_num=b.service_num,
