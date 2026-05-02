@@ -120,7 +120,7 @@ class Gate2Result:
     """
     state:   FilterState
     outcome: Literal["match", "invalid", "not_found"]
-    layer:   Optional[str] = None
+    layer:   Optional[Literal["SSAP", "RCL"]] = None
     record:  Optional[SSAPRecord | RCLRecord] = None
     side:    Optional[Literal["L", "R"]] = None
 

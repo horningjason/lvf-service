@@ -7,7 +7,7 @@ Spec: NG9-1-1 LVF Civic Address Validation Algorithm Specification
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
@@ -149,8 +149,6 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("plc",           "ca:PLC",            always_unchecked=True),
 )
 
-ELEMENT_BY_PIDF_LO: dict[str, ElementInfo] = {e.pidf_lo: e for e in ELEMENT_HIERARCHY}
-ELEMENT_BY_FIELD:   dict[str, ElementInfo] = {e.civic_address_field: e for e in ELEMENT_HIERARCHY}
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +358,7 @@ class CivicCoverageEntry:
     a3:       Optional[str] = None   # None = wildcard (matches any A3)
     a4:       Optional[str] = None   # None = wildcard (matches any A4)
     a5:       Optional[str] = None   # None = wildcard (matches any A5)
-    boundary: Optional[object] = None  # ServiceBoundary — typed as object to avoid circular import
+    boundary: Optional[ServiceBoundary] = None
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +433,7 @@ class LocationValidationResponse(BaseModel):
     mapping:                 list[MappingElement]
     location_validation:     LocationValidation
     default_mapping_returned: bool = False  # True → emit <defaultMappingReturned> warning
+    complete_location_record: Optional[Any] = None  # SSAPRecord; Optional[Any] avoids requiring arbitrary_types_allowed=True on this model (SSAPRecord has shapely geometry fields)
 
 
 FindServiceResponse = Annotated[

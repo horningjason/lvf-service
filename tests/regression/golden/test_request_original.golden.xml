@@ -1,0 +1,4 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<errors xmlns="urn:ietf:params:xml:ns:lost1" source="lvf.ndaco.org">
+  <forbidden xml:lang="en">This server is provisioned as a Location Validation Function (LVF). Only requests with validateLocation='true' are accepted.</forbidden>
+</errors>
