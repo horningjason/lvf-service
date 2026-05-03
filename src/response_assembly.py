@@ -7,6 +7,7 @@ ordering of element lists (§7.1) and point-in-polygon mapping selection (§7.5)
 
 from __future__ import annotations
 
+import datetime
 import math
 from typing import Literal, Optional
 
@@ -65,6 +66,26 @@ def _boundary_to_mapping(b: ServiceBoundary) -> MappingElement:
         display_name=b.display_name,
         display_name_lang=None,  # resolved to _display_name_lang at serialization time
     )
+
+
+def _min_expire(*candidates: Optional[str]) -> str:
+    """
+    Return the earliest parseable ISO datetime from candidates (§3.9), or
+    'NO-EXPIRATION' if none qualify. Ignores None and 'NO-EXPIRATION' values.
+    """
+    earliest: Optional[datetime.datetime] = None
+    for s in candidates:
+        if not s or s == "NO-EXPIRATION":
+            continue
+        try:
+            dt = datetime.datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            if earliest is None or dt < earliest:
+                earliest = dt
+        except ValueError:
+            pass
+    return earliest.isoformat() if earliest is not None else "NO-EXPIRATION"
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +212,11 @@ def assemble(
                 mapping = [default_mapping_factory(service_urn)]
                 default_mapping_returned = True
 
+        revalidate_after = _min_expire(*[m.expires for m in mapping])
         return LocationValidationResponse(
             mapping=mapping,
             location_validation=location_validation,
+            revalidate_after=revalidate_after,
             default_mapping_returned=default_mapping_returned,
         )
 
@@ -224,9 +247,14 @@ def assemble(
         if result.layer == "SSAP" and return_additional_location in ("complete", "any")
         else None
     )
+    revalidate_after = _min_expire(
+        getattr(record, "expire", None),
+        *[m.expires for m in mappings],
+    )
     return LocationValidationResponse(
         mapping=mappings,
         location_validation=location_validation,
+        revalidate_after=revalidate_after,
         complete_location_record=complete_record,
     )
 

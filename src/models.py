@@ -225,6 +225,10 @@ class SSAPRecord(BaseModel):
     post_code:  Optional[str] = None
     postcodeex: Optional[str] = None
 
+    # Temporal validity (STA-006.3 §3.8)
+    effective: Optional[str] = None
+    expire:    Optional[str] = None
+
     geometry: Optional[Point] = None
 
 
@@ -282,6 +286,10 @@ class RCLRecord(BaseModel):
     postcode_l: Optional[str] = None
     postcode_r: Optional[str] = None
 
+    # Temporal validity (STA-006.3 §3.8)
+    effective: Optional[str] = None
+    expire:    Optional[str] = None
+
     geometry: Optional[LineString] = None
     fid:      Optional[int] = None   # GeoPackage feature ID (diagnostic use)
     nguid:    Optional[str] = None   # STA-006.3 NGUID
@@ -302,7 +310,8 @@ class ServiceBoundary(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     service_urn:  str
-    expires:      Optional[str] = None  # RFC 5222 §8.4.1 dateTime
+    effective:    Optional[str] = None  # STA-006.3 §3.8 Effective DATETIME
+    expires:      Optional[str] = None  # RFC 5222 §8.4.1 dateTime / STA-006.3 Expire
     last_updated: Optional[str] = None
     source:       Optional[str] = None
     source_id:    Optional[str] = None
@@ -432,6 +441,7 @@ class LocationValidationResponse(BaseModel):
     type:                    Literal["locationValidation"] = "locationValidation"
     mapping:                 list[MappingElement]
     location_validation:     LocationValidation
+    revalidate_after:        Optional[str] = None   # §3.9 planned-changes revalidate hint
     default_mapping_returned: bool = False  # True → emit <defaultMappingReturned> warning
     complete_location_record: Optional[Any] = None  # SSAPRecord; Optional[Any] avoids requiring arbitrary_types_allowed=True on this model (SSAPRecord has shapely geometry fields)
 

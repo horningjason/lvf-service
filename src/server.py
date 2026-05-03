@@ -51,11 +51,12 @@ log = logging.getLogger(__name__)
 # XML namespace constants
 # ---------------------------------------------------------------------------
 
-_NS_LOST = "urn:ietf:params:xml:ns:lost1"
-_NS_CA   = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
-_NS_CAE  = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
-_NS_CDX2 = "urn:nena:xml:ns:pidf:nenaCivicAddr2"
-_NS_RLI  = "urn:ietf:params:xml:ns:lost-rli1"
+_NS_LOST    = "urn:ietf:params:xml:ns:lost1"
+_NS_CA      = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+_NS_CAE     = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
+_NS_CDX2    = "urn:nena:xml:ns:pidf:nenaCivicAddr2"
+_NS_RLI     = "urn:ietf:params:xml:ns:lost-rli1"
+_NS_PLANNED = "urn:ietf:params:xml:ns:lostPlannedChange1"
 
 # Namespace map declared on response root elements so QNames in
 # valid/invalid/unchecked text are resolvable by clients
@@ -240,6 +241,8 @@ def _row_to_ssap(row: pd.Series) -> SSAPRecord:
         post_comm=_get(row, "Post_Comm"),
         post_code=_get(row, "Post_Code"),
         postcodeex=_get(row, "PostCodeEx"),
+        effective=_get(row, "Effective"),
+        expire=_get(row, "Expire"),
         geometry=_geom_or_none(row),
     )
 
@@ -287,6 +290,8 @@ def _row_to_rcl(row: pd.Series, fid: Optional[int] = None) -> RCLRecord:
         postcomm_r=_get(row, "PostComm_R"),
         postcode_l=_get(row, "PostCode_L"),
         postcode_r=_get(row, "PostCode_R"),
+        effective=_get(row, "Effective"),
+        expire=_get(row, "Expire"),
         geometry=geom,
         fid=fid,
         nguid=_get(row, "NGUID"),
@@ -299,6 +304,7 @@ def _row_to_boundary(row: pd.Series) -> ServiceBoundary:
         raise ValueError(f"Boundary record at row {row.name!r} has a missing or empty NGUID field")
     return ServiceBoundary(
         service_urn=_get(row, "ServiceURN") or "",
+        effective=_get(row, "Effective"),
         expires=_get(row, "Expire"),
         last_updated=_get(row, "DateUpdate"),
         source=_get(row, "Source"),
@@ -326,10 +332,38 @@ def _build_default_mapping(service_urn: str) -> MappingElement:
     )
 
 
+def _is_temporally_active(
+    effective: Optional[str],
+    expire: Optional[str],
+    now: datetime.datetime,
+) -> bool:
+    """Return True if the record is active at `now` per §3.8."""
+    if effective:
+        try:
+            eff_dt = datetime.datetime.fromisoformat(effective)
+            if eff_dt.tzinfo is None:
+                eff_dt = eff_dt.replace(tzinfo=datetime.timezone.utc)
+            if eff_dt > now:
+                return False
+        except ValueError:
+            pass  # unparseable effective date — treat as no constraint
+    if expire:
+        try:
+            exp_dt = datetime.datetime.fromisoformat(expire)
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
+            if exp_dt <= now:
+                return False
+        except ValueError:
+            pass  # unparseable expiration date — treat as no constraint
+    return True
+
+
 def _load_gis_data(gpkg_path: str) -> None:
     """Load SSAP, RCL, and all boundary layers from a GeoPackage into memory."""
     global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage
 
+    now = datetime.datetime.now(datetime.timezone.utc)
     pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
 
     if os.path.exists(pickle_path):
@@ -379,11 +413,17 @@ def _load_gis_data(gpkg_path: str) -> None:
                 records = [converter(row, idx) for idx, row in gdf.iterrows()]
             else:
                 records = [converter(row) for _, row in gdf.iterrows()]
+            before = len(records)
+            records = [r for r in records if _is_temporally_active(r.effective, r.expire, now)]
+            excluded = before - len(records)
             if store_name == "SSAP":
                 _ssap = records
             else:
                 _rcl = records
-            log.info("Loaded %d %s records from '%s'", len(records), store_name, layer_name)
+            log.info(
+                "Loaded %d %s records from '%s' (%d excluded by temporal filter)",
+                len(records), store_name, layer_name, excluded,
+            )
         except Exception as exc:
             log.warning("Could not load %s layer '%s': %s", store_name, layer_name, exc)
 
@@ -392,8 +432,14 @@ def _load_gis_data(gpkg_path: str) -> None:
         try:
             gdf = gpd.read_file(gpkg_path, layer=layer_name, engine="pyogrio")
             records = [_row_to_boundary(row) for _, row in gdf.iterrows()]
+            before = len(records)
+            records = [r for r in records if _is_temporally_active(r.effective, r.expires, now)]
+            excluded = before - len(records)
             _boundaries.extend(records)
-            log.info("Loaded %d boundary records from '%s'", len(records), layer_name)
+            log.info(
+                "Loaded %d boundary records from '%s' (%d excluded by temporal filter)",
+                len(records), layer_name, excluded,
+            )
         except Exception as exc:
             log.warning("Could not load boundary layer '%s': %s", layer_name, exc)
 
@@ -754,6 +800,13 @@ def _serialize_find_service_response(resp) -> etree._Element:
     if lv.unchecked:
         el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}unchecked")
         el.text = " ".join(lv.unchecked)
+
+    planned_el = etree.SubElement(
+        lv_el,
+        f"{{{_NS_PLANNED}}}revalidateAfter",
+        nsmap={"planned": _NS_PLANNED},
+    )
+    planned_el.text = resp.revalidate_after or "NO-EXPIRATION"
 
     if resp.complete_location_record is not None:
         _serialize_complete_location(lv_el, resp.complete_location_record)

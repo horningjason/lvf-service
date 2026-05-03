@@ -1,12 +1,13 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <findServiceResponse xmlns="urn:ietf:params:xml:ns:lost1" xmlns:ca="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext" xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
-  <mapping expires="NO-EXPIRATION" lastUpdated="2026-05-01T18:31:20Z" source="lvf.ndaco.org" sourceId="{00000000-0000-0000-0000-000000000000}">
+  <mapping expires="NO-EXPIRATION" lastUpdated="2026-05-03T05:16:01Z" source="lvf.ndaco.org" sourceId="{00000000-0000-0000-0000-000000000000}">
     <displayName xml:lang="en">VALIDATION RESULT ONLY</displayName>
     <service>urn:service:sos</service>
   </mapping>
   <locationValidation>
     <invalid>ca:country</invalid>
     <unchecked>ca:A1 ca:A2 ca:A3 ca:RD ca:STS ca:HNO</unchecked>
+    <planned:revalidateAfter xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1">NO-EXPIRATION</planned:revalidateAfter>
   </locationValidation>
   <warnings>
     <defaultMappingReturned message="Mapping is present for RFC 5222 protocol compliance only. No geographic authority for submitted address. Do not use for provisioning decisions." xml:lang="en"/>

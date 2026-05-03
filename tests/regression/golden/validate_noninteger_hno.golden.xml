@@ -9,6 +9,7 @@
   <locationValidation>
     <valid>ca:country ca:A1 ca:A2 ca:A3 ca:RD ca:STS</valid>
     <invalid>ca:HNO</invalid>
+    <planned:revalidateAfter xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1">2198-12-31T00:00:00+00:00</planned:revalidateAfter>
   </locationValidation>
   <path>
     <via source="lvf.ndaco.org"/>
