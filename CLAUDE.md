@@ -8,7 +8,7 @@ against provisioned GIS data using the LoST protocol (RFC 5222).
 The spec and code together are designed to address the LVF consistency problem identified in 
 NENA-INF-027, where two different LVF implementations can produce different validation results 
 for the same address because the algorithm was never fully specified. This is both an immediate
-problem for nationwide carriers working to fulfill "phase 2" requests under the FCC Report and 
+problem for nationwide carriers working to fulfill "phase 2" requests under FCC Report and 
 Order 24-78 and will become a future problem for both the 9-1-1 authority and OSP community 
 should a 911 authority decide to switch their LVF provider.
 
@@ -51,6 +51,7 @@ Python 3.x with FastAPI for the HTTP/XML service layer.
 ## GIS Data Layers
 - SiteStructureAddressPoint (SSAP) — searched first
 - RoadCenterLine (RCL) — searched second if SSAP yields no single match
+- Service Boundary — a polygon layer provisioned with a ServiceURN matching urn:service:sos
 
 ## Running the Service
 - Start command: `uvicorn src.server:app --reload`
@@ -65,11 +66,11 @@ Python 3.x with FastAPI for the HTTP/XML service layer.
 | `LVF_DEFAULT_MAPPING_SOURCE_ID` | **Yes** | — | UUID used as `sourceId` on the default mapping element; server refuses to start if absent |
 | `LVF_SSAP_LAYER` | No | `SiteStructureAddressPoint` | GeoPackage layer name for the SSAP layer |
 | `LVF_RCL_LAYER` | No | `RoadCenterLine` | GeoPackage layer name for the RCL layer |
-| `LVF_BOUNDARY_LAYERS` | No | `PsapPolygon` | Comma-separated GeoPackage layer name(s) for service boundaries |
+| `LVF_BOUNDARY_LAYERS` | No | `PsapPolygon` | Comma-separated GeoPackage layer name(s) for service boundary polygons. |
 | `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI placed in `<path><via source="...">` and `<errors source="...">` |
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` value on `<displayName>` in mapping elements |
 | `LVF_ENABLE_SIMILAR_LOCATION` | No | `false` | Set to `true` to enable the experimental Similar Location Extension (Phase 1) |
-
+| `LVF_SOS_ALIAS_URNS` | No | — | Comma-separated URN(s) treated as aliases for `urn:service:sos` (§3.6). Gate 0 accepts them; the response `<mapping>` echoes the requested URN rather than the provisioned one. Example: `urn:emergency:service:sos.psap` |
 ---
 
 ## Testing
@@ -78,6 +79,7 @@ Python 3.x with FastAPI for the HTTP/XML service layer.
 
 The regression suite lives in `tests/regression/`. It submits each `tests/*.xml` file through
 `handle_find_service()` directly (no HTTP) and compares the response to a golden file.
+
 
 ```powershell
 # Run all tests

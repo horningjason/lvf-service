@@ -151,6 +151,27 @@ _enable_similar_location_extension: bool = (
     os.environ.get("LVF_ENABLE_SIMILAR_LOCATION", "").lower() in ("1", "true", "yes")
 )
 
+# URN aliases for urn:service:sos (§3.6). Requests for these URNs are processed against the
+# provisioned urn:service:sos boundaries; the response mapping echoes the requested URN.
+_sos_alias_urns: frozenset[str] = frozenset(
+    urn.strip().lower()
+    for urn in os.environ.get("LVF_SOS_ALIAS_URNS", "").split(",")
+    if urn.strip()
+)
+
+
+def _resolve_service_urn(requested_urn: str) -> tuple[str, bool]:
+    """
+    Resolve a requested service URN to the effective provisioned URN (§3.6).
+
+    Returns (effective_urn, is_alias). When is_alias is True, Gate 0 and boundary
+    selection use effective_urn (urn:service:sos), but all mapping elements in the
+    response carry the original requested_urn.
+    """
+    if requested_urn.lower() in _sos_alias_urns:
+        return "urn:service:sos", True
+    return requested_urn, False
+
 
 # ---------------------------------------------------------------------------
 # GeoPackage helpers
@@ -847,7 +868,9 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200).body
 
-    g0 = gate0.check(req.service_urn, _boundaries)
+    effective_urn, is_alias = _resolve_service_urn(req.service_urn)
+
+    g0 = gate0.check(effective_urn, _boundaries)
     if g0 is not None:
         return _to_xml_response(g0, status=200).body
 
@@ -857,7 +880,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     matched_boundaries = [
         b for b in _boundaries
-        if b.service_urn.lower() == req.service_urn.lower()
+        if b.service_urn.lower() == effective_urn.lower()
     ]
     ral = _parse_return_additional_location(xml_bytes) if _enable_similar_location_extension else "none"
     g2 = gate2.run(req.civic_address, _ssap, _rcl)
@@ -870,6 +893,10 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         default_mapping_factory=_build_default_mapping,
         return_additional_location=ral,
     )
+    # §3.6 — alias URN: override service_urn in all mapping elements to echo the requested URN
+    if is_alias and final.type == "locationValidation":
+        for m in final.mapping:
+            m.service_urn = req.service_urn
     return _to_xml_response(final, status=200).body
 
 
@@ -1040,8 +1067,11 @@ async def validate(request: Request) -> Response:
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200)
 
+    # §3.6 — resolve alias URN to the effective provisioned URN
+    effective_urn, is_alias = _resolve_service_urn(req.service_urn)
+
     # Gate 0 — service URN / boundary check (§3.1)
-    g0 = gate0.check(req.service_urn, _boundaries)
+    g0 = gate0.check(effective_urn, _boundaries)
     if g0 is not None:
         return _to_xml_response(g0, status=200)
 
@@ -1051,10 +1081,10 @@ async def validate(request: Request) -> Response:
         return _to_xml_response(g1, status=200)
 
     # Gate 2 — progressive filter (§5)
-    # Pre-filter boundaries to the requested URN for response assembly (§7.5)
+    # Pre-filter boundaries to the effective URN for response assembly (§7.5)
     matched_boundaries = [
         b for b in _boundaries
-        if b.service_urn.lower() == req.service_urn.lower()
+        if b.service_urn.lower() == effective_urn.lower()
     ]
     ral = _parse_return_additional_location(body) if _enable_similar_location_extension else "none"
     g2 = gate2.run(req.civic_address, _ssap, _rcl)
@@ -1068,4 +1098,8 @@ async def validate(request: Request) -> Response:
         default_mapping_factory=_build_default_mapping,
         return_additional_location=ral,
     )
+    # §3.6 — alias URN: override service_urn in all mapping elements to echo the requested URN
+    if is_alias and final.type == "locationValidation":
+        for m in final.mapping:
+            m.service_urn = req.service_urn
     return _to_xml_response(final, status=200)
