@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<findServiceResponse xmlns="urn:ietf:params:xml:ns:lost1" xmlns:ca="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext" xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
+  <mapping expires="2198-12-31 00:00:00+00:00" lastUpdated="2025-04-17 00:00:00+00:00" source="lvf.ndaco.org" sourceId="{F9A0899D-2F19-46D2-A1C3-B3B2E54A8E9D}">
+    <displayName xml:lang="en">MERCER-OLIVER 911</displayName>
+    <service>urn:service:sos</service>
+    <uri>sip:sos@test.mclean.nd.us</uri>
+    <serviceNumber>701-123-3332</serviceNumber>
+  </mapping>
+  <locationValidation>
+    <valid>ca:country ca:A1 ca:A2 ca:A3 ca:RD ca:STS ca:POD</valid>
+    <unchecked>ca:HNO cdx2:UNIT_PRETYPE cdx2:UNIT_VALUE</unchecked>
+    <planned:revalidateAfter xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1">2198-12-31T00:00:00+00:00</planned:revalidateAfter>
+  </locationValidation>
+  <path>
+    <via source="lvf.ndaco.org"/>
+  </path>
+</findServiceResponse>

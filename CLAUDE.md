@@ -23,6 +23,7 @@ should a 911 authority decide to switch their LVF provider.
 
 ## Algorithm Summary
 The algorithm processes a civic PIDF-LO through three sequential gates:
+- Pre-Gate-0: XML schema validation → returns `<badRequest>` on failure (§10 gap closure)
 - Gate 0: Service URN / boundary check → returns `<serviceNotImplemented>` on failure
 - Gate 1: Structural conformance check → returns `<locationInvalid>` on failure
 - Gate 2: Progressive filter against SSAP then RCL GIS layers → returns `<locationValidation>`
@@ -47,6 +48,25 @@ Python 3.x with FastAPI for the HTTP/XML service layer.
 - Geometry is used only at response assembly for `<mapping>` element selection (§7.5)
 - HNO against RCL is always `<unchecked>`, never `<valid>` (INF-027 §2.5.8)
 - Only one element ever appears in `<invalid>` (stop-on-first-invalid rule)
+
+## XML Schema Validation (`schemas/`)
+
+Four XSD files in `schemas/` define valid CLDXF-US LoST findService requests:
+
+| File | Namespace | Source |
+|---|---|---|
+| `lost1.xsd` | `urn:ietf:params:xml:ns:lost1` | draft-ietf-ecrit-lost-planned-changes-15 §6 |
+| `civicAddr.xsd` | `urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr` | RFC 5139 |
+| `civicAddr-ext.xsd` | `urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext` | RFC 6848 |
+| `nenaCivicAddr2.xsd` | `urn:nena:xml:ns:pidf:nenaCivicAddr2` | NENA-STA-004.2-2024 |
+
+`lost1.xsd` imports the other three so lxml validates cross-namespace content. The schema is
+loaded once at startup (`initialize()` / `_lifespan`) into `_schema`. If the files cannot be
+loaded, `_schema = None` and validation is skipped with a WARNING log.
+
+Key enforcement: any element in the `ca:` namespace that is not defined in `civicAddr.xsd`
+(e.g. `ca:STP`, which belongs in the `cae:` namespace) fails validation and returns
+`<badRequest>` before Gate 0 runs.
 
 ## GIS Data Layers
 - SiteStructureAddressPoint (SSAP) — searched first
@@ -98,7 +118,7 @@ Exit code is `0` if all pass, `1` if any fail or a golden file is missing.
 python -m tests.regression.seed
 
 # Add a new test: drop a new XML file in tests/, then seed just that file
-python -m tests.regression.seed --force validate_17_complete
+python -m tests.regression.seed --force validate_28
 
 # Force-reset the entire baseline after a deliberate behavior change
 python -m tests.regression.seed --force

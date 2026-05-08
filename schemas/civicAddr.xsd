@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RFC 5139 — PIDF-LO civic address base schema (ca: namespace).
+
+  civicAddress uses xs:choice minOccurs="0" maxOccurs="unbounded" so elements
+  may appear in any order and any number of times, matching the permissive
+  RFC 5139 content model.  Elements from other namespaces (cae:, cdx2:, …) are
+  admitted via xs:any namespace="##other" processContents="lax"; those schemas
+  are imported by lost1.xsd and lxml validates them against the imported schema.
+
+  Enforcement: any element in the ca: namespace that is NOT listed below will
+  fail validation.  That includes STP, which belongs in the cae: namespace.
+-->
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+    elementFormDefault="qualified">
+
+  <xs:element name="civicAddress">
+    <xs:complexType>
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <!-- §3 Place-name elements -->
+        <xs:element name="country"  type="xs:string"/>
+        <xs:element name="A1"       type="xs:string"/>
+        <xs:element name="A2"       type="xs:string"/>
+        <xs:element name="A3"       type="xs:string"/>
+        <xs:element name="A4"       type="xs:string"/>
+        <xs:element name="A5"       type="xs:string"/>
+        <xs:element name="A6"       type="xs:string"/>
+        <!-- §4 Street elements -->
+        <xs:element name="RD"       type="xs:string"/>
+        <xs:element name="PRD"      type="xs:string"/>
+        <xs:element name="STS"      type="xs:string"/>
+        <xs:element name="POD"      type="xs:string"/>
+        <xs:element name="MP"       type="xs:string"/>
+        <!-- §5 Address-number elements -->
+        <xs:element name="HNO"      type="xs:string"/>
+        <xs:element name="HNS"      type="xs:string"/>
+        <!-- §6 Named-location elements -->
+        <xs:element name="BLD"      type="xs:string"/>
+        <xs:element name="UNIT"     type="xs:string"/>
+        <xs:element name="FLR"      type="xs:string"/>
+        <xs:element name="ROOM"     type="xs:string"/>
+        <xs:element name="SEAT"     type="xs:string"/>
+        <xs:element name="PLC"      type="xs:string"/>
+        <xs:element name="LMK"      type="xs:string"/>
+        <xs:element name="LMKP"     type="xs:string"/>
+        <!-- §7 Postal elements -->
+        <xs:element name="PCN"      type="xs:string"/>
+        <xs:element name="PC"       type="xs:string"/>
+        <!-- §8 Miscellaneous elements -->
+        <xs:element name="NAM"      type="xs:string"/>
+        <xs:element name="LOC"      type="xs:string"/>
+        <xs:element name="POBOX"    type="xs:string"/>
+        <xs:element name="ADDCODE"  type="xs:string"/>
+        <xs:element name="RDSEC"    type="xs:string"/>
+        <xs:element name="RDBR"     type="xs:string"/>
+        <xs:element name="RDSUBBR"  type="xs:string"/>
+        <!-- Extension point: cae:, cdx2:, and any other namespace -->
+        <xs:any namespace="##other" processContents="lax"/>
+      </xs:choice>
+      <xs:anyAttribute namespace="##any" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

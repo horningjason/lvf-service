@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 This request submits a civic address that includes LOC (Additional Location Information)
-and PLC (Place Type) elements. Per §5.5.1, LOC and PLC are always-unchecked elements
+and PLC (Place Type) elements. LOC and PLC are always-unchecked elements
 that are never evaluated by the progressive filter regardless of the matched layer.
 The expected outcome is a conforming locationValidation result with standard civic
 elements in <valid> and both ca:LOC and ca:PLC in <unchecked>. The civic address

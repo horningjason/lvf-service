@@ -1,10 +1,10 @@
 """
-Gate 1 — Structural Conformance Check (§4.1).
+Gate 1 — Structural Conformance Check.
 """
 
 from src.models import CivicAddress, LocationInvalidResponse
 
-# Required elements per §4.1, in the order they are checked.
+# Required elements, in the order they are checked.
 # Tuples of (CivicAddress field name, PIDF-LO element name for response messages).
 _REQUIRED: tuple[tuple[str, str], ...] = (
     ("country", "ca:country"),
@@ -18,13 +18,13 @@ _REQUIRED: tuple[tuple[str, str], ...] = (
 def check(address: CivicAddress) -> LocationInvalidResponse | None:
     """
     Verify the submitted PIDF-LO contains non-empty values for all required
-    elements (§4.1): ca:country, ca:A1, ca:A2, ca:RD, ca:HNO.
+    elements: ca:country, ca:A1, ca:A2, ca:RD, ca:HNO.
 
     Returns None on success (processing continues to Gate 2). Returns
     LocationInvalidResponse identifying the first failing element if any
-    required element is absent or empty. No GIS lookup is performed (§4.2).
+    required element is absent or empty. No GIS lookup is performed.
 
-    §4.3 — Omitted vs. empty distinction:
+    Omitted vs. empty distinction:
         - None  → element tag absent from the PIDF-LO (omitted)
         - ""    → element tag present but contains no value (empty)
         Both fail Gate 1 for required elements. The message distinguishes
@@ -32,7 +32,7 @@ def check(address: CivicAddress) -> LocationInvalidResponse | None:
     """
     for field, pidf_lo in _REQUIRED:
         value = getattr(address, field)
-        if not value:  # covers None (omitted) and "" (empty) per §4.3
+        if not value:  # covers None (omitted) and "" (empty)
             reason = "absent" if value is None else "empty"
             return LocationInvalidResponse(
                 message=f"Required element {pidf_lo} is {reason}"

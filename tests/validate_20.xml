@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 This request submits a civic address with all field values in lowercase. All element
-comparisons are case-insensitive (§5.7). The expected outcome is a conforming
+comparisons are case-insensitive. The expected outcome is a conforming
 locationValidation result identical to the equivalent mixed-case request, confirming
 that case-insensitive comparison applies throughout the progressive filter. The civic
 address matches a provisioned SSAP record.

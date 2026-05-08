@@ -22,27 +22,27 @@ class CivicAddress(BaseModel):
     PIDF-LO civic address submitted in a LoST findService request.
 
     All fields are Optional[str] to preserve the omitted-vs-empty distinction
-    required by §4.3 and INF-027 §2.5.7:
+    required by INF-027 §2.5.7:
       - None  → element absent (omitted tag)
       - ""    → element present but empty
 
-    Elements are grouped and ordered by the 33-position evaluation hierarchy
-    defined in §6. The four always-unchecked elements (§5.5.1) are included
-    for completeness but are never passed to the progressive filter.
+    Elements are grouped and ordered by the 33-position evaluation hierarchy.
+    The four always-unchecked elements are included for completeness but are
+    never passed to the progressive filter.
 
     Retired elements (A6, LMK, LMKP, POBOX, ADDCODE, RDSEC, RDBR, RDSUBBR,
     UNIT, NAM) are excluded per NENA-STA-004.2-2024 §1.5.
     """
 
-    # §6.1 — Place name elements (hierarchy positions 1–6)
-    country: Optional[str] = None   # ca:country  — Gate 1 required (§4.1)
+    # Place name elements (hierarchy positions 1–6)
+    country: Optional[str] = None   # ca:country  — Gate 1 required
     a1:      Optional[str] = None   # ca:A1       — Gate 1 required
     a2:      Optional[str] = None   # ca:A2       — Gate 1 required
     a3:      Optional[str] = None   # ca:A3
     a4:      Optional[str] = None   # ca:A4
     a5:      Optional[str] = None   # ca:A5
 
-    # §6.2 — Street name elements (hierarchy positions 7–14)
+    # Street name elements (hierarchy positions 7–14)
     rd:   Optional[str] = None      # ca:RD   — Gate 1 required
     prm:  Optional[str] = None      # cae:PRM
     prd:  Optional[str] = None      # ca:PRD
@@ -52,13 +52,13 @@ class CivicAddress(BaseModel):
     pod:  Optional[str] = None      # ca:POD
     pom:  Optional[str] = None      # cae:POM
 
-    # §6.3 — Address number elements (hierarchy positions 15–18)
+    # Address number elements (hierarchy positions 15–18)
     hno: Optional[str] = None       # ca:HNO  — Gate 1 required; integer value as string
     hnp: Optional[str] = None       # cae:HNP
-    hns: Optional[str] = None       # ca:HNS  — RCL unchecked (§5.5.2)
+    hns: Optional[str] = None       # ca:HNS  — RCL unchecked
     mp:  Optional[str] = None       # cae:MP  — RCL unchecked
 
-    # §6.4 — Named location elements (hierarchy positions 19–30; all RCL unchecked)
+    # Named location elements (hierarchy positions 19–30; all RCL unchecked)
     site:         Optional[str] = None  # cdx2:SITE
     subsite:      Optional[str] = None  # cdx2:SUBSITE
     bld:          Optional[str] = None  # ca:BLD (Structure)
@@ -72,12 +72,12 @@ class CivicAddress(BaseModel):
     seat:         Optional[str] = None  # ca:SEAT
     pn:           Optional[str] = None  # cae:PN (Location Marker per STA-004.2 §3.4.15)
 
-    # §6.5 — Postal elements (hierarchy positions 31–33)
+    # Postal elements (hierarchy positions 31–33)
     pcn: Optional[str] = None       # ca:PCN
     pc:  Optional[str] = None       # ca:PC
     pce: Optional[str] = None       # cae:PCE — RCL unchecked
 
-    # §5.5.1 — Always-unchecked elements (never enter the progressive filter)
+    # Always-unchecked elements (never enter the progressive filter)
     dt:  Optional[str] = None       # cdx2:DT  — Direction of Travel
     hnc: Optional[str] = None       # cdx2:HNC — Address Number Complete
     loc: Optional[str] = None       # ca:LOC   — Additional Location Information
@@ -94,24 +94,24 @@ class ElementInfo:
     Metadata for one PIDF-LO element as it participates in the algorithm.
 
     Positions 0–32 in ELEMENT_HIERARCHY correspond to the 33-element evaluable
-    sequence from §6. Positions 33–36 are the §5.5.1 always-unchecked elements,
+    sequence. Positions 33–36 are the always-unchecked elements,
     which gate2.py skips entirely.
     """
     civic_address_field: str    # attribute name on CivicAddress
     pidf_lo: str                # namespaced element name used in RFC 5222 response lists
-    always_unchecked: bool = False  # §5.5.1 — skip on all layers, add to <unchecked>
-    rcl_unchecked: bool = False     # §5.5.2 — skip on RCL only, add to <unchecked>
+    always_unchecked: bool = False  # skip on all layers, add to <unchecked>
+    rcl_unchecked: bool = False     # skip on RCL only, add to <unchecked>
 
 
 ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
-    # §6.1 Place name
+    # Place name
     ElementInfo("country",       "ca:country"),
     ElementInfo("a1",            "ca:A1"),
     ElementInfo("a2",            "ca:A2"),
     ElementInfo("a3",            "ca:A3"),
     ElementInfo("a4",            "ca:A4"),
     ElementInfo("a5",            "ca:A5"),
-    # §6.2 Street name
+    # Street name
     ElementInfo("rd",            "ca:RD"),
     ElementInfo("prm",           "cae:PRM"),
     ElementInfo("prd",           "ca:PRD"),
@@ -120,12 +120,12 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("sts",           "ca:STS"),
     ElementInfo("pod",           "ca:POD"),
     ElementInfo("pom",           "cae:POM"),
-    # §6.3 Address number
+    # Address number
     ElementInfo("hno",           "ca:HNO"),
     ElementInfo("hnp",           "cae:HNP"),
     ElementInfo("hns",           "ca:HNS",           rcl_unchecked=True),
     ElementInfo("mp",            "cae:MP",            rcl_unchecked=True),
-    # §6.4 Named location — all RCL unchecked per §5.5.2
+    # Named location — all RCL unchecked
     ElementInfo("site",          "cdx2:SITE",         rcl_unchecked=True),
     ElementInfo("subsite",       "cdx2:SUBSITE",      rcl_unchecked=True),
     ElementInfo("bld",           "ca:BLD",            rcl_unchecked=True),
@@ -138,11 +138,11 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("row",           "cdx2:ROW",          rcl_unchecked=True),
     ElementInfo("seat",          "ca:SEAT",           rcl_unchecked=True),
     ElementInfo("pn",            "cae:PN",            rcl_unchecked=True),
-    # §6.5 Postal
+    # Postal
     ElementInfo("pcn",           "ca:PCN"),
     ElementInfo("pc",            "ca:PC"),
     ElementInfo("pce",           "cae:PCE",           rcl_unchecked=True),
-    # §5.5.1 Always-unchecked (outside the 33-position filter sequence)
+    # Always-unchecked (outside the 33-position filter sequence)
     ElementInfo("dt",            "cdx2:DT",           always_unchecked=True),
     ElementInfo("hnc",           "cdx2:HNC",          always_unchecked=True),
     ElementInfo("loc",           "ca:LOC",            always_unchecked=True),
@@ -159,7 +159,7 @@ class ValidationRequest(BaseModel):
     """
     A LoST findService request as received by the LVF.
 
-    service_urn maps to the <service> element in the LoST request (§3.1).
+    service_urn maps to the <service> element in the LoST request.
     Expected to be urn:service:sos or urn:service:test.sos per NENA-STA-010 §3.4.
     validate_location mirrors the validateLocation attribute on <findService>.
     """
@@ -178,11 +178,11 @@ class SSAPRecord(BaseModel):
 
     Field names match STA-006.3 standardized names exactly. The LVF must
     reference only these standardized names — no field-name mapping or
-    configuration is permitted (§5.7, STA-006.3 §3.4).
+    configuration is permitted (STA-006.3 §3.4).
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # §6.1 Administrative
+    # Administrative
     country: Optional[str] = None
     a1:      Optional[str] = None
     a2:      Optional[str] = None
@@ -190,7 +190,7 @@ class SSAPRecord(BaseModel):
     a4:      Optional[str] = None
     a5:      Optional[str] = None
 
-    # §6.2 Street name
+    # Street name
     st_name:   Optional[str] = None
     st_premod: Optional[str] = None
     st_predir: Optional[str] = None
@@ -200,13 +200,13 @@ class SSAPRecord(BaseModel):
     st_posdir: Optional[str] = None
     st_posmod: Optional[str] = None
 
-    # §6.3 Address number — exact integer comparison against Add_Number (§5.6.1)
+    # Address number — exact integer comparison against Add_Number
     add_number: Optional[int] = None
     addnum_pre: Optional[str] = None
     addnum_suf: Optional[str] = None
     distmarker: Optional[str] = None
 
-    # §6.4 Named location
+    # Named location
     site:       Optional[str] = None
     subsite:    Optional[str] = None
     structure:  Optional[str] = None    # ca:BLD maps to STA-006.3 field 'Structure'
@@ -220,7 +220,7 @@ class SSAPRecord(BaseModel):
     seat:       Optional[str] = None
     locmarker:  Optional[str] = None
 
-    # §6.5 Postal
+    # Postal
     post_comm:  Optional[str] = None
     post_code:  Optional[str] = None
     postcodeex: Optional[str] = None
@@ -238,13 +238,13 @@ class RCLRecord(BaseModel):
 
     Administrative and postal fields are side-specific (_L / _R). Street name
     fields are shared. Address number evaluation uses range + parity +
-    validation flag logic, not exact match — see §5.6.2. Side determination
-    during HNO evaluation (§5.4) governs which suffix is used for all
-    subsequent side-specific comparisons.
+    validation flag logic, not exact match. Side determination during HNO
+    evaluation governs which suffix is used for all subsequent side-specific
+    comparisons.
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # §6.1 Administrative — side-specific
+    # Administrative — side-specific
     country_l: Optional[str] = None
     country_r: Optional[str] = None
     a1_l: Optional[str] = None
@@ -258,7 +258,7 @@ class RCLRecord(BaseModel):
     a5_l: Optional[str] = None
     a5_r: Optional[str] = None
 
-    # §6.2 Street name — shared across both sides
+    # Street name — shared across both sides
     st_name:   Optional[str] = None
     st_premod: Optional[str] = None
     st_predir: Optional[str] = None
@@ -268,7 +268,7 @@ class RCLRecord(BaseModel):
     st_posdir: Optional[str] = None
     st_posmod: Optional[str] = None
 
-    # §5.6.2 Address number — range, parity (E/O/B), validation flags (Y/N)
+    # Address number — range, parity (E/O/B), validation flags (Y/N)
     fromaddr_l: Optional[int] = None
     toaddr_l:   Optional[int] = None
     fromaddr_r: Optional[int] = None
@@ -280,7 +280,7 @@ class RCLRecord(BaseModel):
     adnumpre_l: Optional[str] = None    # cae:HNP side-specific field
     adnumpre_r: Optional[str] = None
 
-    # §6.5 Postal — side-specific
+    # Postal — side-specific
     postcomm_l: Optional[str] = None
     postcomm_r: Optional[str] = None
     postcode_l: Optional[str] = None
@@ -303,9 +303,9 @@ class ServiceBoundary(BaseModel):
     """
     A provisioned service boundary polygon associated with a ServiceURN.
 
-    Gate 0 checks for a URN match (§3.1). At response assembly the geometry
-    is used in a point-in-polygon test to select the <mapping> element (§7.5)
-    — the only use of geometry in the entire algorithm.
+    Gate 0 checks for a URN match. At response assembly the geometry is used
+    in a point-in-polygon test to select the <mapping> element — the only use
+    of geometry in the entire algorithm.
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -330,33 +330,33 @@ class ServiceBoundary(BaseModel):
 @dataclass
 class FilterState:
     """
-    Mutable state accumulated during the Gate 2 progressive filter (§5.2).
+    Mutable state accumulated during the Gate 2 progressive filter.
 
     valid and unchecked hold PIDF-LO element names (e.g. 'ca:country') in
     accumulation order; response_assembly.py sorts them to hierarchical order
-    before serialisation (§7.1).
+    before serialisation.
 
     At most one element ever appears in invalid — enforced by the
-    stop-on-first-invalid rule (§5.8).
+    stop-on-first-invalid rule.
 
-    determined_side is set during HNO evaluation on RCL (§5.4) and governs
-    which side-specific field suffix (_L or _R) all subsequent RCL comparisons use.
+    determined_side is set during HNO evaluation on RCL and governs which
+    side-specific field suffix (_L or _R) all subsequent RCL comparisons use.
     """
     valid:           list[str] = field(default_factory=list)
     invalid:         Optional[str] = None
     unchecked:       list[str] = field(default_factory=list)
     determined_side: Optional[Literal["L", "R"]] = None
-    terminal:        bool = False   # True after stop-on-first-invalid fires (§5.8)
+    terminal:        bool = False   # True after stop-on-first-invalid fires
 
 
 # ---------------------------------------------------------------------------
-# Coverage Region (§3.5)
+# Coverage Region
 # ---------------------------------------------------------------------------
 
 @dataclass
 class CivicCoverageEntry:
     """
-    One entry in the civic coverage region lookup table (§3.5).
+    One entry in the civic coverage region lookup table.
     Maps an admin prefix to a service boundary. A3-A5 may be None
     to represent wildcard matching at that level.
     """
@@ -377,8 +377,8 @@ class LocationValidation(BaseModel):
     """
     The <locationValidation> element of a findServiceResponse (RFC 5222 §8.4.2).
 
-    All lists are in hierarchical order per §7.1. At most one element appears
-    in invalid — the stop-on-first-invalid rule (§5.8) enforces this.
+    All lists are in hierarchical order. At most one element appears in invalid
+    — the stop-on-first-invalid rule enforces this.
     """
     valid:     list[str] = Field(default_factory=list)
     invalid:   Optional[str] = None
@@ -390,8 +390,8 @@ class MappingElement(BaseModel):
     A <mapping> element in the findServiceResponse (RFC 5222 §8.4.1).
 
     Selected at response assembly via point-in-polygon against provisioned
-    service boundaries (§7.5). Multiple instances are returned when the
-    representative point falls within more than one boundary polygon.
+    service boundaries. Multiple instances are returned when the representative
+    point falls within more than one boundary polygon.
     """
     service_urn:       str
     expires:           Optional[str] = None
@@ -404,35 +404,41 @@ class MappingElement(BaseModel):
     display_name_lang: Optional[str] = None
 
 
+class BadRequestResponse(BaseModel):
+    """Pre-Gate-0 failure — request does not conform to the LoST findService schema."""
+    type: Literal["badRequest"] = "badRequest"
+    message: Optional[str] = None
+
+
 class ForbiddenResponse(BaseModel):
     """Request rejected — LVF only accepts requests with validateLocation='true'."""
     type: Literal["forbidden"] = "forbidden"
 
 
 class ServiceNotImplementedResponse(BaseModel):
-    """Gate 0 failure — no provisioned boundary matches the requested URN (§3.1)."""
+    """Gate 0 failure — no provisioned boundary matches the requested URN."""
     type: Literal["serviceNotImplemented"] = "serviceNotImplemented"
 
 
 class LocationInvalidResponse(BaseModel):
-    """Gate 1 failure — required PIDF-LO elements absent or empty (§4.2)."""
+    """Gate 1 failure — required PIDF-LO elements absent or empty."""
     type:    Literal["locationInvalid"] = "locationInvalid"
     message: Optional[str] = None
 
 
 class NotFoundResponse(BaseModel):
-    """Gate 2 terminal — filter yielded zero or ambiguous candidates (§5.3)."""
+    """Gate 2 terminal — filter yielded zero or ambiguous candidates."""
     type: Literal["notFound"] = "notFound"
 
 
 class LocationValidationUnavailableResponse(BaseModel):
-    """System-level failure — LVF temporarily unable to fulfill the request (§7.4)."""
+    """System-level failure — LVF temporarily unable to fulfill the request."""
     type: Literal["locationValidationUnavailable"] = "locationValidationUnavailable"
 
 
 class LocationValidationResponse(BaseModel):
     """
-    Successful findServiceResponse with a <locationValidation> element (§7.1–7.3).
+    Successful findServiceResponse with a <locationValidation> element.
 
     A conforming result has no invalid element. A non-conforming result has
     exactly one. RFC 5222 §8.4.1 requires at least one <mapping> in both cases.
@@ -440,13 +446,14 @@ class LocationValidationResponse(BaseModel):
     type:                    Literal["locationValidation"] = "locationValidation"
     mapping:                 list[MappingElement]
     location_validation:     LocationValidation
-    revalidate_after:        Optional[str] = None   # §3.9 planned-changes revalidate hint
+    revalidate_after:        Optional[str] = None   # planned-changes revalidate hint
     default_mapping_returned: bool = False  # True → emit <defaultMappingReturned> warning
     complete_location_record: Optional[Any] = None  # SSAPRecord; Optional[Any] avoids requiring arbitrary_types_allowed=True on this model (SSAPRecord has shapely geometry fields)
 
 
 FindServiceResponse = Annotated[
-    ForbiddenResponse
+    BadRequestResponse
+    | ForbiddenResponse
     | ServiceNotImplementedResponse
     | LocationInvalidResponse
     | NotFoundResponse
@@ -454,4 +461,4 @@ FindServiceResponse = Annotated[
     | LocationValidationResponse,
     Field(discriminator="type"),
 ]
-"""Discriminated union of all RFC 5222 findServiceResponse outcomes (§7.4)."""
+"""Discriminated union of all RFC 5222 findServiceResponse outcomes."""

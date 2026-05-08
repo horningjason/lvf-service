@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NENA-STA-004.2-2024 — CLDXF-US extension elements (cdx2: namespace).
+
+  Each element is declared globally so lxml can resolve them when they appear
+  as xs:any content inside ca:civicAddress (processContents="lax").
+-->
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:nena:xml:ns:pidf:nenaCivicAddr2"
+    elementFormDefault="qualified">
+
+  <xs:element name="STPS"         type="xs:string"/>
+  <xs:element name="SITE"         type="xs:string"/>
+  <xs:element name="SUBSITE"      type="xs:string"/>
+  <xs:element name="WING"         type="xs:string"/>
+  <xs:element name="UNIT_PRETYPE" type="xs:string"/>
+  <xs:element name="UNIT_VALUE"   type="xs:string"/>
+  <xs:element name="SECTION"      type="xs:string"/>
+  <xs:element name="ROW"          type="xs:string"/>
+  <xs:element name="PCE"          type="xs:string"/>
+  <xs:element name="DT"           type="xs:string"/>
+  <xs:element name="HNC"          type="xs:string"/>
+
+</xs:schema>

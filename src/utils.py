@@ -11,7 +11,7 @@ def _is_temporally_active(
     expire: Optional[str],
     now: datetime.datetime,
 ) -> bool:
-    """Return True if the record is active at `now` per §3.8."""
+    """Return True if the record is temporally active at `now`."""
     if effective:
         try:
             eff_dt = datetime.datetime.fromisoformat(effective)

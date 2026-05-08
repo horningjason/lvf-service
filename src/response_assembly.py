@@ -1,8 +1,8 @@
 """
-Response Assembly (§7).
+Response Assembly.
 
 Converts a Gate2Result into a FindServiceResponse, including hierarchical
-ordering of element lists (§7.1) and point-in-polygon mapping selection (§7.5).
+ordering of element lists and point-in-polygon mapping selection.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from src.models import (
     ServiceBoundary,
 )
 
-# Canonical position of each PIDF-LO element name for sorting (§6, §7.1)
+# Canonical position of each PIDF-LO element name for sorting
 _PIDF_LO_ORDER: dict[str, int] = {
     e.pidf_lo: i for i, e in enumerate(ELEMENT_HIERARCHY)
 }
@@ -36,7 +36,7 @@ _PIDF_LO_ORDER: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 def _sort_by_hierarchy(names: list[str]) -> list[str]:
-    """Sort PIDF-LO element names into hierarchical order per §7.1."""
+    """Sort PIDF-LO element names into hierarchical order."""
     return sorted(names, key=lambda n: _PIDF_LO_ORDER.get(n, 999))
 
 
@@ -44,8 +44,8 @@ def _build_location_validation(state) -> LocationValidation:
     """
     Assemble LocationValidation from a FilterState.
 
-    All lists are sorted to hierarchical order (§7.1). invalid is either None
-    (conforming result, §7.2) or a single element name (non-conforming, §7.3).
+    All lists are sorted to hierarchical order. invalid is either None
+    (conforming result) or a single element name (non-conforming).
     """
     return LocationValidation(
         valid=_sort_by_hierarchy(state.valid),
@@ -70,7 +70,7 @@ def _boundary_to_mapping(b: ServiceBoundary, server_uri: str, display_name_lang:
 
 def _min_expire(*candidates: Optional[str]) -> str:
     """
-    Return the earliest parseable ISO datetime from candidates (§3.9), or
+    Return the earliest parseable ISO datetime from candidates, or
     'NO-EXPIRATION' if none qualify. Ignores None and 'NO-EXPIRATION' values.
     """
     earliest: Optional[datetime.datetime] = None
@@ -89,7 +89,7 @@ def _min_expire(*candidates: Optional[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# §7.5 — Representative point and mapping selection
+# Representative point and mapping selection
 # ---------------------------------------------------------------------------
 
 def _rcl_representative_point(
@@ -98,7 +98,7 @@ def _rcl_representative_point(
 ) -> Optional[Point]:
     """
     Derive a representative point by offsetting 0.0001 degrees perpendicularly
-    from the line midpoint toward the determined side (§7.5, §3.5.1).
+    from the line midpoint toward the determined side.
 
     Side convention follows the RCL digitization direction (FROM → TO node):
         L → counter-clockwise 90° rotation of the direction vector
@@ -114,7 +114,7 @@ def _rcl_representative_point(
 
     mid: Point = line_geom.interpolate(0.5, normalized=True)
 
-    # Overall bearing from start to end (§3.5.1: "using the segment's bearing")
+    # Overall bearing from start to end
     dx = coords[-1][0] - coords[0][0]   # Δlongitude
     dy = coords[-1][1] - coords[0][1]   # Δlatitude
     magnitude = math.sqrt(dx * dx + dy * dy)
@@ -137,11 +137,10 @@ def _select_mappings(
     display_name_lang: str,
 ) -> list[MappingElement]:
     """
-    Return a MappingElement for every boundary polygon that contains point
-    (§7.5). Multiple elements are returned when the point falls inside more
-    than one polygon — per NENA-STA-010 the client MUST have local policy to
-    handle this (§7.5). Returns an empty list if point is None or no boundary
-    contains it.
+    Return a MappingElement for every boundary polygon that contains point.
+    Multiple elements are returned when the point falls inside more than one
+    polygon — per NENA-STA-010 the client MUST have local policy to handle
+    this. Returns an empty list if point is None or no boundary contains it.
     """
     if point is None:
         return []
@@ -172,19 +171,17 @@ def assemble(
     boundaries pre-filtered to the requested URN (Gate 0 already confirmed at
     least one matches).
 
-    Outcome mapping (§7.4):
+    Outcome mapping:
         not_found → NotFoundResponse
         invalid   → LocationValidationResponse with invalid element; mapping
-                    uses civic coverage lookup (§3.5.2) when available, falling
-                    back to a synthetic default mapping (defaultMappingReturned
-                    warning emitted) when lookup does not resolve
+                    uses civic coverage lookup when available, falling back to
+                    a synthetic default mapping (defaultMappingReturned warning
+                    emitted) when lookup does not resolve
         match     → LocationValidationResponse; mapping via point-in-polygon
-                    test (§7.5); if the test finds no containing boundary, a
-                    data integrity failure is assumed and NotFoundResponse is
-                    returned (§7.5)
+                    test; if the test finds no containing boundary, a data
+                    integrity failure is assumed and NotFoundResponse is returned
 
-    All element lists in LocationValidation are sorted to hierarchical order
-    (§7.1).
+    All element lists in LocationValidation are sorted to hierarchical order.
     """
     if result.outcome == "not_found":
         return NotFoundResponse()
@@ -193,9 +190,9 @@ def assemble(
 
     if result.outcome == "invalid":
         # Non-conforming result — no matched GIS record, so geometric mapping
-        # selection (§7.5) is not applicable. Use civic coverage lookup (§3.5.2)
-        # to select the most specific boundary for the validated admin prefix,
-        # falling back to the Gate 0 candidate (§3.2) if unavailable.
+        # selection is not applicable. Use civic coverage lookup to select the
+        # most specific boundary for the validated admin prefix, falling back
+        # to the Gate 0 candidate if unavailable.
         default_mapping_returned = False
         mapping = []
 
@@ -224,13 +221,13 @@ def assemble(
             default_mapping_returned=default_mapping_returned,
         )
 
-    # outcome == "match" — derive representative point for §7.5 selection
+    # outcome == "match" — derive representative point for point-in-polygon selection
     record = result.record
     if result.layer == "SSAP":
-        # SSAP: the address point geometry is the representative point (§7.5)
+        # SSAP: the address point geometry is the representative point
         point: Optional[Point] = getattr(record, "geometry", None)
     else:
-        # RCL: perpendicular offset 0.0001° toward the determined side (§7.5)
+        # RCL: perpendicular offset 0.0001° toward the determined side
         geom = getattr(record, "geometry", None)
         point = (
             _rcl_representative_point(geom, result.side)
@@ -241,9 +238,9 @@ def assemble(
     mappings = _select_mappings(point, boundaries, server_uri, display_name_lang)
 
     if not mappings:
-        # Point-in-polygon found no containing boundary (§7.5): this indicates
-        # a data integrity failure between the coverage region and service
-        # boundary data. Return notFound rather than a validation result.
+        # Point-in-polygon found no containing boundary: this indicates a data
+        # integrity failure between the coverage region and service boundary
+        # data. Return notFound rather than a validation result.
         return NotFoundResponse()
 
     complete_record = (
@@ -266,6 +263,6 @@ def assemble(
 def unavailable() -> LocationValidationUnavailableResponse:
     """
     Return a locationValidationUnavailable response for system-level failures
-    where the LVF temporarily cannot fulfill the validation request (§7.4).
+    where the LVF temporarily cannot fulfill the validation request.
     """
     return LocationValidationUnavailableResponse()

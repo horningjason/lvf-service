@@ -36,6 +36,7 @@ from src import gate0, gate1, gate2, response_assembly
 from src.utils import _is_temporally_active
 from src.models import (
     ELEMENT_HIERARCHY,
+    BadRequestResponse,
     CivicAddress,
     CivicCoverageEntry,
     ForbiddenResponse,
@@ -146,6 +147,42 @@ if not _default_mapping_source_id:
 
 _SERVER_START_TIME: str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+# XML schema (loaded once at startup; None disables validation rather than refusing all requests)
+_schema: Optional[etree.XMLSchema] = None
+
+
+def _load_schema() -> Optional[etree.XMLSchema]:
+    schema_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "schemas")
+    lost1_xsd = os.path.join(schema_dir, "lost1.xsd")
+    try:
+        schema_doc = etree.parse(lost1_xsd)
+        compiled = etree.XMLSchema(schema_doc)
+        log.info("XML schema loaded from %s", lost1_xsd)
+        return compiled
+    except Exception as exc:
+        log.warning(
+            "Could not load XML schema from %s: %s — schema validation disabled",
+            lost1_xsd, exc,
+        )
+        return None
+
+
+def _validate_schema(body: bytes) -> Optional[str]:
+    """Return None if body passes schema validation, or a human-readable error string."""
+    if _schema is None:
+        return None
+    try:
+        doc = etree.fromstring(body)
+    except etree.XMLSyntaxError as exc:
+        return f"Malformed XML: {exc}"
+    if _schema.validate(doc):
+        return None
+    error_log = _schema.error_log
+    if error_log:
+        first = error_log[0]
+        return f"{first.message} (line {first.line})"
+    return "Request does not conform to the LoST findService schema"
+
 # EXPERIMENTAL — Similar Location Extension (draft-ietf-ecrit-similar-location-19, unpublished draft).
 # Implements Phase 1 (completeLocation) only. Disabled by default.
 # When False the extension is completely invisible — no namespace, no element, no attribute parsing.
@@ -153,7 +190,7 @@ _enable_similar_location_extension: bool = (
     os.environ.get("LVF_ENABLE_SIMILAR_LOCATION", "").lower() in ("1", "true", "yes")
 )
 
-# URN aliases for urn:service:sos (§3.6). Requests for these URNs are processed against the
+# URN aliases for urn:service:sos. Requests for these URNs are processed against the
 # provisioned urn:service:sos boundaries; the response mapping echoes the requested URN.
 _sos_alias_urns: frozenset[str] = frozenset(
     urn.strip().lower()
@@ -164,7 +201,7 @@ _sos_alias_urns: frozenset[str] = frozenset(
 
 def _resolve_service_urn(requested_urn: str) -> tuple[str, bool]:
     """
-    Resolve a requested service URN to the effective provisioned URN (§3.6).
+    Resolve a requested service URN to the effective provisioned URN.
 
     Returns (effective_urn, is_alias). When is_alias is True, Gate 0 and boundary
     selection use effective_urn (urn:service:sos), but all mapping elements in the
@@ -426,6 +463,11 @@ def _load_gis_data(gpkg_path: str) -> None:
 
 def initialize(gpkg_path: str | None = None) -> None:
     """Load GIS data for use by handle_find_service(). Call once before the first request."""
+    global _schema
+    _schema = _load_schema()
+    if _schema is None:
+        log.warning("Operating without XML schema validation")
+
     path = gpkg_path or os.environ.get("LVF_GPKG_PATH")
     if path:
         _load_gis_data(path)
@@ -450,14 +492,14 @@ def _derive_geodetic_coverage() -> None:
 
 def _derive_civic_coverage() -> None:
     """
-    Derive the civic coverage region lookup table from RCL and service boundaries (§3.5.1).
+    Derive the civic coverage region lookup table from RCL and service boundaries.
 
     For each RCL record and each side (L/R):
     - Compute perpendicular test point 0.0001 degrees from segment midpoint
     - Point-in-polygon test against service boundaries
     - If inside: record (admin_tuple, boundary) association
 
-    Then aggregate at three levels per §3.5.1 ("apply the same aggregation logic for
+    Then aggregate at three levels ("apply the same aggregation logic for
     A4 and A5 where present"):
     - A3: if ALL A3 values within (country, A1, A2) map to the same boundary →
            wildcard entry (A3=None, A4=None, A5=None)
@@ -614,7 +656,7 @@ def lookup_civic_coverage(
     a5: Optional[str] = None,
 ) -> Optional[CivicCoverageEntry]:
     """
-    Longest-prefix match against the civic coverage region (§3.5.2).
+    Longest-prefix match against the civic coverage region.
     Returns the most specific matching entry, or None if no match.
     Comparison is case-insensitive.
     """
@@ -667,8 +709,8 @@ def _parse_request(body: bytes) -> ValidationRequest:
     """
     Parse a LoST findService XML request (RFC 5222) into a ValidationRequest.
 
-    Preserves the omitted-vs-empty distinction (§4.3): elements absent from
-    the PIDF-LO produce None; elements present but empty produce "".
+    Preserves the omitted-vs-empty distinction: elements absent from the
+    PIDF-LO produce None; elements present but empty produce "".
     Raises ValueError for malformed or structurally incomplete requests.
     """
     try:
@@ -815,6 +857,7 @@ def _serialize_errors(resp) -> etree._Element:
     err  = etree.SubElement(root, f"{{{_NS_LOST}}}{resp.type}")
     err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
     err.text = {
+        "badRequest":             getattr(resp, "message", None) or "Request does not conform to the LoST findService schema",
         "forbidden":              "This server is provisioned as a Location Validation Function (LVF). Only requests with validateLocation='true' are accepted.",
         "notFound":               "No matching address record found",
         "locationInvalid":        getattr(resp, "message", None) or "Required element missing or empty",
@@ -897,6 +940,10 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     Mirrors the /validate endpoint without requiring an HTTP request object.
     Raises ValueError for malformed XML. Call initialize() once before using this.
     """
+    schema_error = _validate_schema(xml_bytes)
+    if schema_error is not None:
+        return _to_xml_response(BadRequestResponse(message=schema_error), status=400).body
+
     req = _parse_request(xml_bytes)
 
     if req.validate_location != "true":
@@ -931,7 +978,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         server_uri=_server_uri,
         display_name_lang=_display_name_lang,
     )
-    # §3.6 — alias URN: override service_urn in all mapping elements to echo the requested URN
+    # Alias URN: override service_urn in all mapping elements to echo the requested URN
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
@@ -944,6 +991,11 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    global _schema
+    _schema = _load_schema()
+    if _schema is None:
+        log.warning("Operating without XML schema validation")
+
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     if gpkg_path:
         _load_gis_data(gpkg_path)
@@ -1097,6 +1149,10 @@ async def validate(request: Request) -> Response:
     """
     body = await request.body()
 
+    schema_error = _validate_schema(body)
+    if schema_error is not None:
+        return _to_xml_response(BadRequestResponse(message=schema_error), status=400)
+
     try:
         req = _parse_request(body)
     except ValueError as exc:
@@ -1105,24 +1161,24 @@ async def validate(request: Request) -> Response:
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200)
 
-    # §3.6 — resolve alias URN to the effective provisioned URN
+    # Resolve alias URN to the effective provisioned URN
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
-    # Single datetime.now(UTC) captured once per request (§3.8)
+    # Single datetime.now(UTC) captured once per request
     now = datetime.datetime.now(datetime.timezone.utc)
 
-    # Gate 0 — service URN / boundary check (§3.1)
+    # Gate 0 — service URN / boundary check
     g0 = gate0.check(effective_urn, _boundaries, now)
     if g0 is not None:
         return _to_xml_response(g0, status=200)
 
-    # Gate 1 — structural conformance (§4)
+    # Gate 1 — structural conformance
     g1 = gate1.check(req.civic_address)
     if g1 is not None:
         return _to_xml_response(g1, status=200)
 
-    # Gate 2 — progressive filter (§5)
-    # Pre-filter boundaries to the effective URN for response assembly (§7.5)
+    # Gate 2 — progressive filter
+    # Pre-filter boundaries to the effective URN for response assembly
     matched_boundaries = [
         b for b in _boundaries
         if b.service_urn.lower() == effective_urn.lower()
@@ -1142,7 +1198,7 @@ async def validate(request: Request) -> Response:
         server_uri=_server_uri,
         display_name_lang=_display_name_lang,
     )
-    # §3.6 — alias URN: override service_urn in all mapping elements to echo the requested URN
+    # Alias URN: override service_urn in all mapping elements to echo the requested URN
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn

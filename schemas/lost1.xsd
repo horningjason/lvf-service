@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LoST findService request schema — lost1: namespace (RFC 5222, updated per
+  draft-ietf-ecrit-lost-planned-changes-15 §6).
+
+  Imports civicAddr.xsd, civicAddr-ext.xsd, and nenaCivicAddr2.xsd so that
+  lxml resolves cross-namespace element references when validating civic address
+  content inside <location>.
+
+  The <findService> content model uses xs:choice minOccurs="0" maxOccurs="unbounded"
+  to accept <location>, <service>, and extension elements (e.g. planned:asOf) in
+  any order.  Structural requirements (exactly one service URN, location required
+  for validateLocation="true") are enforced by Gate 1, not the schema.
+
+  The <location> content model uses xs:any namespace="##any" processContents="lax"
+  so that ca:civicAddress is routed to civicAddr.xsd for strict namespace checking,
+  while preserving the extensibility point for geodetic and other profiles.
+-->
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:ietf:params:xml:ns:lost1"
+    elementFormDefault="qualified">
+
+  <xs:import namespace="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+             schemaLocation="civicAddr.xsd"/>
+  <xs:import namespace="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
+             schemaLocation="civicAddr-ext.xsd"/>
+  <xs:import namespace="urn:nena:xml:ns:pidf:nenaCivicAddr2"
+             schemaLocation="nenaCivicAddr2.xsd"/>
+
+  <xs:element name="findService">
+    <xs:complexType>
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+
+        <xs:element name="location">
+          <xs:complexType>
+            <xs:sequence>
+              <!-- lax: validates ca:civicAddress against civicAddr.xsd when present -->
+              <xs:any namespace="##any" processContents="lax"
+                      minOccurs="0" maxOccurs="unbounded"/>
+            </xs:sequence>
+            <xs:attribute name="id"      type="xs:token" use="required"/>
+            <xs:attribute name="profile" type="xs:token"/>
+            <xs:anyAttribute namespace="##any" processContents="lax"/>
+          </xs:complexType>
+        </xs:element>
+
+        <xs:element name="service" type="xs:anyURI"/>
+
+        <!-- Extension elements from other namespaces (e.g. planned:asOf, rli:*) -->
+        <xs:any namespace="##other" processContents="lax"/>
+
+      </xs:choice>
+
+      <xs:attribute name="validateLocation" type="xs:string"/>
+      <xs:attribute name="recursive"        type="xs:boolean"/>
+      <xs:attribute name="serviceBoundary">
+        <xs:simpleType>
+          <xs:restriction base="xs:token">
+            <xs:enumeration value="value"/>
+            <xs:enumeration value="reference"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <!-- Extension attributes from other namespaces (e.g. rli:returnAdditionalLocation) -->
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

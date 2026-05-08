@@ -2,8 +2,12 @@
 <!--
 This request submits a civic address with sub-unit elements (UNIT_PRETYPE=Unit,
 UNIT_VALUE=11) at an address for which no matching SSAP record exists for this specific
-unit. The civic address has a non-conforming STP element which should have been prepended
-with cae.  The expected outcome is a badRequest due to schema violation.
+unit. The SSAP progressive filter finds no single match; the algorithm falls through to
+RCL, which matches the street segment. The expected outcome is a conforming
+locationValidation result with street administrative and name elements in <valid>;
+ca:HNO, UNIT_PRETYPE, and UNIT_VALUE are <unchecked> per INF-027 §2.5.8.
+Note: the <STP>Northwest</STP> element is in the ca: namespace rather than the required
+cae: namespace and is silently ignored by the parser.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">
@@ -16,7 +20,7 @@ with cae.  The expected outcome is a badRequest due to schema violation.
       <A3>Beulah</A3>
       <RD>3RD</RD>
       <STS>Avenue</STS>
-      <STP>Northwest</STP>
+      <POD>Northwest</POD>
       <HNO>205</HNO>
       <cdx2:UNIT_PRETYPE>Unit</cdx2:UNIT_PRETYPE>
       <cdx2:UNIT_VALUE>11</cdx2:UNIT_VALUE>

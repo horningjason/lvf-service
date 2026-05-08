@@ -1,9 +1,9 @@
 """
-Gate 2 — Progressive Filter (§5).
+Gate 2 — Progressive Filter.
 
 The filter simultaneously identifies the authoritative GIS record and evaluates
 submitted PIDF-LO elements in hierarchical order. No separate GIS investigation
-step precedes element evaluation — the two are the same operation (§5).
+step precedes element evaluation — the two are the same operation.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from src.models import (
 
 
 # ---------------------------------------------------------------------------
-# GIS field mappings (STA-006.3 standardized names per §5.7, §6)
+# GIS field mappings (STA-006.3 standardized names)
 # ---------------------------------------------------------------------------
 
 # CivicAddress field → SSAPRecord attribute name
@@ -42,7 +42,7 @@ _SSAP_FIELD: dict[str, str] = {
     "sts":          "st_postyp",
     "pod":          "st_posdir",
     "pom":          "st_posmod",
-    # hno handled separately — integer comparison (§5.6.1)
+    # hno handled separately — integer comparison
     "hnp":          "addnum_pre",
     "hns":          "addnum_suf",
     "mp":           "distmarker",
@@ -66,7 +66,7 @@ _SSAP_FIELD: dict[str, str] = {
 # CivicAddress field → RCLRecord field mapping.
 # Tuples are (left_attr, right_attr) for side-specific fields.
 # Plain strings are shared fields (same value for both sides).
-# hno is not listed here — it uses range/parity/flag logic (§5.6.2).
+# hno is not listed here — it uses range/parity/flag logic.
 # rcl_unchecked fields are not listed — they never reach this lookup.
 _RCL_FIELD: dict[str, str | tuple[str, str]] = {
     "country": ("country_l", "country_r"),
@@ -75,7 +75,7 @@ _RCL_FIELD: dict[str, str | tuple[str, str]] = {
     "a3":      ("a3_l",      "a3_r"),
     "a4":      ("a4_l",      "a4_r"),
     "a5":      ("a5_l",      "a5_r"),
-    "rd":      "st_name",       # §6.2 — shared across both sides
+    "rd":      "st_name",       # shared across both sides
     "prm":     "st_premod",
     "prd":     "st_predir",
     "stp":     "st_pretyp",
@@ -83,8 +83,8 @@ _RCL_FIELD: dict[str, str | tuple[str, str]] = {
     "sts":     "st_postyp",
     "pod":     "st_posdir",
     "pom":     "st_posmod",
-    "hnp":     ("adnumpre_l", "adnumpre_r"),   # §6.3 — side-specific post-HNO
-    "pcn":     ("postcomm_l", "postcomm_r"),   # §6.5 — side-specific post-HNO
+    "hnp":     ("adnumpre_l", "adnumpre_r"),   # side-specific post-HNO
+    "pcn":     ("postcomm_l", "postcomm_r"),   # side-specific post-HNO
     "pc":      ("postcode_l", "postcode_r"),
 }
 
@@ -103,22 +103,22 @@ _PIDF_TO_FIELD: dict[str, str] = {
 # Return type
 # ---------------------------------------------------------------------------
 
-# RCL candidates carry a per-record determined side after HNO evaluation (§5.4)
+# RCL candidates carry a per-record determined side after HNO evaluation
 _RCLCandidate = tuple[RCLRecord, Optional[Literal["L", "R"]]]
 
 
 @dataclass
 class Gate2Result:
     """
-    Outcome of the Gate 2 progressive filter (§5).
+    Outcome of the Gate 2 progressive filter.
 
     outcome:
         "match"     — exactly one candidate found; record and layer are set
-        "invalid"   — stop-on-first-invalid fired (§5.8); state.invalid is set
-        "not_found" — no single candidate on any available layer (§5.3)
+        "invalid"   — stop-on-first-invalid fired; state.invalid is set
+        "not_found" — no single candidate on any available layer
     side:
         Determined RCL side when layer is "RCL" and outcome is "match".
-        Used by response assembly for the §7.5 point-in-polygon test.
+        Used by response assembly for the point-in-polygon test.
     """
     state:   FilterState
     outcome: Literal["match", "invalid", "not_found"]
@@ -132,7 +132,7 @@ class Gate2Result:
 # ---------------------------------------------------------------------------
 
 def _parity_ok(hno: int, parity: Optional[Literal["E", "O", "B"]]) -> bool:
-    """Return True if hno satisfies the given parity constraint (§5.6.2)."""
+    """Return True if hno satisfies the given parity constraint."""
     if parity is None or parity == "B":
         return True
     return (hno % 2 == 0) == (parity == "E")
@@ -140,7 +140,7 @@ def _parity_ok(hno: int, parity: Optional[Literal["E", "O", "B"]]) -> bool:
 
 def _str_match(submitted: str, gis: Optional[str]) -> bool:
     """
-    Case-insensitive exact string comparison per §5.7.
+    Case-insensitive exact string comparison.
     An empty submitted value matches an empty GIS field (INF-027 §2.5.7).
     """
     return submitted.lower() == (gis or "").lower()
@@ -149,8 +149,8 @@ def _str_match(submitted: str, gis: Optional[str]) -> bool:
 def _seed_unchecked(state: FilterState, address: CivicAddress, is_rcl: bool) -> None:
     """
     Pre-populate state.unchecked with submitted elements that will never enter
-    the filter loop: always-unchecked (§5.5.1) and, on RCL, rcl-only unchecked
-    (§5.5.2). Called once before the filter loop begins.
+    the filter loop: always-unchecked elements and, on RCL, rcl-only unchecked
+    elements. Called once before the filter loop begins.
     """
     for elem in ELEMENT_HIERARCHY:
         if elem.always_unchecked or (is_rcl and elem.rcl_unchecked):
@@ -166,7 +166,7 @@ def _flush_remaining_to_unchecked(
 ) -> None:
     """
     After stop-on-first-invalid fires at stopped_at_field, place all remaining
-    submitted evaluable elements into state.unchecked (§5.8).
+    submitted evaluable elements into state.unchecked.
 
     Skips elements already handled: always-unchecked (pre-seeded), rcl-unchecked
     when is_rcl (pre-seeded), and elements at or before the stop position.
@@ -184,7 +184,7 @@ def _flush_remaining_to_unchecked(
 
 
 # ---------------------------------------------------------------------------
-# SSAP progressive filter (§5.1 Step 1, §5.6.1)
+# SSAP progressive filter
 # ---------------------------------------------------------------------------
 
 def _filter_ssap(
@@ -194,8 +194,8 @@ def _filter_ssap(
     """
     Run the progressive filter against the SSAP layer.
 
-    HNO uses exact integer comparison against Add_Number (§5.6.1).
-    All other evaluable fields use case-insensitive exact string match (§5.7).
+    HNO uses exact integer comparison against Add_Number.
+    All other evaluable fields use case-insensitive exact string match.
     """
     state = FilterState()
     _seed_unchecked(state, address, is_rcl=False)
@@ -210,10 +210,10 @@ def _filter_ssap(
         field = elem.civic_address_field
         submitted = getattr(address, field)
         if submitted is None:
-            continue  # omitted — §5.2: skip, do not add to any list
+            continue  # omitted — skip, do not add to any list
 
         if field == "hno":
-            # §5.6.1 — integer comparison against Add_Number
+            # Integer comparison against Add_Number
             try:
                 hno_int = int(submitted)
                 candidates = [r for r in candidates if r.add_number == hno_int]
@@ -234,14 +234,14 @@ def _filter_ssap(
             state.terminal = True
             break
 
-        # §5.2: non-zero candidate set → element evaluated successfully → <valid>
+        # non-zero candidate set → element evaluated successfully → <valid>
         state.valid.append(elem.pidf_lo)
 
     return state, candidates
 
 
 # ---------------------------------------------------------------------------
-# RCL progressive filter (§5.1 Step 2, §5.4, §5.6.2)
+# RCL progressive filter
 # ---------------------------------------------------------------------------
 
 def _filter_rcl(
@@ -252,8 +252,8 @@ def _filter_rcl(
     Run the progressive filter against the RCL layer.
 
     Candidates are (RCLRecord, side) tuples. Side is None until HNO evaluation
-    determines it (§5.4). After HNO, side-specific fields are evaluated against
-    the per-record determined side only.
+    determines it. After HNO, side-specific fields are evaluated against the
+    per-record determined side only.
 
     Pre-HNO side-specific elements (country, A1–A5) match if either side
     satisfies the submitted value — side is not yet known. Post-HNO side-specific
@@ -280,8 +280,8 @@ def _filter_rcl(
             continue
 
         if field == "hno":
-            # §5.6.2 — range + parity + validation flag; each matching side
-            # yields a separate (record, side) candidate entry.
+            # Range + parity + validation flag; each matching side yields a
+            # separate (record, side) candidate entry.
             try:
                 hno_int = int(submitted)
             except ValueError:
@@ -306,13 +306,13 @@ def _filter_rcl(
                 candidates = new
 
             if not candidates:
-                # candidate_set = 0 — stop-on-first-invalid (§5.8)
+                # candidate_set = 0 — stop-on-first-invalid
                 state.invalid = elem.pidf_lo
                 _flush_remaining_to_unchecked(state, address, field, is_rcl=True)
                 state.terminal = True
                 break
 
-            # HNO retained candidates — always unchecked on RCL, never valid (§5.6.2)
+            # HNO retained candidates — always unchecked on RCL, never valid
             state.unchecked.append(elem.pidf_lo)
             side_determined = True
 
@@ -328,7 +328,7 @@ def _filter_rcl(
                     if _str_match(submitted, getattr(r, field_spec))
                 ]
             elif not side_determined:
-                # Pre-HNO side-specific: retain if either side matches (§5.4)
+                # Pre-HNO side-specific: retain if either side matches
                 left_attr, right_attr = field_spec
                 candidates = [
                     (r, s) for r, s in candidates
@@ -336,7 +336,7 @@ def _filter_rcl(
                         or _str_match(submitted, getattr(r, right_attr)))
                 ]
             else:
-                # Post-HNO: use the per-record determined side (§5.4)
+                # Post-HNO: use the per-record determined side
                 left_attr, right_attr = field_spec
                 candidates = [
                     (r, s) for r, s in candidates
@@ -352,7 +352,7 @@ def _filter_rcl(
                 state.terminal = True
                 break
 
-            # §5.2: non-zero candidate set → element evaluated successfully → <valid>
+            # non-zero candidate set → element evaluated successfully → <valid>
             state.valid.append(elem.pidf_lo)
 
     return state, candidates
@@ -369,27 +369,27 @@ def run(
     now: datetime.datetime,
 ) -> Gate2Result:
     """
-    Execute the Gate 2 progressive filter per §5.
+    Execute the Gate 2 progressive filter.
 
     Layer search order: SSAP first, RCL if SSAP does not yield exactly one
-    record (§5.1). If SSAP is absent or empty, proceed directly to RCL.
+    record. If SSAP is absent or empty, proceed directly to RCL.
 
-    notFound is returned when (§5.3):
+    notFound is returned when:
     - Both layers are absent or empty
     - All elements exhausted with candidate_set ≥ 2 on every available layer
     """
     active_ssap = [r for r in ssap_records if _is_temporally_active(r.effective, r.expire, now)]
     active_rcl  = [r for r in rcl_records  if _is_temporally_active(r.effective, r.expire, now)]
 
-    # Step 1: SSAP (§5.1)
+    # Step 1: SSAP
     if active_ssap:
         ssap_state, ssap_candidates = _filter_ssap(address, active_ssap)
         if ssap_state.terminal:
             failing_idx = _ELEM_INDEX[_PIDF_TO_FIELD[ssap_state.invalid]]
             if failing_idx < _ELEM_INDEX["hno"]:
-                # Pre-HNO failure is authoritative — RCL cannot help (§5.1)
+                # Pre-HNO failure is authoritative — RCL cannot help
                 return Gate2Result(state=ssap_state, outcome="invalid", layer="SSAP")
-            # HNO or below — discard SSAP result and let RCL decide (§5.1)
+            # HNO or below — discard SSAP result and let RCL decide
         if len(ssap_candidates) == 1:
             return Gate2Result(
                 state=ssap_state,
@@ -397,9 +397,9 @@ def run(
                 layer="SSAP",
                 record=ssap_candidates[0],
             )
-        # terminal at HNO or below — discarded, fall through to RCL per §5.1. 2+ means ambiguous.
+        # terminal at HNO or below — discarded, fall through to RCL. 2+ means ambiguous.
 
-    # Step 2: RCL (§5.1)
+    # Step 2: RCL
     if active_rcl:
         rcl_state, rcl_candidates = _filter_rcl(address, active_rcl)
         if rcl_state.terminal:
@@ -414,7 +414,7 @@ def run(
                 record=record,
                 side=side,
             )
-        # 2+ candidates → ambiguous on all layers → notFound (§5.3)
+        # 2+ candidates → ambiguous on all layers → notFound
 
-    # All layers exhausted with no single candidate (§5.3)
+    # All layers exhausted with no single candidate
     return Gate2Result(state=FilterState(), outcome="not_found")

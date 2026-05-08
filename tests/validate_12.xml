@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 This request submits a civic address with an explicitly empty UNIT_VALUE element
-(tag present, no text content). Per §4.3, an empty element matches a GIS field that
+(tag present, no text content). An empty element matches a GIS field that
 is null or empty. The expected outcome is a conforming locationValidation result
 with UNIT_VALUE appearing in <valid>, confirming the empty-element match behavior.
 The civic address matches a provisioned SSAP record.

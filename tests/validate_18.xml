@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 This request specifies an alias service URN (urn:emergency:service:sos.psap) configured
-via LVF_SOS_ALIAS_URNS. Per §3.6, Gate 0 accepts configured alias URNs and routes them
+via LVF_SOS_ALIAS_URNS. Gate 0 accepts configured alias URNs and routes them
 against the provisioned urn:service:sos boundaries; the response <mapping> echoes the
 requested alias URN rather than the canonical urn:service:sos. The civic address matches
 a provisioned SSAP record.
