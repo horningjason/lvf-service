@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a civic address with a non-integer HNO value (123A). Gate 1 passes
+because HNO is present and non-empty. Gate 2 fails at ca:HNO because SSAP comparison
+requires an exact integer match (§5.6.1) and the value cannot be parsed as an integer.
+The expected outcome is a non-conforming locationValidation result with ca:HNO as the
+<invalid> element. This is distinct from an empty HNO (validate_22), which fails at
+Gate 1.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>123A</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request specifies a service URN (urn:service:fire) for which no service boundary
+is provisioned. Gate 0 checks for a provisioned boundary matching the requested URN;
+finding none, it returns a <serviceNotImplemented> error response.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:fire</service>
+</findService>

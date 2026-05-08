@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a valid civic address at a location where multiple SSAP records
+exist (one per dwelling unit). Because no sub-unit elements are included, the SSAP
+progressive filter retains all unit records as candidates and produces no single match.
+The algorithm falls through to RCL, which matches the street segment. The expected
+outcome is a conforming locationValidation result with street administrative and name
+elements in <valid> and ca:HNO in <unchecked> per INF-027 §2.5.8.
+-->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">
     <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US" >
@@ -6,10 +14,10 @@
       <A1>ND</A1>
       <A2>Burleigh County</A2>
       <A3>Bismarck</A3>
-	  <PRD>North</PRD>
+	    <PRD>North</PRD>
       <RD>19th</RD>
-	  <STS>Street</STS>
-	  <HNO>3540</HNO>
+	    <STS>Street</STS>
+	    <HNO>3540</HNO>
     </civicAddress>
   </location>
   <service>urn:service:sos</service>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a civic address with an A3 value (NoSuchCity) that does not match
+any provisioned GIS record. Gate 2 fails at ca:A3; subsequent submitted elements
+(ca:RD, ca:STS, ca:HNO) are <unchecked> per the stop-on-first-invalid rule (§5.8).
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>NoSuchCity</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

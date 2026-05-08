@@ -8,9 +8,11 @@ step precedes element evaluation — the two are the same operation (§5).
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from src.utils import _is_temporally_active
 from src.models import (
     ELEMENT_HIERARCHY,
     CivicAddress,
@@ -304,19 +306,6 @@ def _filter_rcl(
                 candidates = new
 
             if not candidates:
-                for record, _ in pre_hno:
-                    if (record.fromaddr_l is not None
-                            and record.toaddr_l is not None
-                            and record.fromaddr_l <= hno_int <= record.toaddr_l
-                            and _parity_ok(hno_int, record.parity_l)):
-                        state.all_flags_n = True
-                        break
-                    if (record.fromaddr_r is not None
-                            and record.toaddr_r is not None
-                            and record.fromaddr_r <= hno_int <= record.toaddr_r
-                            and _parity_ok(hno_int, record.parity_r)):
-                        state.all_flags_n = True
-                        break
                 # candidate_set = 0 — stop-on-first-invalid (§5.8)
                 state.invalid = elem.pidf_lo
                 _flush_remaining_to_unchecked(state, address, field, is_rcl=True)
@@ -377,6 +366,7 @@ def run(
     address: CivicAddress,
     ssap_records: list[SSAPRecord],
     rcl_records: list[RCLRecord],
+    now: datetime.datetime,
 ) -> Gate2Result:
     """
     Execute the Gate 2 progressive filter per §5.
@@ -388,9 +378,12 @@ def run(
     - Both layers are absent or empty
     - All elements exhausted with candidate_set ≥ 2 on every available layer
     """
+    active_ssap = [r for r in ssap_records if _is_temporally_active(r.effective, r.expire, now)]
+    active_rcl  = [r for r in rcl_records  if _is_temporally_active(r.effective, r.expire, now)]
+
     # Step 1: SSAP (§5.1)
-    if ssap_records:
-        ssap_state, ssap_candidates = _filter_ssap(address, ssap_records)
+    if active_ssap:
+        ssap_state, ssap_candidates = _filter_ssap(address, active_ssap)
         if ssap_state.terminal:
             failing_idx = _ELEM_INDEX[_PIDF_TO_FIELD[ssap_state.invalid]]
             if failing_idx < _ELEM_INDEX["hno"]:
@@ -407,11 +400,9 @@ def run(
         # terminal at HNO or below — discarded, fall through to RCL per §5.1. 2+ means ambiguous.
 
     # Step 2: RCL (§5.1)
-    if rcl_records:
-        rcl_state, rcl_candidates = _filter_rcl(address, rcl_records)
+    if active_rcl:
+        rcl_state, rcl_candidates = _filter_rcl(address, active_rcl)
         if rcl_state.terminal:
-            if rcl_state.all_flags_n:
-                return Gate2Result(state=FilterState(), outcome="not_found")
             return Gate2Result(state=rcl_state, outcome="invalid", layer="RCL")
         if len(rcl_candidates) == 1:
             record, side = rcl_candidates[0]

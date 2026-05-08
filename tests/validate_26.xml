@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a civic address whose matching RCL record has an Expire date in
+the past. The expired record is excluded at query time, leaving no active record
+covering HNO 1501. Gate 2 fails at ca:HNO. The expected outcome is a non-conforming
+locationValidation result with ca:HNO as the <invalid> element.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>57th</RD>
+      <STS>Avenue</STS>
+      <POD>Northwest</POD>
+      <HNO>1501</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

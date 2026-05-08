@@ -1,15 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a valid civic address that includes a postal code (PC). The
+civic address matches a provisioned RCL segment. The expected outcome is a conforming
+locationValidation result with all submitted street elements and PC in <valid>.
+Per INF-027 §2.5.8, HNO is always <unchecked> on an RCL match.
+-->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">
     <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US" >
       <country>US</country>
       <A1>ND</A1>
       <A2>Burleigh County</A2>
-	  <A3>Bismarck</A3>    
+	    <A3>Bismarck</A3>    
       <RD>State</RD>
-	  <STS>Street</STS>
+	    <STS>Street</STS>
       <HNO>3401</HNO>
-	  <PC>58503</PC>
+	    <PC>58503</PC>
     </civicAddress>
   </location>
   <service>urn:service:sos</service>

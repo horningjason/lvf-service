@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request includes rli:returnAdditionalLocation="complete" to invoke the Similar
+Location Extension (draft-ietf-ecrit-similar-location-19). The civic address uniquely
+matches a provisioned SSAP record. The expected outcome is a conforming locationValidation
+result with all submitted elements in <valid>, plus an <rli:completeLocation> element
+containing the full provisioned GIS record for the matched SSAP point, including fields
+not present in the original request.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1"
+             xmlns:rli="urn:ietf:params:xml:ns:lost-rli1"
+             validateLocation="true"
+             rli:returnAdditionalLocation="complete">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+                     xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+	    <PRD>North</PRD>
+      <RD>19th</RD>
+	    <STS>Street</STS>
+	    <HNO>3420</HNO>
+      <cdx2:UNIT_PRETYPE>Unit</cdx2:UNIT_PRETYPE>
+      <cdx2:UNIT_VALUE>11</cdx2:UNIT_VALUE>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

@@ -54,17 +54,17 @@ def _build_location_validation(state) -> LocationValidation:
     )
 
 
-def _boundary_to_mapping(b: ServiceBoundary) -> MappingElement:
+def _boundary_to_mapping(b: ServiceBoundary, server_uri: str, display_name_lang: str) -> MappingElement:
     return MappingElement(
         service_urn=b.service_urn,
         expires=b.expires,
         last_updated=b.last_updated,
-        source=None,
+        source=server_uri,
         source_id=b.nguid or b.source_id,
         service_uri=b.service_uri,
         service_num=b.service_num,
         display_name=b.display_name,
-        display_name_lang=None,  # resolved to _display_name_lang at serialization time
+        display_name_lang=display_name_lang,
     )
 
 
@@ -133,6 +133,8 @@ def _rcl_representative_point(
 def _select_mappings(
     point: Optional[Point],
     boundaries: list[ServiceBoundary],
+    server_uri: str,
+    display_name_lang: str,
 ) -> list[MappingElement]:
     """
     Return a MappingElement for every boundary polygon that contains point
@@ -144,7 +146,7 @@ def _select_mappings(
     if point is None:
         return []
     return [
-        _boundary_to_mapping(b)
+        _boundary_to_mapping(b, server_uri, display_name_lang)
         for b in boundaries
         if b.geometry is not None and b.geometry.contains(point)
     ]
@@ -162,6 +164,8 @@ def assemble(
     civic_coverage_lookup=None, # callable(country, a1, a2, a3, ...) → CivicCoverageEntry | None
     default_mapping_factory=None, # callable(service_urn: str) → MappingElement
     return_additional_location: str = "none",  # draft-ietf-ecrit-similar-location-19 rli: attribute
+    server_uri: str = "",
+    display_name_lang: str = "en",
 ) -> FindServiceResponse:
     """
     Assemble a findServiceResponse from a Gate2Result and the list of service
@@ -205,7 +209,7 @@ def assemble(
                 a5=address.a5     if "ca:A5"      in result.state.valid else None,
             )
             if entry is not None and entry.boundary is not None:
-                mapping = [_boundary_to_mapping(entry.boundary)]
+                mapping = [_boundary_to_mapping(entry.boundary, server_uri, display_name_lang)]
 
         if not mapping:
             if default_mapping_factory is not None:
@@ -234,7 +238,7 @@ def assemble(
             else None
         )
 
-    mappings = _select_mappings(point, boundaries)
+    mappings = _select_mappings(point, boundaries, server_uri, display_name_lang)
 
     if not mappings:
         # Point-in-polygon found no containing boundary (§7.5): this indicates
@@ -244,7 +248,7 @@ def assemble(
 
     complete_record = (
         record
-        if result.layer == "SSAP" and return_additional_location in ("complete", "any")
+        if result.layer == "SSAP" and return_additional_location == "complete"
         else None
     )
     revalidate_after = _min_expire(

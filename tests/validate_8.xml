@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a valid civic address that matches a provisioned SSAP record.
+The expected outcome is a conforming locationValidation result with all submitted
+elements in <valid>.
+-->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">
     <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US" >
@@ -7,8 +12,8 @@
       <A2>Burleigh County</A2>
       <A3>Bismarck</A3>
       <RD>Monreo</RD>
-	  <STS>Drive</STS>
-	  <HNO>3702</HNO>
+	    <STS>Drive</STS>
+	    <HNO>3702</HNO>
     </civicAddress>
   </location>
   <service>urn:service:sos</service>

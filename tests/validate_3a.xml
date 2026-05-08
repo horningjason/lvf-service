@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a civic address using a highway route number as the road name
+(RD=83) with STP=Highway, representing a naming convention not found in the provisioned
+GIS data. The LVF performs no alias resolution. Gate 2 fails at ca:RD; subsequent
+elements (cae:STP, ca:HNO, ca:PCN) are <unchecked> per the stop-on-first-invalid
+rule (§5.8).
+-->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">
     <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"

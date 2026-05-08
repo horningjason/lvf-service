@@ -347,7 +347,6 @@ class FilterState:
     unchecked:       list[str] = field(default_factory=list)
     determined_side: Optional[Literal["L", "R"]] = None
     terminal:        bool = False   # True after stop-on-first-invalid fires (§5.8)
-    all_flags_n:     bool = False   # True when HNO zeroed candidates solely via Valid_L/R='N'
 
 
 # ---------------------------------------------------------------------------

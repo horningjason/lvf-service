@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits an valid civic address.  The civic address could match against
+a Road Centerline in the system but the Road Centerline in the system has an Valid_L
+and Valid_R value equal to 'N'. Gate 2 fails at ca:HNO. The expected outcome is a 
+non-conforming locationValidation result with ca:HNO as the <invalid> element.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>McLean County</A2>
+      <A3>Washburn</A3>
+      <RD>6TH</RD>
+      <STS>Avenue</STS>
+      <HNO>835</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

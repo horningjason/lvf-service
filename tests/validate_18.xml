@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request specifies an alias service URN (urn:emergency:service:sos.psap) configured
+via LVF_SOS_ALIAS_URNS. Per §3.6, Gate 0 accepts configured alias URNs and routes them
+against the provisioned urn:service:sos boundaries; the response <mapping> echoes the
+requested alias URN rather than the canonical urn:service:sos. The civic address matches
+a provisioned SSAP record.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:emergency:service:sos.psap</service>
+</findService>

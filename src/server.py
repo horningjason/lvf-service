@@ -33,6 +33,7 @@ from fastapi import FastAPI, Request, Response
 from lxml import etree
 
 from src import gate0, gate1, gate2, response_assembly
+from src.utils import _is_temporally_active
 from src.models import (
     ELEMENT_HIERARCHY,
     CivicAddress,
@@ -332,38 +333,11 @@ def _build_default_mapping(service_urn: str) -> MappingElement:
     )
 
 
-def _is_temporally_active(
-    effective: Optional[str],
-    expire: Optional[str],
-    now: datetime.datetime,
-) -> bool:
-    """Return True if the record is active at `now` per §3.8."""
-    if effective:
-        try:
-            eff_dt = datetime.datetime.fromisoformat(effective)
-            if eff_dt.tzinfo is None:
-                eff_dt = eff_dt.replace(tzinfo=datetime.timezone.utc)
-            if eff_dt > now:
-                return False
-        except ValueError:
-            pass  # unparseable effective date — treat as no constraint
-    if expire:
-        try:
-            exp_dt = datetime.datetime.fromisoformat(expire)
-            if exp_dt.tzinfo is None:
-                exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
-            if exp_dt <= now:
-                return False
-        except ValueError:
-            pass  # unparseable expiration date — treat as no constraint
-    return True
-
 
 def _load_gis_data(gpkg_path: str) -> None:
     """Load SSAP, RCL, and all boundary layers from a GeoPackage into memory."""
     global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage
 
-    now = datetime.datetime.now(datetime.timezone.utc)
     pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
 
     if os.path.exists(pickle_path):
@@ -411,19 +385,11 @@ def _load_gis_data(gpkg_path: str) -> None:
             gdf = gpd.read_file(gpkg_path, layer=layer_name, engine="pyogrio")
             if store_name == "RCL":
                 records = [converter(row, idx) for idx, row in gdf.iterrows()]
+                _rcl = records
             else:
                 records = [converter(row) for _, row in gdf.iterrows()]
-            before = len(records)
-            records = [r for r in records if _is_temporally_active(r.effective, r.expire, now)]
-            excluded = before - len(records)
-            if store_name == "SSAP":
                 _ssap = records
-            else:
-                _rcl = records
-            log.info(
-                "Loaded %d %s records from '%s' (%d excluded by temporal filter)",
-                len(records), store_name, layer_name, excluded,
-            )
+            log.info("Loaded %d %s records from '%s'", len(records), store_name, layer_name)
         except Exception as exc:
             log.warning("Could not load %s layer '%s': %s", store_name, layer_name, exc)
 
@@ -432,14 +398,8 @@ def _load_gis_data(gpkg_path: str) -> None:
         try:
             gdf = gpd.read_file(gpkg_path, layer=layer_name, engine="pyogrio")
             records = [_row_to_boundary(row) for _, row in gdf.iterrows()]
-            before = len(records)
-            records = [r for r in records if _is_temporally_active(r.effective, r.expires, now)]
-            excluded = before - len(records)
             _boundaries.extend(records)
-            log.info(
-                "Loaded %d boundary records from '%s' (%d excluded by temporal filter)",
-                len(records), layer_name, excluded,
-            )
+            log.info("Loaded %d boundary records from '%s'", len(records), layer_name)
         except Exception as exc:
             log.warning("Could not load boundary layer '%s': %s", layer_name, exc)
 
@@ -511,9 +471,13 @@ def _derive_civic_coverage() -> None:
     global _civic_coverage
     from collections import defaultdict
 
+    now = datetime.datetime.now(datetime.timezone.utc)
+    active_rcl = [r for r in _rcl if _is_temporally_active(r.effective, r.expire, now)]
+    active_boundaries = [b for b in _boundaries if _is_temporally_active(b.effective, b.expires, now)]
+
     raw: list[tuple[dict, ServiceBoundary]] = []
 
-    for record in _rcl:
+    for record in active_rcl:
         for side in ("L", "R"):
             geom = record.geometry
             if geom is None:
@@ -522,7 +486,7 @@ def _derive_civic_coverage() -> None:
             if point is None:
                 continue
             containing = None
-            for b in _boundaries:
+            for b in active_boundaries:
                 if b.geometry is not None and b.geometry.contains(point):
                     containing = b
                     break
@@ -664,6 +628,7 @@ def lookup_civic_coverage(
 
     best: Optional[CivicCoverageEntry] = None
     best_specificity = -1
+    conflict = False
 
     for entry in _civic_coverage:
         if entry.country != c or entry.a1 != s or entry.a2 != co:
@@ -682,7 +647,15 @@ def lookup_civic_coverage(
         if specificity > best_specificity:
             best_specificity = specificity
             best = entry
+            conflict = False
+        elif specificity == best_specificity:
+            best_nguid = best.boundary.nguid if best else None
+            entry_nguid = entry.boundary.nguid
+            if best_nguid is None or entry_nguid is None or best_nguid != entry_nguid:
+                conflict = True
 
+    if conflict:
+        return None
     return best
 
 
@@ -722,6 +695,14 @@ def _parse_request(body: bytes) -> ValidationRequest:
             # Present but empty text → "" (empty); absent tag → not in fields → None
             fields[ca_field] = child.text if child.text is not None else ""
 
+    as_of_el = root.find(f"{{{_NS_PLANNED}}}asOf")
+    if as_of_el is not None and as_of_el.text and as_of_el.text.strip():
+        log.warning(
+            "Received <asOf> request element with value %s — LVF holds only current active "
+            "dataset; responding with current data per draft-ietf-ecrit-lost-planned-changes-15 §4",
+            as_of_el.text.strip(),
+        )
+
     validate_location = root.get("validateLocation", "false")
 
     return ValidationRequest(
@@ -758,7 +739,7 @@ def _mapping_element(parent: etree._Element, mapping) -> None:
     m.set("expires",     mapping.expires     or "NO-EXPIRATION")
     m.set("lastUpdated", mapping.last_updated or
           datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    m.set("source",   _server_uri)
+    m.set("source",   mapping.source or _server_uri)
     m.set("sourceId", mapping.source_id or "unknown")
 
     if mapping.display_name:
@@ -923,7 +904,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
-    g0 = gate0.check(effective_urn, _boundaries)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    g0 = gate0.check(effective_urn, _boundaries, now)
     if g0 is not None:
         return _to_xml_response(g0, status=200).body
 
@@ -934,9 +916,10 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     matched_boundaries = [
         b for b in _boundaries
         if b.service_urn.lower() == effective_urn.lower()
+        and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes) if _enable_similar_location_extension else "none"
-    g2 = gate2.run(req.civic_address, _ssap, _rcl)
+    g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
     final = response_assembly.assemble(
         g2,
         matched_boundaries,
@@ -945,6 +928,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         civic_coverage_lookup=lookup_civic_coverage,
         default_mapping_factory=_build_default_mapping,
         return_additional_location=ral,
+        server_uri=_server_uri,
+        display_name_lang=_display_name_lang,
     )
     # §3.6 — alias URN: override service_urn in all mapping elements to echo the requested URN
     if is_alias and final.type == "locationValidation":
@@ -1123,8 +1108,11 @@ async def validate(request: Request) -> Response:
     # §3.6 — resolve alias URN to the effective provisioned URN
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
+    # Single datetime.now(UTC) captured once per request (§3.8)
+    now = datetime.datetime.now(datetime.timezone.utc)
+
     # Gate 0 — service URN / boundary check (§3.1)
-    g0 = gate0.check(effective_urn, _boundaries)
+    g0 = gate0.check(effective_urn, _boundaries, now)
     if g0 is not None:
         return _to_xml_response(g0, status=200)
 
@@ -1138,9 +1126,10 @@ async def validate(request: Request) -> Response:
     matched_boundaries = [
         b for b in _boundaries
         if b.service_urn.lower() == effective_urn.lower()
+        and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(body) if _enable_similar_location_extension else "none"
-    g2 = gate2.run(req.civic_address, _ssap, _rcl)
+    g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
 
     final = response_assembly.assemble(
         g2,
@@ -1150,6 +1139,8 @@ async def validate(request: Request) -> Response:
         civic_coverage_lookup=lookup_civic_coverage,
         default_mapping_factory=_build_default_mapping,
         return_additional_location=ral,
+        server_uri=_server_uri,
+        display_name_lang=_display_name_lang,
     )
     # §3.6 — alias URN: override service_urn in all mapping elements to echo the requested URN
     if is_alias and final.type == "locationValidation":

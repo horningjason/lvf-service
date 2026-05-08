@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a civic address that does not yet match GIS candidates due to
+an EffectiveDate in the future . Gate 2 fails at HNO. The expected outcome is a 
+non-conforming locationValidation result with ca:HNO as the <invalid> element.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Frisco</RD>
+      <STS>Way</STS>
+      <HNO>2404</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
