@@ -2,7 +2,7 @@
 
 ## Project Purpose
 This is an implementation of the NG9-1-1 Location Validation Function (LVF) as specified in
-`LVF_Algorithm_Specification_current.docx`. The algorithm validates civic PIDF-LO addresses
+`LVF_Algorithm_Specification_vXX.docx`. The algorithm validates civic PIDF-LO addresses
 against provisioned GIS data using the LoST protocol (RFC 5222). 
 
 The spec and code together are designed to address the LVF consistency problem identified in 
@@ -29,7 +29,7 @@ The algorithm processes a civic PIDF-LO through three sequential gates:
 - Gate 2: Progressive filter against SSAP then RCL GIS layers → returns `<locationValidation>`
   with `<valid>`, `<invalid>`, `<unchecked>` elements, or `<notFound>`
 
-The full algorithm specification is in `LVF_Algorithm_Specification_current.docx`.
+The full algorithm specification is in `LVF_Algorithm_Specification_vXX.docx`.
 Always consult that document before making implementation decisions.
 
 ## Implementation Language
