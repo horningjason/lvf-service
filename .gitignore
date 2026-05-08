@@ -1,1 +1,4 @@
 references/
+__pycache__/
+*.pyc
+*.zip
