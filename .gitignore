@@ -1,4 +1,37 @@
-references/
+# Environment — never commit real credentials
+.env
+
+# Pickle cache generated at startup
+*.pkl
+*.pickle
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Archives
 *.zip

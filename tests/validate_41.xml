@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Protocol — missing <service> element returns <badRequest>.
+
+The LoST findService schema requires a <service> element containing the requested
+service URN. A request missing this element is structurally incomplete and must
+return a <badRequest> error response. This is distinct from validate_21
+(well-formed request with a URN that has no provisioned boundary, which returns
+<serviceNotImplemented> from Gate 0).
+
+The expected outcome is a <badRequest> error response.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+</findService>

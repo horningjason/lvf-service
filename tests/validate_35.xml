@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — notFound: no GIS candidate on either layer.
+
+Both the SSAP and RCL progressive filters exhaust all available records without
+producing a single candidate. This is distinct from a stop-on-first-invalid result
+(where at least some elements validated before failure). Here, the submitted street
+name "Phantom" does not exist in any provisioned GIS record for Bismarck; both
+filters produce an empty candidate set after evaluating ca:RD.
+
+The expected outcome is a non-conforming locationValidation result with ca:RD as
+<invalid> (stop-on-first-invalid fires at the street name level after A3 validates
+successfully) and remaining submitted elements in <unchecked>. The civic coverage
+region lookup selects the correct PSAP boundary based on the validated admin
+elements (country, A1, A2, A3).
+
+Note: pure <notFound> (zero candidates on all layers with no invalid element) requires
+both layers to be completely empty or exhausted with 2+ ambiguous candidates. The more
+common real-world scenario — and the one tested here — is an invalid at a sub-A3 level
+with a successful coverage region fallback for <mapping> selection.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Phantom</RD>
+      <STS>Avenue</STS>
+      <HNO>100</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

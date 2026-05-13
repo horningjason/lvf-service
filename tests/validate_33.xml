@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — SSAP pre-HNO failure is authoritative; RCL is not consulted.
+
+When the SSAP progressive filter fails at an element above HNO in the hierarchy
+(country, A1-A5, or any street name element), the result is immediately authoritative
+and the algorithm does NOT fall through to the RCL layer. This is the critical
+distinction from an HNO-level SSAP failure (which does fall through to RCL).
+
+This request submits A2=Morton County for Capitol Way, which exists in the provisioned
+GIS data only under Burleigh County. SSAP fails at ca:A2 (pre-HNO). The RCL layer
+also has Capitol Way provisioned under Burleigh County and would produce a match if
+tried, but it must NOT be tried. The expected outcome is a non-conforming result with
+ca:A2 as <invalid> and all remaining submitted elements in <unchecked>.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Morton County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

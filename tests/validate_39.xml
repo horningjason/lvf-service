@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Protocol — validateLocation not set to "true" returns <forbidden>.
+
+The LVF only accepts findService requests with validateLocation="true". Requests
+with validateLocation="false" (or any other value) are rejected with a <forbidden>
+error response before any gate processing occurs. This is a pre-Gate-0 check.
+
+This request is otherwise valid (correct URN, well-formed address, provisioned
+boundary exists) but uses validateLocation="false". The expected outcome is a
+<forbidden> error response. This confirms the LVF correctly enforces its
+validateLocation-only mode as specified.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="false">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

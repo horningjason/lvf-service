@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — HNS (address number suffix) is unchecked on RCL match.
+
+Per the algorithm spec, ca:HNS is defined as RCL-unchecked: when the active layer is
+RCL, HNS is never evaluated and is always placed in <unchecked> regardless of its
+value. This request submits HNS=B alongside a valid address that matches an RCL
+segment (State Street, HNO=3401, Bismarck). The expected outcome is a conforming
+result with HNO in <unchecked> (per INF-027 §2.5.8) and HNS also in <unchecked>
+(RCL-unchecked per spec §6.5.2). HNS must NOT appear in <valid> or <invalid>.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>State</RD>
+      <STS>Street</STS>
+      <HNO>3401</HNO>
+      <HNS>B</HNS>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

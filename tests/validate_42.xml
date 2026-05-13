@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Protocol — <asOf> element is accepted; current data is returned without error.
+
+The draft-ietf-ecrit-lost-planned-changes extension defines an <asOf> element that
+clients can include to request data as of a specific point in time. The LVF holds
+only the current active dataset and cannot fulfill historical queries. Per the draft,
+the correct behavior is to log a warning and respond with current data — not to
+return an error.
+
+This request includes <planned:asOf>2025-01-01T00:00:00Z</planned:asOf>. The expected
+outcome is a normal conforming locationValidation result identical to the equivalent
+request without <asOf> (the Capitol Way 1661 SSAP match). The <asOf> element must
+be silently accepted without causing any error response.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1"
+             xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1"
+             validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+  <planned:asOf>2025-01-01T00:00:00Z</planned:asOf>
+</findService>

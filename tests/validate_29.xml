@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 1 — A2 absent.
+
+Gate 1 checks required elements in order: country, A1, A2, RD, HNO. This request
+supplies country and A1 but omits A2. Gate 1 must stop at ca:A2 and return
+<locationInvalid> with message "Required element ca:A2 is absent". Confirms the
+ordered stop-at-first behavior for the A2 position specifically.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

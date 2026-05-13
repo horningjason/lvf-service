@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — DT and HNC are always-unchecked on all layers.
+
+DT (Direction of Travel) and HNC (Address Number Complete) are defined as
+always-unchecked: they are never passed to the progressive filter regardless
+of the active layer, and are always placed in <unchecked> in the response.
+This complements validate_19 (which covers LOC and PLC) by testing the
+remaining two always-unchecked elements.
+
+This request submits DT and HNC alongside a valid SSAP match (Capitol Way 1661,
+Bismarck). The expected outcome is a conforming locationValidation result with the
+standard civic elements in <valid> and both cdx2:DT and cdx2:HNC in <unchecked>.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+                  xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+      <cdx2:DT>N</cdx2:DT>
+      <cdx2:HNC>1661</cdx2:HNC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

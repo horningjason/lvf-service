@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 1 — country element present but empty.
+
+Gate 1 distinguishes between an absent element (tag missing, value=None) and an
+empty element (tag present, no text content, value=""). Both fail Gate 1 for
+required elements, but the error message differs: "is absent" vs "is empty".
+This request has <country></country> present but empty. The expected outcome is
+<locationInvalid> with message "Required element ca:country is empty".
+
+Compare with validate_15 (country absent entirely -> "is absent").
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country></country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Protocol — malformed XML returns <badRequest>.
+
+A request that is not well-formed XML (as opposed to well-formed but schema-invalid,
+tested in validate_16) must return a <badRequest> error response. This is a
+pre-Gate-0 check that fires before any schema or semantic validation.
+
+The XML below is intentionally malformed: the closing tag for <findService> is
+missing. The expected outcome is a <badRequest> error response with a message
+describing the XML syntax error.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>

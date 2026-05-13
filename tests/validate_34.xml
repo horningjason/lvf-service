@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — RCL parity filtering eliminates candidates at HNO.
+
+The RCL record for Brandon Circle in Bismarck has Parity_L=E (even only, addresses
+100-198) and Parity_R=E (even only, addresses 101-199). Submitting an odd HNO (103)
+falls within both address ranges but fails the parity check on both sides — no
+candidate survives. Gate 2 fails at ca:HNO and returns a non-conforming result.
+
+This confirms that parity filtering is applied correctly and that an in-range HNO
+that violates parity on all sides is treated as invalid, not as a match.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Brandon</RD>
+      <STS>Circle</STS>
+      <HNO>103</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

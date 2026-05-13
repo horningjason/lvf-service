@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Response — defaultMappingReturned when civic coverage lookup cannot resolve.
+
+When Gate 2 produces a non-conforming result AND the civic coverage region lookup
+does not resolve to a single unambiguous boundary, the LVF must construct a
+synthetic default mapping and emit the <defaultMappingReturned> warning.
+
+This request submits a completely out-of-coverage address (country=CA, which has
+no provisioned service boundary and no civic coverage region entry). Gate 2 fails
+at ca:country (no SSAP or RCL records match CA). The civic coverage lookup also
+fails because no entry exists for country=CA. The synthetic default mapping
+(displayName="VALIDATION RESULT ONLY", sourceId={00000000-...}, expires=NO-EXPIRATION)
+is returned with <defaultMappingReturned> present in <warnings>.
+
+This confirms the complete fallback path: non-conforming result + coverage miss
++ synthetic mapping + warning emission.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>CA</country>
+      <A1>ON</A1>
+      <A2>York Region</A2>
+      <A3>Markham</A3>
+      <RD>Main</RD>
+      <STS>Street</STS>
+      <HNO>100</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

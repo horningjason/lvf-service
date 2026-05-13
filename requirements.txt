@@ -1,11 +1,15 @@
-fastapi
-python-dotenv
-uvicorn
-lxml
-pydantic
-shapely
-geopandas
-pyogrio
-psycopg2-binary
-pytest
-httpx
+# Core service
+fastapi==0.136.1
+uvicorn==0.46.0
+python-dotenv==1.2.2
+pydantic==2.13.4
+lxml==6.0.2
+
+# GIS / spatial
+geopandas==1.1.3
+shapely==2.1.2
+pyogrio==0.12.1
+
+# Testing
+pytest==9.0.3
+httpx==0.28.1

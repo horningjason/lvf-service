@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 1 — A1 element present but empty.
+
+Gate 1 distinguishes between an absent element (tag missing) and an empty element
+(tag present, no text content). Both fail, but the message differs: "is absent"
+vs "is empty". This request has <A1></A1> present but empty. The expected outcome
+is <locationInvalid> with message "Required element ca:A1 is empty".
+
+Compare with validate_28 (A1 absent entirely -> "is absent").
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1></A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
