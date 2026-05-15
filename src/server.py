@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -40,6 +42,7 @@ from src.models import (
     CivicAddress,
     CivicCoverageEntry,
     ForbiddenResponse,
+    LocationValidationUnavailableResponse,
     MappingElement,
     RCLRecord,
     SSAPRecord,
@@ -134,6 +137,9 @@ _rcl:        list[RCLRecord]       = []
 _boundaries: list[ServiceBoundary] = []
 _geodetic_coverage: dict[str, Any] = {}  # ServiceURN → unary_union geometry
 _civic_coverage: list[CivicCoverageEntry] = []
+
+_reloading: bool = False
+_reloading_lock = threading.Lock()
 
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
@@ -459,6 +465,40 @@ def _load_gis_data(gpkg_path: str) -> None:
         log.info("GIS data cached to pickle: %s", pickle_path)
     except Exception as exc:
         log.warning("Could not write pickle cache: %s", exc)
+
+
+def _watch_gpkg(gpkg_path: str) -> None:
+    """Daemon thread: poll the GPKG file for changes and reload GIS data when detected."""
+    global _reloading
+    interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
+    try:
+        baseline_mtime = os.path.getmtime(gpkg_path)
+    except OSError:
+        log.warning("GPKG watcher: cannot stat %s — watcher exiting", gpkg_path)
+        return
+
+    while True:
+        time.sleep(interval)
+        try:
+            current_mtime = os.path.getmtime(gpkg_path)
+        except OSError:
+            log.warning("GPKG watcher: cannot stat %s — skipping this poll", gpkg_path)
+            continue
+
+        if current_mtime > baseline_mtime:
+            log.info("New GPKG detected at %s — reloading GIS data", gpkg_path)
+            with _reloading_lock:
+                _reloading = True
+            try:
+                _load_gis_data(gpkg_path)
+                baseline_mtime = current_mtime
+                with _reloading_lock:
+                    _reloading = False
+                log.info("GIS data reload complete — resuming normal service")
+            except Exception:
+                log.error(
+                    "GIS data reload failed — service remains unavailable", exc_info=True
+                )
 
 
 def initialize(gpkg_path: str | None = None) -> None:
@@ -878,7 +918,7 @@ def _to_xml_response(resp, status: int) -> Response:
         w = etree.SubElement(root, f"{{{_NS_LOST}}}warnings")
         w.set("source", _server_uri)
         lvu = etree.SubElement(w, f"{{{_NS_LOST}}}locationValidationUnavailable")
-        lvu.set("message", "LVF temporarily cannot fulfill validation request")
+        lvu.set("message", getattr(resp, "message", "LVF temporarily cannot fulfill validation request"))
         lvu.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
         path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
         via_el  = etree.SubElement(path_el, f"{{{_NS_LOST}}}via")
@@ -938,13 +978,26 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     Process a raw LoST findService XML request and return raw XML response bytes.
 
     Mirrors the /validate endpoint without requiring an HTTP request object.
-    Raises ValueError for malformed XML. Call initialize() once before using this.
+    Returns <badRequest> bytes for malformed or structurally incomplete XML.
+    Call initialize() once before using this.
     """
+    with _reloading_lock:
+        if _reloading:
+            return _to_xml_response(
+                LocationValidationUnavailableResponse(
+                    message="LVF is reloading GIS data — service will resume automatically"
+                ),
+                status=200,
+            ).body
+
     schema_error = _validate_schema(xml_bytes)
     if schema_error is not None:
         return _to_xml_response(BadRequestResponse(message=schema_error), status=400).body
 
-    req = _parse_request(xml_bytes)
+    try:
+        req = _parse_request(xml_bytes)
+    except ValueError as exc:
+        return _to_xml_response(BadRequestResponse(message=str(exc)), status=400).body
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200).body
@@ -999,6 +1052,12 @@ async def _lifespan(app: FastAPI):
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     if gpkg_path:
         _load_gis_data(gpkg_path)
+        poll_interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
+        if poll_interval > 0:
+            threading.Thread(
+                target=_watch_gpkg, args=(gpkg_path,), daemon=True
+            ).start()
+            log.info("GPKG watcher started (poll interval: %ds)", poll_interval)
     else:
         log.warning("LVF_GPKG_PATH not set — starting with empty GIS data")
     yield
@@ -1148,6 +1207,15 @@ async def validate(request: Request) -> Response:
     exists.
     """
     body = await request.body()
+
+    with _reloading_lock:
+        if _reloading:
+            return _to_xml_response(
+                LocationValidationUnavailableResponse(
+                    message="LVF is reloading GIS data — service will resume automatically"
+                ),
+                status=200,
+            )
 
     schema_error = _validate_schema(body)
     if schema_error is not None:

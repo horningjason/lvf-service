@@ -83,6 +83,7 @@ Key enforcement: any element in the `ca:` namespace that is not defined in `civi
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `LVF_GPKG_PATH` | **Yes** | — | Path to the GeoPackage file containing SSAP, RCL, and boundary layers |
+| `LVF_GPKG_POLL_INTERVAL_SECONDS` | No | `60` | How often (seconds) the server polls the GPKG file for changes and triggers a hot reload. Set to `0` to disable the watcher entirely. |
 | `LVF_DEFAULT_MAPPING_SOURCE_ID` | **Yes** | — | UUID used as `sourceId` on the default mapping element; server refuses to start if absent |
 | `LVF_SSAP_LAYER` | No | `SiteStructureAddressPoint` | GeoPackage layer name for the SSAP layer |
 | `LVF_RCL_LAYER` | No | `RoadCenterLine` | GeoPackage layer name for the RCL layer |

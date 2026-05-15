@@ -434,6 +434,7 @@ class NotFoundResponse(BaseModel):
 class LocationValidationUnavailableResponse(BaseModel):
     """System-level failure — LVF temporarily unable to fulfill the request."""
     type: Literal["locationValidationUnavailable"] = "locationValidationUnavailable"
+    message: str = "LVF temporarily cannot fulfill validation request"
 
 
 class LocationValidationResponse(BaseModel):

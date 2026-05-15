@@ -10,7 +10,6 @@
     targetNamespace="urn:nena:xml:ns:pidf:nenaCivicAddr2"
     elementFormDefault="qualified">
 
-  <xs:element name="STPS"         type="xs:string"/>
   <xs:element name="SITE"         type="xs:string"/>
   <xs:element name="SUBSITE"      type="xs:string"/>
   <xs:element name="WING"         type="xs:string"/>

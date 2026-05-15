@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.example .env
-# Edit .env and set LVF_GPKG_PATH to your GeoPackage file (see below)
+# If necessary, edit .env and set LVF_GPKG_PATH to your GeoPackage file (see below)
 
 # 5. Start the server
 uvicorn src.server:app --reload

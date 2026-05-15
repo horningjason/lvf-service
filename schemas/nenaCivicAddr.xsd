@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Original NENA CLDXF civic address extensions (cdx1: namespace).
+
+  Currently contains only STPS (Street Name Pre Type Separator), which
+  NENA-STA-004.2 §3.2.5 explicitly assigns to this namespace. Other
+  elements that were originally in cdx1: have been superseded by the
+  cdx2: schema (NENA-STA-004.2) and are not redeclared here to avoid
+  ambiguity.
+
+  Each element is declared globally so lxml can resolve them when they
+  appear as xs:any content inside ca:civicAddress (processContents="lax").
+-->
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:nena:xml:ns:pidf:nenaCivicAddr"
+    elementFormDefault="qualified">
+
+  <xs:element name="STPS" type="xs:string"/>
+
+</xs:schema>

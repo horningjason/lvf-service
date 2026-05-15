@@ -30,9 +30,10 @@
         <!-- §4 Street elements -->
         <xs:element name="RD"       type="xs:string"/>
         <xs:element name="PRD"      type="xs:string"/>
+        <xs:element name="PRM"      type="xs:string"/>
         <xs:element name="STS"      type="xs:string"/>
         <xs:element name="POD"      type="xs:string"/>
-        <xs:element name="MP"       type="xs:string"/>
+        <xs:element name="POM"      type="xs:string"/>
         <!-- §5 Address-number elements -->
         <xs:element name="HNO"      type="xs:string"/>
         <xs:element name="HNS"      type="xs:string"/>
@@ -44,7 +45,6 @@
         <xs:element name="SEAT"     type="xs:string"/>
         <xs:element name="PLC"      type="xs:string"/>
         <xs:element name="LMK"      type="xs:string"/>
-        <xs:element name="LMKP"     type="xs:string"/>
         <!-- §7 Postal elements -->
         <xs:element name="PCN"      type="xs:string"/>
         <xs:element name="PC"       type="xs:string"/>

@@ -27,6 +27,8 @@
              schemaLocation="civicAddr-ext.xsd"/>
   <xs:import namespace="urn:nena:xml:ns:pidf:nenaCivicAddr2"
              schemaLocation="nenaCivicAddr2.xsd"/>
+  <xs:import namespace="urn:nena:xml:ns:pidf:nenaCivicAddr"
+             schemaLocation="nenaCivicAddr.xsd"/>
 
   <xs:element name="findService">
     <xs:complexType>

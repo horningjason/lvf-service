@@ -10,9 +10,7 @@
     targetNamespace="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
     elementFormDefault="qualified">
 
-  <xs:element name="PRM"  type="xs:string"/>
   <xs:element name="STP"  type="xs:string"/>
-  <xs:element name="POM"  type="xs:string"/>
   <xs:element name="HNP"  type="xs:string"/>
   <xs:element name="MP"   type="xs:string"/>
   <xs:element name="PN"   type="xs:string"/>

@@ -1,0 +1,4 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<errors xmlns="urn:ietf:params:xml:ns:lost1" source="lvf.ndaco.org">
+  <locationInvalid xml:lang="en">Required element ca:RD is absent</locationInvalid>
+</errors>
