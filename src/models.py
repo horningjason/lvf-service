@@ -116,7 +116,7 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("prm",           "cae:PRM"),
     ElementInfo("prd",           "ca:PRD"),
     ElementInfo("stp",           "cae:STP"),
-    ElementInfo("stps",          "cdx2:STPS"),
+    ElementInfo("stps",          "cdx1:STPS"),
     ElementInfo("sts",           "ca:STS"),
     ElementInfo("pod",           "ca:POD"),
     ElementInfo("pom",           "cae:POM"),

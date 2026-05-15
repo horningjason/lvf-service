@@ -8,7 +8,7 @@ and the algorithm does NOT fall through to the RCL layer. This is the critical
 distinction from an HNO-level SSAP failure (which does fall through to RCL).
 
 This request submits A2=Morton County for Capitol Way, which exists in the provisioned
-GIS data only under Burleigh County. SSAP fails at ca:A2 (pre-HNO). The RCL layer
+GIS data only under Burleigh County. SSAP fails at ca:A3 (pre-HNO). The RCL layer
 also has Capitol Way provisioned under Burleigh County and would produce a match if
 tried, but it must NOT be tried. The expected outcome is a non-conforming result with
 ca:A2 as <invalid> and all remaining submitted elements in <unchecked>.

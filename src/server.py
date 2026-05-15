@@ -59,6 +59,7 @@ log = logging.getLogger(__name__)
 _NS_LOST    = "urn:ietf:params:xml:ns:lost1"
 _NS_CA      = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
 _NS_CAE     = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
+_NS_CDX1    = "urn:nena:xml:ns:pidf:nenaCivicAddr"   # legacy NENA namespace — STPS only
 _NS_CDX2    = "urn:nena:xml:ns:pidf:nenaCivicAddr2"
 _NS_RLI     = "urn:ietf:params:xml:ns:lost-rli1"
 _NS_PLANNED = "urn:ietf:params:xml:ns:lostPlannedChange1"
@@ -69,6 +70,7 @@ _RESPONSE_NSMAP: dict = {
     None:   _NS_LOST,
     "ca":   _NS_CA,
     "cae":  _NS_CAE,
+    "cdx1": _NS_CDX1,
     "cdx2": _NS_CDX2,
 }
 
@@ -76,11 +78,11 @@ _RESPONSE_NSMAP: dict = {
 _CLARK_TO_FIELD: dict[str, str] = {}
 for _e in ELEMENT_HIERARCHY:
     _pfx, _local = _e.pidf_lo.split(":", 1)
-    _ns = {"ca": _NS_CA, "cae": _NS_CAE, "cdx2": _NS_CDX2}[_pfx]
+    _ns = {"ca": _NS_CA, "cae": _NS_CAE, "cdx1": _NS_CDX1, "cdx2": _NS_CDX2}[_pfx]
     _CLARK_TO_FIELD[f"{{{_ns}}}{_local}"] = _e.civic_address_field
 
 # PIDF-LO prefix → namespace URI (used by completeLocation serializer)
-_PIDF_PREFIX_NS: dict[str, str] = {"ca": _NS_CA, "cae": _NS_CAE, "cdx2": _NS_CDX2}
+_PIDF_PREFIX_NS: dict[str, str] = {"ca": _NS_CA, "cae": _NS_CAE, "cdx1": _NS_CDX1, "cdx2": _NS_CDX2}
 
 
 def _pidf_lo_to_clark(pidf_lo: str) -> str:
@@ -760,15 +762,15 @@ def _parse_request(body: bytes) -> ValidationRequest:
 
     service_el = root.find(f"{{{_NS_LOST}}}service")
     if service_el is None:
-        raise ValueError("Missing <service> element in findService request")
+        raise ValueError("Missing 'service' element in findService request")
     service_urn = (service_el.text or "").strip()
     if not service_urn:
-        raise ValueError("<service> element is empty")
+        raise ValueError("'service' element is empty")
 
     # civicAddress may be nested anywhere under <location>
     civic_el = root.find(f".//{{{_NS_CA}}}civicAddress")
     if civic_el is None:
-        raise ValueError("Missing <civicAddress> element in findService request")
+        raise ValueError("Missing 'civicAddress' element in findService request")
 
     fields: dict[str, str] = {}
     for child in civic_el:
@@ -778,11 +780,10 @@ def _parse_request(body: bytes) -> ValidationRequest:
             fields[ca_field] = child.text if child.text is not None else ""
 
     as_of_el = root.find(f"{{{_NS_PLANNED}}}asOf")
-    if as_of_el is not None and as_of_el.text and as_of_el.text.strip():
-        log.warning(
-            "Received <asOf> request element with value %s — LVF holds only current active "
-            "dataset; responding with current data per draft-ietf-ecrit-lost-planned-changes-15 §4",
-            as_of_el.text.strip(),
+    if as_of_el is not None:
+        raise ValueError(
+            "This LVF does not support 'asOf' queries. "
+            "Remove the planned:asOf element and resubmit to validate against the current active dataset."
         )
 
     validate_location = root.get("validateLocation", "false")
@@ -1212,7 +1213,7 @@ async def validate(request: Request) -> Response:
         if _reloading:
             return _to_xml_response(
                 LocationValidationUnavailableResponse(
-                    message="LVF is reloading GIS data — service will resume automatically"
+                    message="LVF is busy loading newer GIS data — service will resume automatically"
                 ),
                 status=200,
             )
@@ -1224,7 +1225,7 @@ async def validate(request: Request) -> Response:
     try:
         req = _parse_request(body)
     except ValueError as exc:
-        return Response(content=str(exc), status_code=400, media_type="text/plain")
+        return _to_xml_response(BadRequestResponse(message=str(exc)), status=400)
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200)

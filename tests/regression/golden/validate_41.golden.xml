@@ -1,4 +1,4 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <errors xmlns="urn:ietf:params:xml:ns:lost1" source="lvf.ndaco.org">
-  <badRequest xml:lang="en">Missing &lt;service&gt; element in findService request</badRequest>
+  <badRequest xml:lang="en">Missing 'service' element in findService request</badRequest>
 </errors>
