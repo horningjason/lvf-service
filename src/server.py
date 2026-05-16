@@ -191,13 +191,6 @@ def _validate_schema(body: bytes) -> Optional[str]:
         return f"{first.message} (line {first.line})"
     return "Request does not conform to the LoST findService schema"
 
-# EXPERIMENTAL — Similar Location Extension (draft-ietf-ecrit-similar-location-19, unpublished draft).
-# Implements Phase 1 (completeLocation) only. Disabled by default.
-# When False the extension is completely invisible — no namespace, no element, no attribute parsing.
-_enable_similar_location_extension: bool = (
-    os.environ.get("LVF_ENABLE_SIMILAR_LOCATION", "").lower() in ("1", "true", "yes")
-)
-
 # URN aliases for urn:service:sos. Requests for these URNs are processed against the
 # provisioned urn:service:sos boundaries; the response mapping echoes the requested URN.
 _sos_alias_urns: frozenset[str] = frozenset(
@@ -798,16 +791,21 @@ def _parse_request(body: bytes) -> ValidationRequest:
 def _parse_return_additional_location(body: bytes) -> str:
     """
     Extract rli:returnAdditionalLocation from a findService request.
-    Returns "none" when the attribute is absent, unrecognised, or the XML cannot be parsed.
-    Only called when _enable_similar_location_extension is True.
+
+    Absent attribute means "generate completeLocation by default" — returns "complete".
+    Only explicit "none" suppresses completeLocation. "similar" also suppresses it
+    (client requested similar locations only, which are not yet implemented).
+    Unrecognised values and parse errors default to "complete".
     """
     _VALID = {"none", "similar", "complete", "any"}
     try:
         root = etree.fromstring(body)
-        val = root.get(f"{{{_NS_RLI}}}returnAdditionalLocation", "none")
-        return val if val in _VALID else "none"
+        val = root.get(f"{{{_NS_RLI}}}returnAdditionalLocation")
+        if val is None:
+            return "complete"
+        return val if val in _VALID else "complete"
     except Exception:
-        return "none"
+        return "complete"
 
 
 # ---------------------------------------------------------------------------
@@ -932,42 +930,128 @@ def _to_xml_response(resp, status: int) -> Response:
     return Response(content=body, status_code=status, media_type="application/xml")
 
 
-def _serialize_complete_location(parent: etree._Element, record) -> None:
+def _serialize_complete_location(parent: etree._Element, data) -> None:
     """
-    Append <rli:completeLocation> to parent using all non-null fields from record (SSAPRecord).
+    Append <rli:completeLocation> to parent for either an SSAP or RCL match.
 
-    The rli namespace is declared on the <rli:completeLocation> element itself so it only
-    appears in the response when content is actually being returned.
-    Iterates ELEMENT_HIERARCHY in order; skips always-unchecked elements (no SSAP fields).
-    HNO is emitted as a string from the integer SSAPRecord.add_number field.
+    No-ops when the submitted address already contains every non-null field present
+    on the matched GIS record (nothing to add). The rli namespace is declared on the
+    <rli:completeLocation> element itself so it only appears when content is returned.
     """
-    cl = etree.SubElement(
-        parent,
-        f"{{{_NS_RLI}}}completeLocation",
-        nsmap={"rli": _NS_RLI},
-    )
-    loc = etree.SubElement(cl, f"{{{_NS_LOST}}}location")
-    loc.set("id", "complete")
-    loc.set("profile", "civic")
-    ca_el = etree.SubElement(loc, f"{{{_NS_CA}}}civicAddress")
+    if data.layer == "SSAP":
+        _complete_location_ssap(parent, data)
+    else:
+        _complete_location_rcl(parent, data)
+
+
+def _complete_location_ssap(parent: etree._Element, data) -> None:
+    """Build completeLocation elements from an SSAPRecord."""
+    record = data.record
+    address = data.address
+    elements: list[tuple[str, str, str]] = []  # (clark, field, value)
 
     for elem in ELEMENT_HIERARCHY:
         if elem.always_unchecked:
             continue
         clark = _pidf_lo_to_clark(elem.pidf_lo)
-        if elem.civic_address_field == "hno":
+        field = elem.civic_address_field
+
+        if field == "hno":
             val = record.add_number
             if val is not None:
-                e = etree.SubElement(ca_el, clark)
-                e.text = str(val)
+                elements.append((clark, field, str(val)))
             continue
-        ssap_attr = _SSAP_ATTR.get(elem.civic_address_field)
+
+        ssap_attr = _SSAP_ATTR.get(field)
         if ssap_attr is None:
             continue
         val = getattr(record, ssap_attr, None)
         if val is not None:
-            e = etree.SubElement(ca_el, clark)
-            e.text = str(val)
+            elements.append((clark, field, str(val)))
+
+    if not elements:
+        return
+
+    if address is not None and all(
+        getattr(address, field, None) is not None for _, field, _ in elements
+    ):
+        return
+
+    _emit_complete_location(parent, elements)
+
+
+_RCL_SHARED_STREET: dict[str, str] = {
+    "rd":   "st_name",
+    "prm":  "st_premod",
+    "prd":  "st_predir",
+    "stp":  "st_pretyp",
+    "stps": "st_presep",
+    "sts":  "st_postyp",
+    "pod":  "st_posdir",
+    "pom":  "st_posmod",
+}
+
+_RCL_SIDE_SPECIFIC_BASE: dict[str, str] = {
+    "hnp": "adnumpre",
+    "pcn": "postcomm",
+    "pc":  "postcode",
+}
+
+_ADMIN_FIELDS: frozenset[str] = frozenset(("country", "a1", "a2", "a3", "a4", "a5"))
+
+
+def _complete_location_rcl(parent: etree._Element, data) -> None:
+    """Build completeLocation elements from an RCLRecord."""
+    record = data.record
+    side = data.side or "L"
+    address = data.address
+    valid_set = set(data.valid_pidf_lo or [])
+    suffix = "_l" if side == "L" else "_r"
+    elements: list[tuple[str, str, str]] = []
+
+    for elem in ELEMENT_HIERARCHY:
+        if elem.always_unchecked or elem.rcl_unchecked:
+            continue
+        clark = _pidf_lo_to_clark(elem.pidf_lo)
+        field = elem.civic_address_field
+
+        if field in _ADMIN_FIELDS:
+            if elem.pidf_lo not in valid_set:
+                continue
+            val = getattr(record, f"{field}{suffix}", None)
+        elif field == "hno":
+            val = address.hno if address is not None else None
+        elif field in _RCL_SHARED_STREET:
+            val = getattr(record, _RCL_SHARED_STREET[field], None)
+        elif field in _RCL_SIDE_SPECIFIC_BASE:
+            val = getattr(record, f"{_RCL_SIDE_SPECIFIC_BASE[field]}{suffix}", None)
+        else:
+            continue
+
+        if val is not None:
+            elements.append((clark, field, str(val)))
+
+    if not elements:
+        return
+
+    if address is not None and all(
+        getattr(address, field, None) is not None for _, field, _ in elements
+    ):
+        return
+
+    _emit_complete_location(parent, elements)
+
+
+def _emit_complete_location(parent: etree._Element, elements: list[tuple[str, str, str]]) -> None:
+    """Write the <rli:completeLocation> wrapper and civicAddress child elements."""
+    cl = etree.SubElement(parent, f"{{{_NS_RLI}}}completeLocation", nsmap={"rli": _NS_RLI})
+    loc = etree.SubElement(cl, f"{{{_NS_LOST}}}location")
+    loc.set("id", "complete")
+    loc.set("profile", "civic")
+    ca_el = etree.SubElement(loc, f"{{{_NS_CA}}}civicAddress")
+    for clark, _, val in elements:
+        e = etree.SubElement(ca_el, clark)
+        e.text = val
 
 
 # ---------------------------------------------------------------------------
@@ -1019,7 +1103,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         if b.service_urn.lower() == effective_urn.lower()
         and _is_temporally_active(b.effective, b.expires, now)
     ]
-    ral = _parse_return_additional_location(xml_bytes) if _enable_similar_location_extension else "none"
+    ral = _parse_return_additional_location(xml_bytes)
     g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
     final = response_assembly.assemble(
         g2,
@@ -1253,7 +1337,7 @@ async def validate(request: Request) -> Response:
         if b.service_urn.lower() == effective_urn.lower()
         and _is_temporally_active(b.effective, b.expires, now)
     ]
-    ral = _parse_return_additional_location(body) if _enable_similar_location_extension else "none"
+    ral = _parse_return_additional_location(body)
     g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
 
     final = response_assembly.assemble(

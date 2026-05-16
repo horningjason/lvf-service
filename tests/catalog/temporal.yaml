@@ -1,0 +1,121 @@
+---
+# Temporal filtering tests: GIS records with Effective and Expire datetime fields.
+# Records outside their active window (future Effective or past Expire) are excluded
+# from Gate 2 evaluation as if they do not exist, per §3.5.
+
+- id: TEMP-SSAP-FUTURE-EFF-001
+  description: >
+    SSAP record for Frisco Way, Bismarck, HNO 2404 has an Effective datetime in the
+    future. The record is excluded from Gate 2 evaluation by the temporal filter.
+    With no active SSAP record, fallthrough to RCL also finds no match. Response
+    reports invalid at ca:HNO (all elements above HNO matched, but HNO has no active
+    record).
+  preconditions:
+    - SSAP record exists for Frisco Way, Bismarck with HNO 2404 and Effective date
+      set to a date in the future relative to the test execution date
+    - No RCL segment covers Frisco Way, Bismarck with HNO 2404
+  input_file: requests/TEMP-SSAP-FUTURE-EFF-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    invalid: [ca:HNO]
+  notes: >
+    The SSAP record exists in the GIS layer but is not yet active. The temporal filter
+    is applied at query time. The test relies on the GIS data containing a specifically
+    constructed record with a future Effective datetime — this will become a stale
+    precondition once the date passes, at which point the test would need to be updated
+    with a new future-dated record.
+  spec_ref: "§3.5"
+  status: has_test
+
+- id: TEMP-RCL-EXPIRED-001
+  description: >
+    RCL segment for 57th Avenue NW, Bismarck, HNO 1501 has an Expire datetime in
+    the past. The segment is excluded from Gate 2 evaluation. No active RCL segment
+    covers this HNO. No SSAP record matches either. Response reports invalid at
+    ca:HNO.
+  preconditions:
+    - RCL segment for 57th Avenue NW, Bismarck with POD=Northwest exists with an
+      Expire datetime set to a date in the past
+    - No active (non-expired) RCL segment covers HNO 1501 on this street
+    - No SSAP record for 57th Avenue NW, Bismarck with HNO 1501
+  input_file: requests/TEMP-RCL-EXPIRED-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:POD]
+    invalid: [ca:HNO]
+  notes: >
+    POD=Northwest is validated before the HNO range check. The RCL segment that would
+    cover HNO 1501 is expired and excluded. Other active RCL segments for this street
+    may exist (explaining why POD is valid), but none covers HNO 1501.
+  spec_ref: "§3.5"
+  status: has_test
+
+- id: TEMP-RCL-VALIDFLAG-001
+  description: >
+    RCL segment for 6th Avenue, Washburn, McLean County has Valid_L=N and Valid_R=N.
+    GIS valid flags explicitly mark this segment as not to be used for validation.
+    The segment is excluded from Gate 2 evaluation. No other RCL segment covers
+    HNO 835 on this street. No SSAP record matches. Response reports invalid at
+    ca:HNO.
+  preconditions:
+    - RCL segment exists for 6th Avenue, Washburn, McLean County covering HNO 835
+      with Valid_L=N and Valid_R=N
+    - No other active RCL segment covers HNO 835 for this street
+    - No SSAP record for 6th Avenue, Washburn, HNO 835
+  input_file: requests/TEMP-RCL-VALIDFLAG-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    invalid: [ca:HNO]
+  notes: >
+    Valid_L and Valid_R are STA-006.3 fields that indicate whether each side of the
+    RCL segment is considered valid for address validation purposes. A segment with
+    both flags set to N is effectively inactive for LVF purposes regardless of its
+    Effective/Expire dates.
+  spec_ref: "§3.5, STA-006.3"
+  status: has_test
+
+- id: TEMP-SSAP-EXPIRED-001
+  description: >
+    SSAP record with a past Expire date is excluded at query time. The only matching
+    SSAP for the submitted address has expired, leaving no active record. Falls through
+    to RCL which also has no match. Result: invalid at ca:HNO.
+  preconditions:
+    - SSAP record exists with Expire datetime in the past for the submitted street/HNO
+    - No active (non-expired) SSAP record covers the submitted HNO
+    - No RCL segment covers the submitted HNO for this street
+  input_file: requests/TEMP-SSAP-EXPIRED-001.xml
+  expected:
+    response_type: locationValidation
+    invalid: [ca:HNO]
+  notes: >
+    GIS inspection (2026-05-15) found zero SSAP records with Expire dates in the
+    past. The template dataset contains only one expired RCL record (OBJECTID 148079,
+    57th Ave NW) used by TEMP-RCL-EXPIRED-001, but no expired SSAP records.
+    A synthetic fixture record would be required. Distinct from TEMP-SSAP-FUTURE-EFF-001
+    (which uses a future Effective date) in that this tests the Expire field.
+  spec_ref: "§3.5"
+  status: no_test_data
+
+- id: TEMP-BOUNDARY-EXPIRED-001
+  description: >
+    PsapPolygon boundary record with a past Expire date. At Gate 0 the boundary
+    lookup must exclude expired boundary records. If no active boundary exists for
+    the submitted service URN, Gate 0 returns serviceNotImplemented.
+  preconditions:
+    - PsapPolygon record exists with Expire datetime in the past
+    - No other active boundary record covers the same service URN as the expired record
+    - The expired record would have been the only boundary matching urn:service:sos
+      for a specific sub-area
+  input_file: requests/TEMP-BOUNDARY-EXPIRED-001.xml
+  expected:
+    response_type: serviceNotImplemented
+  notes: >
+    GIS inspection (2026-05-15) found all five PsapPolygon records have Expire=
+    2198-12-31T00:00:00.0Z (no boundary records expire in the foreseeable future).
+    A synthetic fixture record would be required to test this path. This is a
+    critical test case because an expired boundary affecting Gate 0 has significant
+    operational impact (no calls dispatched for affected area).
+  spec_ref: "§3.5, §5 (Gate 0)"
+  status: no_test_data

@@ -1,0 +1,33 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<findServiceResponse xmlns="urn:ietf:params:xml:ns:lost1" xmlns:ca="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext" xmlns:cdx1="urn:nena:xml:ns:pidf:nenaCivicAddr" xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
+  <mapping expires="2198-12-31 00:00:00+00:00" lastUpdated="2025-04-17 00:00:00+00:00" source="lvf.ndaco.org" sourceId="{F9A0899D-2F19-46D2-A1C3-B3B2E54A8E9D}">
+    <displayName xml:lang="en">MERCER-OLIVER 911</displayName>
+    <service>urn:service:sos</service>
+    <uri>sip:sos@test.mclean.nd.us</uri>
+    <serviceNumber>701-123-3332</serviceNumber>
+  </mapping>
+  <locationValidation>
+    <valid>ca:country ca:A1 ca:A2 ca:A3 ca:RD ca:STS ca:POD</valid>
+    <unchecked>ca:HNO cdx2:UNIT_PRETYPE cdx2:UNIT_VALUE</unchecked>
+    <planned:revalidateAfter xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1">2198-12-31T00:00:00+00:00</planned:revalidateAfter>
+    <rli:completeLocation xmlns:rli="urn:ietf:params:xml:ns:lost-rli1">
+      <location id="complete" profile="civic">
+        <ca:civicAddress>
+          <ca:country>US</ca:country>
+          <ca:A1>ND</ca:A1>
+          <ca:A2>Mercer County</ca:A2>
+          <ca:A3>Beulah</ca:A3>
+          <ca:RD>3rd</ca:RD>
+          <ca:STS>Avenue</ca:STS>
+          <ca:POD>Northwest</ca:POD>
+          <ca:HNO>205</ca:HNO>
+          <ca:PCN>Beulah</ca:PCN>
+          <ca:PC>58523</ca:PC>
+        </ca:civicAddress>
+      </location>
+    </rli:completeLocation>
+  </locationValidation>
+  <path>
+    <via source="lvf.ndaco.org"/>
+  </path>
+</findServiceResponse>

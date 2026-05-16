@@ -16,6 +16,7 @@ from shapely.geometry import Point
 from src.gate2 import Gate2Result
 from src.models import (
     ELEMENT_HIERARCHY,
+    CompleteLocationData,
     FindServiceResponse,
     LocationValidation,
     LocationValidationResponse,
@@ -243,11 +244,15 @@ def assemble(
         # data. Return notFound rather than a validation result.
         return NotFoundResponse()
 
-    complete_record = (
-        record
-        if result.layer == "SSAP" and return_additional_location == "complete"
-        else None
-    )
+    complete_data = None
+    if return_additional_location not in ("none", "similar"):
+        complete_data = CompleteLocationData(
+            layer=result.layer,
+            record=record,
+            side=result.side,
+            address=address,
+            valid_pidf_lo=list(result.state.valid),
+        )
     revalidate_after = _min_expire(
         getattr(record, "expire", None),
         *[m.expires for m in mappings],
@@ -256,7 +261,7 @@ def assemble(
         mapping=mappings,
         location_validation=location_validation,
         revalidate_after=revalidate_after,
-        complete_location_record=complete_record,
+        complete_location_record=complete_data,
     )
 
 

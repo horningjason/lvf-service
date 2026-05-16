@@ -349,6 +349,22 @@ class FilterState:
     terminal:        bool = False   # True after stop-on-first-invalid fires
 
 
+@dataclass
+class CompleteLocationData:
+    """
+    Payload passed from response_assembly to the XML serializer for completeLocation.
+
+    Carries enough context to build the <rli:completeLocation> element for either
+    an SSAP or RCL match. The serializer is responsible for suppression when the
+    submission already contains all non-null GIS fields.
+    """
+    layer:          str             # "SSAP" or "RCL"
+    record:         Any             # SSAPRecord or RCLRecord
+    side:           Optional[str] = None   # RCL only: "L" or "R"
+    address:        Optional[Any] = None   # CivicAddress (submitted)
+    valid_pidf_lo:  Optional[list] = None  # pidf_lo names in <valid>
+
+
 # ---------------------------------------------------------------------------
 # Coverage Region
 # ---------------------------------------------------------------------------
@@ -449,7 +465,7 @@ class LocationValidationResponse(BaseModel):
     location_validation:     LocationValidation
     revalidate_after:        Optional[str] = None   # planned-changes revalidate hint
     default_mapping_returned: bool = False  # True → emit <defaultMappingReturned> warning
-    complete_location_record: Optional[Any] = None  # SSAPRecord; Optional[Any] avoids requiring arbitrary_types_allowed=True on this model (SSAPRecord has shapely geometry fields)
+    complete_location_record: Optional[Any] = None  # CompleteLocationData; Optional[Any] avoids importing it here and keeps the model light
 
 
 FindServiceResponse = Annotated[

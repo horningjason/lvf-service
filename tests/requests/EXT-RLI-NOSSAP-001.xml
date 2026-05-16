@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Extension — rli:returnAdditionalLocation="complete" requested on an RCL-path address.
+
+State Street, Bismarck, HNO 3401 produces an RCL match (no SSAP exists for this
+address). The rli:returnAdditionalLocation="complete" attribute is included in the
+request. Per the Similar Location Extension spec, completeLocation is only populated
+on SSAP matches where HNO appears in <valid>. An RCL match (HNO unchecked) must
+NOT return <rli:completeLocation> regardless of the attribute value.
+
+This test is meaningful when LVF_ENABLE_SIMILAR_LOCATION=true. When the extension
+is disabled, the rli attribute is silently ignored and the response is identical.
+The golden file is correct in both configurations since no rli: elements appear for
+an RCL match.
+
+Expected: locationValidation with HNO unchecked and no rli:completeLocation in
+the response body.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1"
+             xmlns:rli="urn:ietf:params:xml:ns:lost-rli1"
+             validateLocation="true"
+             rli:returnAdditionalLocation="complete">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>State</RD>
+      <STS>Street</STS>
+      <HNO>3401</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

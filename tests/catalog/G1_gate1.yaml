@@ -1,0 +1,118 @@
+---
+# Gate 1 tests: structural conformance check.
+# Gate 1 verifies the presence and non-emptiness of required CLDXF-US elements:
+# country, A1, A2, RD, and HNO. Elements are checked in hierarchy order; the first
+# failure stops evaluation and returns <locationInvalid>.
+#
+# NOTE — A3 is NOT a Gate 1 element in this implementation.
+# A missing or empty A3 does not trigger locationInvalid. Instead it passes Gate 1
+# and proceeds to Gate 2 where A3 is evaluated against GIS data as part of the
+# progressive filter. An absent A3 resolves against records with null A3 in GIS.
+# Verified by server test (2026-05-15): missing A3 returns locationValidation with
+# all other submitted elements in <valid>.
+
+- id: G1-STRUCT-MISSING-ALL-001
+  description: >
+    Request missing country, A1, and A2 simultaneously. Gate 1 stops at the first
+    required element absent in hierarchy order: ca:country is checked first, so the
+    error reports ca:country absent regardless of the other missing elements.
+  preconditions:
+    - No GIS data required; Gate 1 runs purely on submitted element presence
+  input_file: requests/G1-STRUCT-MISSING-ALL-001.xml
+  expected:
+    response_type: locationInvalid
+  notes: >
+    Stop-on-first behavior: even though A1 and A2 are also absent, only ca:country
+    is reported. This is intentional — the caller sees the highest-priority problem.
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-MISSING-HNO-001
+  description: >
+    Request where ca:HNO element is completely absent (not present in the XML at all,
+    distinct from empty). Gate 1 requires HNO to be present and non-empty.
+    Returns <locationInvalid> reporting ca:HNO absent.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-MISSING-HNO-001.xml
+  expected:
+    response_type: locationInvalid
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-EMPTY-HNO-001
+  description: >
+    Request where ca:HNO element is present but contains no text (empty element).
+    Gate 1 treats an empty required element as a structural failure — distinct from
+    absent. Returns <locationInvalid> reporting ca:HNO empty.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-EMPTY-HNO-001.xml
+  expected:
+    response_type: locationInvalid
+  notes: >
+    Distinguishes the absent case (G1-STRUCT-MISSING-HNO-001) from the present-but-empty
+    case. Both produce locationInvalid but the error message text differs.
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-MISSING-A1-001
+  description: >
+    Request missing ca:A1 (state). country is present and valid-looking; A1 is absent.
+    Gate 1 stops at A1 and returns <locationInvalid>.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-MISSING-A1-001.xml
+  expected:
+    response_type: locationInvalid
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-MISSING-A2-001
+  description: >
+    Request missing ca:A2 (county). country and A1 are present; A2 is absent.
+    Gate 1 stops at A2 and returns <locationInvalid>.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-MISSING-A2-001.xml
+  expected:
+    response_type: locationInvalid
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-MISSING-RD-001
+  description: >
+    Request missing ca:RD (road name). country, A1, A2 are present; RD is absent.
+    Gate 1 stops at RD and returns <locationInvalid>.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-MISSING-RD-001.xml
+  expected:
+    response_type: locationInvalid
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-EMPTY-COUNTRY-001
+  description: >
+    Request where ca:country is present as an empty element. Distinct from absent.
+    Gate 1 treats present-but-empty as a structural failure and returns
+    <locationInvalid> reporting ca:country empty.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-EMPTY-COUNTRY-001.xml
+  expected:
+    response_type: locationInvalid
+  spec_ref: "§6 (Gate 1)"
+  status: has_test
+
+- id: G1-STRUCT-EMPTY-A1-001
+  description: >
+    Request where ca:A1 is present as an empty element. country is present and
+    non-empty. Gate 1 stops at A1 (present-but-empty) and returns <locationInvalid>.
+  preconditions:
+    - No GIS data required
+  input_file: requests/G1-STRUCT-EMPTY-A1-001.xml
+  expected:
+    response_type: locationInvalid
+  spec_ref: "§6 (Gate 1)"
+  status: has_test

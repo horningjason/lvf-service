@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Capitol Way, Bismarck, HNO=1661 uniquely matches an SSAP record. The submission includes
+ALL non-null fields from the GIS record (PCN=Bismarck and PC=58501). Since the submission
+already contains every non-null GIS field, completeLocation is suppressed.
+Expected: SSAP match with HNO in <valid>, NO <rli:completeLocation> in the response.
+Companion to G2-SSAP-COMPLETE-LOC-001 which tests the case where fields are missing.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+      <PCN>Bismarck</PCN>
+      <PC>58501</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
