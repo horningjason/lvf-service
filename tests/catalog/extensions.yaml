@@ -1,0 +1,170 @@
+---
+# Extension tests: always-unchecked elements and the completeLocation extension.
+# Certain CLDXF-US elements are unconditionally unchecked regardless of GIS data:
+#   - ca:LOC, ca:PLC — free-text location qualifiers not in any GIS layer
+#   - cdx2:DT (delivery type), cdx2:HNC (house number conversion) — CLDXF-US
+#     elements with no GIS layer counterpart
+# completeLocation (draft-ietf-ecrit-similar-location-19) is returned unconditionally
+# on every successful match where the matched GIS record contains non-null fields absent
+# from the submission. It is suppressed only when the client sends
+# rli:returnAdditionalLocation="none". If all non-null GIS fields are already present
+# in the submission, completeLocation is also suppressed (nothing to add).
+
+- id: EXT-UNCHECKED-LOC-001
+  description: >
+    Request includes ca:LOC (additional location information, e.g. "Near the fountain")
+    and ca:PLC (place type, e.g. "Residence"). Both elements are always unchecked
+    regardless of GIS data — there is no GIS layer that carries this information.
+    The SSAP match for the base address succeeds; LOC and PLC appear in <unchecked>.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO 1661
+  input_file: requests/EXT-UNCHECKED-LOC-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+    unchecked: [ca:LOC, ca:PLC]
+  notes: >
+    LOC and PLC are never validated against GIS data in any LVF implementation —
+    they are free-text qualifiers. The spec requires them to appear in <unchecked>
+    when submitted so the caller knows they were received but not evaluated.
+  spec_ref: "§7.6"
+  status: has_test
+
+- id: EXT-UNCHECKED-CDXELEM-001
+  description: >
+    Request includes cdx2:DT (delivery type, e.g. "N") and cdx2:HNC (house number
+    conversion, e.g. "1661"). Both are CLDXF-US extension elements with no GIS layer
+    counterpart and are always unchecked. The SSAP match for the base address succeeds;
+    DT and HNC appear in <unchecked>.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO 1661
+  input_file: requests/EXT-UNCHECKED-CDXELEM-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+    unchecked: [cdx2:DT, cdx2:HNC]
+  spec_ref: "§7.6"
+  status: has_test
+
+- id: EXT-RLI-COMPLETE-001
+  description: >
+    Request with rli:returnAdditionalLocation="complete" on an address that produces
+    an SSAP match (North 19th Street Unit 11, HNO 3420). The response includes
+    <rli:completeLocation> containing the full GIS record for the matched SSAP point
+    including fields not present in the original request (PCN, PC).
+  preconditions:
+    - SSAP record exists for North 19th Street, Bismarck, PRD=North, HNO 3420, Unit 11
+    - SSAP record includes PCN=Bismarck and PC=58503
+  input_file: requests/EXT-RLI-COMPLETE-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:PRD, ca:STS, ca:HNO, cdx2:UNIT_PRETYPE, cdx2:UNIT_VALUE]
+  notes: >
+    The rli:completeLocation element contains the complete SSAP record from GIS,
+    providing fields such as PCN and PC that were not in the original request.
+    The rli: namespace appears only on <rli:completeLocation> itself, never on
+    <findServiceResponse>.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: EXT-RLI-NOSSAP-001
+  description: >
+    rli:returnAdditionalLocation="complete" requested on an address that produces an
+    RCL match (State Street, Bismarck, HNO 3401). No SSAP record exists. Despite the
+    rli attribute, completeLocation IS returned because the RCL record has PCN and PC
+    that were absent from the submission. Confirms RCL completeLocation is now active.
+  preconditions:
+    - No SSAP record for State Street, Bismarck, HNO 3401
+    - RCL segment exists for State Street, Bismarck, covering HNO 3401
+    - RCL segment has PCN=Bismarck and PC=58503 on the matched side
+  input_file: requests/EXT-RLI-NOSSAP-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    unchecked: [ca:HNO]
+  notes: >
+    Previously this test verified that RCL matches suppressed completeLocation.
+    As of v44, completeLocation is returned for RCL matches when the GIS record
+    contains non-null fields absent from the submission. The golden now includes
+    <rli:completeLocation> with PCN and PC.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: G2-RCL-COMPLETE-LOC-001
+  description: >
+    Highway 83 (STP=Highway, RD=83), Bismarck, HNO=5900. No SSAP record exists for this
+    address. RCL match on Highway 83 with HNO within the 4300-6799 range. The submission
+    omits POD and PC. The matched RCL segment has POD=Northeast and PC=58503 on the
+    determined side but both were absent from the submission.
+    Expected: HNO unchecked, completeLocation adds POD=Northeast and PC=58503.
+    This scenario directly motivated the v44 decision to extend completeLocation to RCL.
+  preconditions:
+    - No SSAP record for Highway 83, Bismarck with HNO in range 4300-6799
+    - RCL segment exists for Highway 83, Bismarck, covering HNO 5900
+    - RCL segment has POD=Northeast and PC=58503 on the matched side
+  input_file: requests/G2-RCL-COMPLETE-LOC-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, cae:STP, ca:PCN]
+    unchecked: [ca:HNO]
+  notes: >
+    Companion test G2-RCL-COMPLETE-LOC-002 submits all non-null GIS fields (including
+    POD and PC) and verifies completeLocation is suppressed.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: G2-RCL-COMPLETE-LOC-002
+  description: >
+    Highway 83 (STP=Highway, RD=83), Bismarck, HNO=5900. Same address as
+    G2-RCL-COMPLETE-LOC-001 but the submission includes ALL non-null RCL fields
+    (POD=Northeast, PCN=Bismarck, PC=58503). Since the submission contains every
+    non-null field present on the matched segment, completeLocation is suppressed.
+    Expected: HNO unchecked, NO <rli:completeLocation> in response.
+  preconditions:
+    - Same as G2-RCL-COMPLETE-LOC-001
+  input_file: requests/G2-RCL-COMPLETE-LOC-002.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, cae:STP, ca:POD, ca:PCN, ca:PC]
+    unchecked: [ca:HNO]
+  notes: >
+    Verifies the suppression rule: completeLocation is omitted when the submission
+    already contains all non-null GIS fields. No rli: namespace or elements in response.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: G2-SSAP-COMPLETE-LOC-001
+  description: >
+    Capitol Way, Bismarck, HNO=1661 uniquely matches an SSAP record. The submission
+    omits PCN and PC. The SSAP record has PCN=Bismarck and PC=58501 which were absent.
+    Expected: SSAP match with HNO in <valid>, completeLocation adds PCN and PC.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO=1661
+    - SSAP record has PCN=Bismarck and PC=58501
+  input_file: requests/G2-SSAP-COMPLETE-LOC-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    Companion test G2-SSAP-COMPLETE-LOC-002 submits PCN and PC and verifies suppression.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: G2-SSAP-COMPLETE-LOC-002
+  description: >
+    Capitol Way, Bismarck, HNO=1661. Same address as G2-SSAP-COMPLETE-LOC-001 but the
+    submission includes ALL non-null SSAP fields (PCN=Bismarck, PC=58501). Since the
+    submission contains every non-null GIS field, completeLocation is suppressed.
+    Expected: SSAP match with HNO in <valid>, NO <rli:completeLocation> in response.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO=1661
+    - SSAP record has PCN=Bismarck and PC=58501
+  input_file: requests/G2-SSAP-COMPLETE-LOC-002.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO, ca:PCN, ca:PC]
+  notes: >
+    Verifies the suppression rule: completeLocation is omitted when the submission
+    already contains all non-null GIS fields. No rli: namespace or elements in response.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test

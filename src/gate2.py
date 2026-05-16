@@ -93,11 +93,6 @@ _ELEM_INDEX: dict[str, int] = {
     e.civic_address_field: i for i, e in enumerate(ELEMENT_HIERARCHY)
 }
 
-# Reverse lookup: pidf_lo tag string → civic_address_field name
-_PIDF_TO_FIELD: dict[str, str] = {
-    e.pidf_lo: e.civic_address_field for e in ELEMENT_HIERARCHY
-}
-
 
 # ---------------------------------------------------------------------------
 # Return type
@@ -385,11 +380,7 @@ def run(
     if active_ssap:
         ssap_state, ssap_candidates = _filter_ssap(address, active_ssap)
         if ssap_state.terminal:
-            failing_idx = _ELEM_INDEX[_PIDF_TO_FIELD[ssap_state.invalid]]
-            if failing_idx < _ELEM_INDEX["hno"]:
-                # Pre-HNO failure is authoritative — RCL cannot help
-                return Gate2Result(state=ssap_state, outcome="invalid", layer="SSAP")
-            # HNO or below — discard SSAP result and let RCL decide
+            pass  # discard SSAP result, fall through to RCL regardless
         if len(ssap_candidates) == 1:
             return Gate2Result(
                 state=ssap_state,
@@ -397,7 +388,7 @@ def run(
                 layer="SSAP",
                 record=ssap_candidates[0],
             )
-        # terminal at HNO or below — discarded, fall through to RCL. 2+ means ambiguous.
+        # terminal — discarded, fall through to RCL. 2+ means ambiguous.
 
     # Step 2: RCL
     if active_rcl:

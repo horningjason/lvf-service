@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Protocol — <asOf> with a future datetime is rejected with <badRequest>.
+
+This variant confirms that asOf rejection is unconditional — the server rejects
+the request before any gate logic regardless of whether the datetime is past,
+present, or future. A future asOf would theoretically request data as of a point
+when future-effective records are active; silently returning current data would
+be misleading. Both past and future asOf values must be rejected identically.
+
+This request includes <planned:asOf>2027-05-15T00:00:00Z</planned:asOf>
+(one year from 2026-05-15, the date this test was written).
+The expected outcome is a <badRequest> error response.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1"
+             xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1"
+             validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+  <planned:asOf>2027-05-15T00:00:00Z</planned:asOf>
+</findService>

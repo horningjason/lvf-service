@@ -1,0 +1,115 @@
+---
+# Gate 2 fallthrough tests: cases where SSAP fails and RCL fallthrough behavior
+# is exercised. When SSAP yields no single match, RCL is always consulted
+# regardless of which element caused the failure.
+
+- id: G2-FALL-PREHN-STOPS-001
+  description: >
+    Address submitted with A2=Morton County, A3=Bismarck. Morton County is valid in
+    GIS but Bismarck does not exist under Morton County — Bismarck is in Burleigh
+    County. Both SSAP and RCL progressive filters fail at ca:A3 (no records in
+    either layer for A2=Morton County, A3=Bismarck). Response reports invalid at
+    ca:A3 with RD, STS, and HNO unchecked.
+  preconditions:
+    - GIS data contains Morton County (A2 match succeeds on both layers)
+    - No SSAP or RCL record for A2=Morton County, A3=Bismarck (A3 match fails on both)
+  input_file: requests/G2-FALL-PREHN-STOPS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2]
+    invalid: [ca:A3]
+    unchecked: [ca:RD, ca:STS, ca:HNO]
+  notes: >
+    Both layers independently fail at A3. The result is invalid at ca:A3 regardless
+    of layer search order. (The test name "PREHN-STOPS" is a historical artifact from
+    when a pre-HNO stop rule existed; that rule has since been removed. The behavior
+    being tested — invalid at A3 when the city is in the wrong county — is unchanged.)
+  spec_ref: "§6.1"
+  status: has_test
+
+- id: G2-FALL-NONINT-HNO-001
+  description: >
+    HNO submitted as "123A" (non-integer). Gate 1 passes because HNO is present and
+    non-empty. In Gate 2, SSAP progressive filter succeeds through all elements above
+    HNO (country, A1, A2, A3, RD, STS all match). At the HNO step, the value cannot
+    be parsed as an integer, so SSAP and RCL both fail the range check. Returns invalid
+    at ca:HNO.
+  preconditions:
+    - SSAP/RCL records exist for Capitol Way, Bismarck through the STS level
+    - No record exists with a non-integer HNO field (range check requires integer parse)
+  input_file: requests/G2-FALL-NONINT-HNO-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    invalid: [ca:HNO]
+  notes: >
+    Non-integer HNO passes Gate 1 (structural conformance only checks presence/non-empty).
+    It fails at the Gate 2 HNO range check because the integer parse fails. This is
+    classified as a fallthrough test because the failure path goes through both SSAP
+    HNO evaluation and RCL HNO evaluation before concluding invalid.
+  spec_ref: "§7.4, §8.2"
+  status: has_test
+
+- id: G2-FALL-PARITY-001
+  description: >
+    HNO=103 (odd) submitted for Brandon Circle. The RCL segment covering Brandon Circle
+    at that address range is even-only (ToAddr_L and ToAddr_R are even). Odd HNO fails
+    the parity check. Returns invalid at ca:HNO.
+  preconditions:
+    - No SSAP record for Brandon Circle, Bismarck with HNO 103
+    - RCL segment for Brandon Circle covers an address range but is even-only
+      (odd HNO 103 is outside the parity-filtered range)
+  input_file: requests/G2-FALL-PARITY-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    invalid: [ca:HNO]
+  notes: >
+    TIGER-style RCL address ranges carry left/right from/to values with implicit
+    parity (even/odd sides). HNO must match both the range bounds AND the parity of
+    the applicable side. An HNO that falls within the numeric range but violates
+    parity is invalid.
+  spec_ref: "§8.2"
+  status: has_test
+
+- id: G2-FALL-RCL-ONLY-RD-001
+  description: >
+    Submitted RD=83, STP=Highway, HNO=3401 for A3=Bismarck, A2=Burleigh County.
+    Highway 83 exists in RCL with A3=Bismarck (36 segments, HNO ranges 4300–6799)
+    but has zero SSAP records for A3=Bismarck. SSAP fails at ca:RD; RCL is
+    consulted and finds the road (ca:RD and cae:STP pass) but HNO=3401 is below
+    all segment ranges (minimum 4300). Result: invalid at ca:HNO.
+  preconditions:
+    - No SSAP record exists for St_Name=83 with A3=Bismarck
+    - 36 RCL segments exist for St_Name=83, St_PreTyp=Highway, A3=Bismarck,
+      covering HNO ranges 4300–6799 — none covering HNO 3401
+  input_file: requests/G2-FALL-RCL-ONLY-RD-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, cae:STP]
+    invalid: [ca:HNO]
+    unchecked: [ca:PCN]
+  notes: >
+    Highway 83 is RCL-only in this dataset (no SSAP records for Bismarck). SSAP
+    fails at RD and is discarded; RCL validates through RD and STP then fails at
+    HNO because 3401 is below all segment ranges. This exercises the full SSAP →
+    RCL fallthrough path for a road that exists only in RCL.
+  spec_ref: "§6.7"
+  status: has_test
+
+- id: G2-FALL-RCL-ONLY-RD-002
+  description: >
+    Same scenario as G2-FALL-RCL-ONLY-RD-001 but with PC=58503 submitted instead
+    of PCN. Highway 83 exists in RCL for A3=Bismarck but has no SSAP records.
+    SSAP fails at ca:RD and is discarded; RCL validates through RD and STP then
+    fails at HNO=3401 (below all segment ranges). Result: invalid at ca:HNO.
+  preconditions:
+    - Same as G2-FALL-RCL-ONLY-RD-001
+  input_file: requests/G2-FALL-RCL-ONLY-RD-002.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, cae:STP]
+    invalid: [ca:HNO]
+    unchecked: [ca:PC]
+  spec_ref: "§6.7"
+  status: has_test

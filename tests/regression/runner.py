@@ -1,7 +1,7 @@
 """
 LVF regression test runner.
 
-Discovers all *.xml files in tests/, submits each through handle_find_service(),
+Discovers all *.xml files in tests/requests/, submits each through handle_find_service(),
 and compares the result against the corresponding golden file in golden/.
 
 Comparison is semantic (parsed XML), not a string diff. Checked fields:
@@ -10,11 +10,12 @@ Comparison is semantic (parsed XML), not a string diff. Checked fields:
   - mapping sourceId (only when present in the golden file)
 
 Usage:
-    python -m tests.regression.runner                    # run all tests
-    python -m tests.regression.runner --test validate_2  # run one test by name
+    python -m tests.regression.runner                           # run all tests
+    python -m tests.regression.runner --test G2-SSAP-VALID-001  # run one test by name
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -22,8 +23,11 @@ from lxml import etree
 
 from src.server import handle_find_service, initialize
 
-TESTS_DIR = Path(__file__).parent.parent
+TESTS_DIR = Path(__file__).parent.parent / "requests"
 GOLDEN_DIR = Path(__file__).parent / "golden"
+
+# Only pick up files whose stem matches the test ID convention: WORD-WORD-...-NNN
+_TEST_ID_RE = re.compile(r'^[A-Z0-9]+(?:-[A-Z0-9]+)+-\d{3}$')
 
 _NS_LOST = "urn:ietf:params:xml:ns:lost1"
 
@@ -93,7 +97,7 @@ def _diff(actual: dict, golden: dict) -> list[str]:
 def run_tests(test_names: list[str] | None = None) -> int:
     initialize()
 
-    xml_files = sorted(TESTS_DIR.glob("*.xml"))
+    xml_files = sorted(f for f in TESTS_DIR.glob("*.xml") if _TEST_ID_RE.match(f.stem))
     if test_names:
         xml_files = [f for f in xml_files if f.stem in test_names]
         missing = set(test_names) - {f.stem for f in xml_files}

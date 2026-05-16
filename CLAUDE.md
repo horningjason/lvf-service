@@ -90,7 +90,6 @@ Key enforcement: any element in the `ca:` namespace that is not defined in `civi
 | `LVF_BOUNDARY_LAYERS` | No | `PsapPolygon` | Comma-separated GeoPackage layer name(s) for service boundary polygons. |
 | `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI placed in `<path><via source="...">` and `<errors source="...">` |
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` value on `<displayName>` in mapping elements |
-| `LVF_ENABLE_SIMILAR_LOCATION` | No | `false` | Set to `true` to enable the experimental Similar Location Extension (Phase 1) |
 | `LVF_SOS_ALIAS_URNS` | No | — | Comma-separated URN(s) treated as aliases for `urn:service:sos` (§3.6). Gate 0 accepts them; the response `<mapping>` echoes the requested URN rather than the provisioned one. Example: `urn:emergency:service:sos.psap` |
 ---
 
@@ -135,21 +134,25 @@ See `tests/regression/README.md` for the full philosophy and workflow.
 > draft. The namespace, element names, and behavior may change as the draft evolves. Do not
 > deploy in production without understanding this limitation.
 
-The extension is disabled by default. Enable it by setting `LVF_ENABLE_SIMILAR_LOCATION=true`
-in `.env` (or the environment). When disabled, no `rli` namespace or elements appear anywhere
-in the response.
+`completeLocation` is returned **unconditionally** on every successful match (SSAP or RCL) where
+the matched GIS record contains at least one non-null field that was absent from the submission.
+There is no environment variable to control this — it is required behavior as of v44.
 
-**`.env` flag:**
-```
-LVF_ENABLE_SIMILAR_LOCATION=true
-```
+Clients may suppress `completeLocation` by setting `rli:returnAdditionalLocation="none"` on the
+`<findService>` element. Valid values are `none`, `similar`, `complete`, `any`. Absent or
+unrecognised values default to `complete` (generate). Only `none` suppresses.
 
-**How to request `completeLocation`:** add `xmlns:rli` and `rli:returnAdditionalLocation="complete"`
-(or `"any"`) to the `<findService>` element. Valid values are `none`, `similar`, `complete`, `any`.
-Absent or unrecognised values are treated as `none`.
+`completeLocation` is **NOT** returned on invalid or notFound outcomes per the draft spec.
 
-`completeLocation` is only populated on an **SSAP match** (HNO appears in `<valid>`). RCL matches
-and non-conforming results produce no `<rli:completeLocation>` regardless of the attribute value.
+**RCL side determination:** For RCL matches the determined side (`L` or `R`) governs which
+side-specific fields (PCN, PC, HNP, admin fields) are included in completeLocation. Shared fields
+(RD, STS, PRD, STP, STPS, POD, POM) are included regardless of side.
+
+**How to request `completeLocation`:** add `xmlns:rli` and optionally
+`rli:returnAdditionalLocation="complete"` to the `<findService>` element (the default behavior
+already returns completeLocation without this attribute).
+
+**To suppress:** set `rli:returnAdditionalLocation="none"` on `<findService>`.
 
 **Example request (PowerShell against a running server):**
 ```powershell
@@ -202,15 +205,9 @@ no `completeLocation` is returned.
 **Quick programmatic test (no server required):**
 ```powershell
 python -c "
-import os; os.environ['LVF_ENABLE_SIMILAR_LOCATION'] = 'true'
 from src.server import initialize, handle_find_service
 initialize()
-xml = open('tests/validate_2.xml', 'rb').read()
-# Inject the rli attribute by patching the bytes
-xml = xml.replace(
-    b'validateLocation=\"true\"',
-    b'xmlns:rli=\"urn:ietf:params:xml:ns:lost-rli1\" validateLocation=\"true\" rli:returnAdditionalLocation=\"complete\"'
-)
+xml = open('tests/requests/G2-SSAP-VALID-001.xml', 'rb').read()
 print(handle_find_service(xml).decode())
 "
 ```
@@ -351,3 +348,53 @@ Invoke-WebRequest "http://localhost:8000/coverage/civic/explain?country=US&a1=ND
 ```
 
 `nguids` are STA-006.3 NGUID values from the RoadCenterLine layer (falls back to GeoPackage FID if NGUID is absent). Each segment appears at most once even if both sides matched.
+
+---
+
+## Test Case Naming Convention
+
+Test IDs follow the pattern: `{GATE}-{LAYER}-{CATEGORY}-{SEQ}`
+
+### Gate prefixes
+
+| Prefix | Meaning |
+|--------|---------|
+| `PROTO` | Protocol / pre-gate checks (malformed XML, missing elements, validateLocation) |
+| `G0` | Gate 0 — Service URN and boundary check |
+| `G1` | Gate 1 — Structural conformance (minimum required elements) |
+| `G2` | Gate 2 — Progressive filter (GIS evaluation) |
+| `TEMP` | Temporal filtering (Effective/Expire date handling) |
+| `RESP` | Response assembly (mapping element, revalidateAfter, defaultMapping) |
+| `EXT` | Extensions (completeLocation, always-unchecked elements, etc.) |
+
+### Layer segment (G2 only)
+
+| Segment | Meaning |
+|---------|---------|
+| `SSAP` | Test exercises the SiteStructureAddressPoint layer |
+| `RCL` | Test exercises the RoadCenterLine layer |
+| `FALL` | Test exercises SSAP-to-RCL fallthrough boundary behavior |
+| `NF` | notFound result |
+
+For non-G2 gates the layer segment describes the condition, not a GIS layer
+(e.g. `G0-URN-...`, `G1-STRUCT-...`, `PROTO-REQ-...`).
+
+### Category segment
+
+Free-form but should be descriptive enough to understand the condition without
+opening the file. Examples: `VALID`, `INVALID-A2`, `MISSING-HNO`, `EMPTY-COUNTRY`,
+`RCL-ONLY-RD`, `PARITY`, `FUTURE-EFF`, `EXPIRED`, `VALIDFLAG`.
+
+### Sequence
+
+Zero-padded three-digit integer (`001`, `002`, ...). Variants of the same condition
+get sequential numbers — e.g. `G2-FALL-RCL-ONLY-RD-001` and `G2-FALL-RCL-ONLY-RD-002`
+are the same scenario with different submitted elements (one with PCN, one with PC).
+
+### Status field in catalog YAML
+
+| Value | Meaning |
+|-------|---------|
+| `has_test` | Input XML and golden file exist |
+| `no_test_data` | Catalog entry exists but no suitable GIS data found yet |
+| `needs_fixture` | Requires synthetic GIS record injection — real data insufficient |

@@ -1,0 +1,40 @@
+---
+# Gate 0 tests: service URN acceptability and boundary provisioning check.
+# Gate 0 runs after Pre-Gate-0 schema validation and before Gate 1 structural checks.
+# A valid (or aliased) URN with a provisioned boundary passes. Anything else returns
+# <serviceNotImplemented>.
+
+- id: G0-URN-UNSUPPORTED-001
+  description: >
+    Request for service URN urn:service:fire. No boundary polygon is provisioned for
+    this URN in the GIS data. Gate 0 cannot find a matching boundary and returns
+    <serviceNotImplemented>.
+  preconditions:
+    - No urn:service:fire boundary layer in the GeoPackage
+    - A urn:service:sos boundary exists (confirms Gate 0 boundary lookup works)
+  input_file: requests/G0-URN-UNSUPPORTED-001.xml
+  expected:
+    response_type: serviceNotImplemented
+  spec_ref: "§5 (Gate 0)"
+  status: has_test
+
+- id: G0-URN-ALIAS-001
+  description: >
+    Request using the alias URN urn:emergency:service:sos.psap configured via
+    LVF_SOS_ALIAS_URNS. Gate 0 accepts the alias as equivalent to urn:service:sos.
+    The response mapping echoes the alias URN in <service> rather than the provisioned
+    URN, per §3.6.
+  preconditions:
+    - urn:service:sos boundary provisioned
+    - LVF_SOS_ALIAS_URNS=urn:emergency:service:sos.psap in environment
+    - SSAP record exists for Capitol Way, Bismarck, HNO 1661
+  input_file: requests/G0-URN-ALIAS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    The echoed URN in the mapping <service> element is urn:emergency:service:sos.psap,
+    not urn:service:sos. The runner does not currently compare the mapping URN, so
+    this is only verifiable by inspecting the golden file directly.
+  spec_ref: "§3.6, §5 (Gate 0)"
+  status: has_test

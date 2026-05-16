@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Highway 83 (STP=Highway, RD=83) in Bismarck, HNO=5900 with ALL non-null GIS fields
+submitted (POD=Northeast, PC=58503, PCN=Bismarck). The submission contains every field
+present on the matched RCL segment so completeLocation is suppressed.
+Expected: RCL match with HNO unchecked, NO <rli:completeLocation> in the response.
+Companion to G2-RCL-COMPLETE-LOC-001 which tests the case where fields are missing.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+                  xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
+                  xml:lang="en-US">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <cae:STP>Highway</cae:STP>
+      <RD>83</RD>
+      <POD>Northeast</POD>
+      <HNO>5900</HNO>
+      <PCN>Bismarck</PCN>
+      <PC>58503</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

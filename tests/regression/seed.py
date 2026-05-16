@@ -5,9 +5,9 @@ Run ONCE to establish the baseline. Never re-run unless you are deliberately
 resetting the baseline after an intentional behavior change.
 
 Usage:
-    python -m tests.regression.seed                      # seed all, skip existing
-    python -m tests.regression.seed --force              # overwrite all
-    python -m tests.regression.seed --force validate_2   # overwrite one by name
+    python -m tests.regression.seed                               # seed all, skip existing
+    python -m tests.regression.seed --force                       # overwrite all
+    python -m tests.regression.seed --force G2-SSAP-VALID-001    # overwrite one by name
 """
 
 import argparse
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from src.server import handle_find_service, initialize
 
-TESTS_DIR = Path(__file__).parent.parent
+TESTS_DIR = Path(__file__).parent.parent / "requests"
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
 

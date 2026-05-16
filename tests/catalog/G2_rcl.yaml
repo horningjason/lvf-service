@@ -1,0 +1,147 @@
+---
+# Gate 2 RCL tests: progressive filter against the RoadCenterLine layer.
+# RCL is searched when SSAP produces no single match (zero or multiple records after
+# applying all submitted elements). HNO is always <unchecked> on an RCL match per
+# INF-027 §2.5.8 — the HNO range check confirms address plausibility but HNO itself
+# is never declared valid or invalid against RCL.
+
+- id: G2-RCL-VALID-PCN-001
+  description: >
+    RCL match on State Street, Bismarck with PCN (postal community name) submitted.
+    No SSAP record matches, so processing falls through to RCL. RCL segment covers
+    HNO 3401. HNO is unchecked per §2.5.8. PCN is validated against the RCL field.
+  preconditions:
+    - No SSAP record for State Street, Bismarck with HNO 3401
+    - RCL segment exists for State Street, Bismarck covering HNO 3401
+    - RCL segment has PCN=Bismarck
+  input_file: requests/G2-RCL-VALID-PCN-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PCN]
+    unchecked: [ca:HNO]
+  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  status: has_test
+
+- id: G2-RCL-VALID-PC-001
+  description: >
+    RCL match on State Street, Bismarck with PC (postal code) submitted instead of
+    PCN. Confirms that the postal code field is also validated against the RCL layer.
+    HNO is unchecked per §2.5.8.
+  preconditions:
+    - No SSAP record for State Street, Bismarck with HNO 3401
+    - RCL segment exists for State Street, Bismarck covering HNO 3401 with PC=58503
+  input_file: requests/G2-RCL-VALID-PC-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PC]
+    unchecked: [ca:HNO]
+  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  status: has_test
+
+- id: G2-RCL-VALID-UNITAMB-001
+  description: >
+    Address with PRD=North, RD=19th Street, HNO 3540 matches multiple SSAP records
+    (multi-unit building). SSAP is ambiguous so processing falls through to RCL.
+    RCL segment for North 19th Street covers HNO 3540. HNO unchecked.
+  preconditions:
+    - Multiple SSAP records exist for North 19th Street, HNO 3540 (different unit values)
+    - RCL segment exists for North 19th Street covering HNO 3540
+  input_file: requests/G2-RCL-VALID-UNITAMB-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:PRD, ca:STS]
+    unchecked: [ca:HNO]
+  notes: >
+    The multi-unit ambiguity occurs because no unit discriminator (UNIT_VALUE) was
+    submitted. With a unit submitted, the same address resolves to a single SSAP
+    record (see G2-SSAP-VALID-SUBUNIT-001).
+  spec_ref: "§7.4, §8 (Gate 2, RCL), §2.5.8"
+  status: has_test
+
+- id: G2-RCL-VALID-NOSSAP-001
+  description: >
+    Address in Beulah, Mercer County with sub-unit elements (UNIT_PRETYPE=Unit,
+    UNIT_VALUE=11). No SSAP record exists for this unit at 3rd Avenue NW. Falls
+    through to RCL. RCL match found with POD=Northwest validated. Unit elements
+    and HNO are unchecked on RCL match.
+  preconditions:
+    - No SSAP record for 3rd Avenue NW, Beulah, Mercer County with Unit 11, HNO 205
+    - RCL segment exists for 3rd Avenue NW, Beulah, Mercer County covering HNO 205
+      with POD=Northwest (or equivalent direction field)
+  input_file: requests/G2-RCL-VALID-NOSSAP-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:POD]
+    unchecked: [ca:HNO, cdx2:UNIT_PRETYPE, cdx2:UNIT_VALUE]
+  notes: >
+    Unit elements (UNIT_PRETYPE, UNIT_VALUE) are unchecked on RCL match because
+    RCL does not carry per-unit data. Compare with G2-SSAP-VALID-SUBUNIT-001 where
+    unit elements are validated on SSAP.
+  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  status: has_test
+
+- id: G2-RCL-VALID-HNS-001
+  description: >
+    Address with HNS (house number suffix, e.g. "B") on State Street. No SSAP record.
+    RCL match found. HNS is unchecked on RCL match along with HNO — RCL does not
+    carry suffix-level data.
+  preconditions:
+    - No SSAP record for State Street, Bismarck with HNO 3401
+    - RCL segment exists for State Street covering HNO 3401
+  input_file: requests/G2-RCL-VALID-HNS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    unchecked: [ca:HNO, ca:HNS]
+  notes: >
+    HNS is always unchecked on an RCL match because RCL address ranges do not
+    include suffix-level granularity.
+  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  status: has_test
+
+- id: G2-RCL-HNO-RANGE-END-001
+  description: >
+    HNO exactly at the upper boundary of an RCL address range. State Street in
+    Bismarck has an odd-side segment (RCL OBJECTID 146419) with FromAddr_R=3401
+    and ToAddr_R=3435. HNO=3435 is submitted — the exact upper boundary value.
+    No SSAP record exists for State Street HNO 3435. Verifies boundary-inclusive
+    range checking: an HNO equal to ToAddr must produce an RCL match (HNO unchecked),
+    not fall through to invalid. HNO=3437 (two above boundary) produces invalid.
+  preconditions:
+    - RCL segment (OBJECTID 146419) exists for State Street, Bismarck, Parity_R=O,
+      FromAddr_R=3401, ToAddr_R=3435
+    - No SSAP record for State Street, Bismarck, HNO 3435
+  input_file: requests/G2-RCL-HNO-RANGE-END-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    unchecked: [ca:HNO]
+  notes: >
+    Boundary inclusivity is easy to get wrong with < vs <= comparisons. This test
+    specifically targets the edge case where HNO equals the exact ToAddr_R value.
+    Confirmed: HNO=3435 returns unchecked (in range); HNO=3437 returns invalid (out of range).
+  spec_ref: "§8.2"
+  status: has_test
+
+- id: G2-RCL-HNP-VALID-001
+  description: >
+    HNP (house number prefix, e.g. a letter before the house number) submitted and
+    validated against the RCL HNP field. Confirms that HNP is treated as a regular
+    progressive-filter element on RCL, not unchecked.
+  preconditions:
+    - RCL segment exists with a non-null HNP field (e.g. HNP="A")
+    - Submitted HNO is within the RCL range and submitted HNP matches the field
+    - No SSAP record for the same address
+  input_file: requests/G2-RCL-HNP-VALID-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNP]
+    unchecked: [ca:HNO]
+  notes: >
+    HNP (house number prefix) is distinct from HNS (house number suffix). HNP is a
+    field in the RCL layer and can be validated; HNS is not carried by RCL and is
+    always unchecked. GIS inspection (2026-05-15) found that all AdNumPre_L and
+    AdNumPre_R values in RoadCenterLine are blank spaces — no non-null HNP data
+    exists in the template dataset. A synthetic fixture record would be required.
+  spec_ref: "§8 (Gate 2, RCL)"
+  status: no_test_data

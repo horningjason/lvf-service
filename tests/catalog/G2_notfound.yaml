@@ -1,0 +1,58 @@
+---
+# Gate 2 notFound tests: submitted address matches no record on either SSAP or RCL.
+# When no candidate is found at all (not even a partial match that triggers invalid),
+# the response contains <errors><notFound>.
+#
+# Key distinction:
+#   - Street absent from both layers entirely → notFound
+#   - Street exists in GIS but submitted HNO is outside all ranges → invalid at ca:HNO
+#                                               (see G2-NF-INCOVERAGE-001 below)
+
+- id: G2-NF-NOSTREET-001
+  description: >
+    Street name "Phantom Avenue" does not exist in either the SSAP or RCL GIS layers
+    for the submitted country/A1/A2/A3. Gate 2 SSAP filter finds no candidates at
+    the ca:RD step (zero results). Falls through to RCL which also finds no candidates.
+    Response is <errors><notFound>.
+  preconditions:
+    - No SSAP record for Phantom Avenue in Bismarck, Burleigh County
+    - No RCL segment for Phantom Avenue in Bismarck, Burleigh County
+    - country/A1/A2/A3 values themselves are valid in GIS data (only RD is absent)
+  input_file: requests/G2-NF-NOSTREET-001.xml
+  expected:
+    response_type: notFound
+  notes: >
+    The boundary/coverage lookup succeeds (country, A1, A2, A3 are all within
+    coverage) which is why we get notFound rather than defaultMappingReturned.
+    Compare with G2-SSAP-INVALID-A3-001 where A3 itself is invalid and triggers
+    the default mapping path.
+  spec_ref: "§7, §8, §9"
+  status: has_test
+
+- id: G2-NF-INCOVERAGE-001
+  description: >
+    Knudsen Avenue in Bismarck exists in GIS with RCL segments covering HNO ranges
+    up to a maximum of ToAddr_R=4099 (OBJECTID 147127). Submitted HNO=4200 is clearly
+    above the maximum range of all active segments. No SSAP record exists for Knudsen
+    Avenue HNO 4200. The progressive filter succeeds through country/A1/A2/A3/RD/STS
+    then fails at the HNO range check on both SSAP and RCL.
+    Result: locationValidation with invalid at ca:HNO — NOT notFound.
+  preconditions:
+    - Knudsen Avenue, Bismarck, Burleigh County exists in RCL with segments up to
+      ToAddr_R=4099 (confirmed 2026-05-15)
+    - No SSAP record for Knudsen Avenue, Bismarck with HNO 4200
+    - No RCL segment for Knudsen Avenue, Bismarck with any range covering 4200
+  input_file: requests/G2-NF-INCOVERAGE-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
+    invalid: [ca:HNO]
+  notes: >
+    This test was originally expected to produce notFound but the actual behavior
+    is invalid at ca:HNO. The distinction is: notFound occurs when the street is
+    absent from both layers; when the street exists but HNO is outside all ranges,
+    the filter narrows to zero candidates at the HNO step, reporting invalid at HNO.
+    This test is placed here to document the complementary behavior to G2-NF-NOSTREET-001
+    and clarify the notFound boundary.
+  spec_ref: "§7, §8, §9"
+  status: has_test

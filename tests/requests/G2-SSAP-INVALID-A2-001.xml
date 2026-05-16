@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 SSAP — progressive filter fails at ca:A2 (county not in GIS data).
+
+The submitted A2 value "Cass County" is a real North Dakota county (seat: Fargo)
+but is not provisioned in this GIS deployment. The SSAP progressive filter finds
+no records matching country=US / A1=ND / A2=Cass County. Evaluation stops at A2.
+
+This is distinct from G2-FALL-PREHN-STOPS-001 (Morton County + Bismarck), which
+uses a county that IS in GIS data — that test produces valid A2 / invalid A3.
+Here A2 itself is the point of failure.
+
+Expected: locationValidation with invalid at ca:A2, all elements below unchecked.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Cass County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

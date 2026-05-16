@@ -1,0 +1,202 @@
+---
+# Gate 2 SSAP tests: progressive filter against the SiteStructureAddressPoint layer.
+# SSAP is always searched first. A single matching SSAP record produces a
+# locationValidation response with all submitted elements (including HNO) in <valid>.
+# When SSAP yields no single match, RCL is consulted regardless of which element failed.
+
+- id: G2-SSAP-VALID-001
+  description: >
+    Basic SSAP match: Capitol Way, Bismarck, HNO 1661. No geodetic data submitted.
+    All submitted elements validated against the SSAP record. Response is
+    locationValidation with every submitted element in <valid>.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, Burleigh County, HNO 1661
+  input_file: requests/G2-SSAP-VALID-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  spec_ref: "§7 (Gate 2, SSAP)"
+  status: has_test
+
+- id: G2-SSAP-VALID-002
+  description: >
+    Basic SSAP match on a different address: Monreo Drive, Bismarck, HNO 3702.
+    Confirms the SSAP lookup is not tied to a single hard-coded record.
+  preconditions:
+    - SSAP record exists for Monreo Drive, Bismarck, Burleigh County, HNO 3702
+  input_file: requests/G2-SSAP-VALID-002.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  spec_ref: "§7 (Gate 2, SSAP)"
+  status: has_test
+
+- id: G2-SSAP-VALID-GEODETIC-001
+  description: >
+    Submitted address includes a geodetic point (gml:Point) alongside the civic
+    elements. The LVF ignores geodetic data in Gate 2 evaluation — geometry is
+    used only at response assembly for mapping element selection. The civic SSAP
+    match proceeds normally.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, Burleigh County, HNO 1661
+  input_file: requests/G2-SSAP-VALID-GEODETIC-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    Geodetic coordinates in the request are silently ignored during civic validation
+    per §7.1. The SSAP result is identical to the no-geodetic case.
+  spec_ref: "§7.1, §7.5"
+  status: has_test
+
+- id: G2-SSAP-VALID-CASE-001
+  description: >
+    All civic element values submitted in lowercase (us, nd, burleigh county,
+    bismarck, capitol, way). Verifies case-insensitive exact string matching
+    against GIS field values, which are stored in mixed case.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, Burleigh County, HNO 1661
+    - GIS field values stored in typical mixed case (e.g. "Bismarck", "Burleigh County")
+  input_file: requests/G2-SSAP-VALID-CASE-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    All comparisons are case-insensitive per spec. No normalization is applied to
+    the returned <valid> list — the submitted casing is reflected back.
+  spec_ref: "§3.4"
+  status: has_test
+
+- id: G2-SSAP-VALID-SUBUNIT-001
+  description: >
+    SSAP match with UNIT_PRETYPE and UNIT_VALUE submitted (Unit 11 at North 19th
+    Street, HNO 3420). The SSAP layer has per-unit records. The submitted unit
+    elements disambiguate to a single SSAP record.
+  preconditions:
+    - SSAP record exists for North 19th Street, Bismarck, HNO 3420, Unit 11
+    - At least one other SSAP record exists for the same HNO with a different unit
+      (to confirm disambiguation is required)
+  input_file: requests/G2-SSAP-VALID-SUBUNIT-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:PRD, ca:STS, ca:HNO, cdx2:UNIT_PRETYPE, cdx2:UNIT_VALUE]
+  spec_ref: "§7.3, §7.4"
+  status: has_test
+
+- id: G2-SSAP-EMPTYELEM-UNIT-001
+  description: >
+    UNIT_VALUE element submitted as explicitly empty (present but no text content).
+    The GIS SSAP record has a null UNIT_VALUE field. An empty submitted element
+    matches a null GIS field — the address point is for a single-unit building.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO 1661 with null UNIT_VALUE
+  input_file: requests/G2-SSAP-EMPTYELEM-UNIT-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO, cdx2:UNIT_VALUE]
+  notes: >
+    Empty-element-matches-null semantics: a submitted empty string is treated as
+    "no value" and matches a GIS record where the field is NULL. This prevents a
+    single-unit building from failing because the caller submitted an empty unit element.
+  spec_ref: "§7.3"
+  status: has_test
+
+- id: G2-SSAP-EMPTYELEM-STP-001
+  description: >
+    cae:STP (street type prefix) element submitted as explicitly empty. The GIS
+    SSAP record has a null STP field. Empty submitted element matches null GIS field.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO 1661 with null STP field
+  input_file: requests/G2-SSAP-EMPTYELEM-STP-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, cae:STP, ca:STS, ca:HNO]
+  notes: >
+    Same empty-element-matches-null semantics as G2-SSAP-EMPTYELEM-UNIT-001 but
+    for the STP (street type prefix) field in the cae: namespace.
+  spec_ref: "§7.3"
+  status: has_test
+
+- id: G2-SSAP-INVALID-PRD-001
+  description: >
+    Civic address includes PRD=North (pre-directional) for Capitol Way. No SSAP or
+    RCL record for Capitol Way includes a pre-directional. Both SSAP and RCL
+    progressive filters fail at ca:PRD. Result: invalid at ca:PRD.
+  preconditions:
+    - SSAP records exist for Capitol Way with null PRD
+    - No GIS record (SSAP or RCL) for Capitol Way with PRD=North
+  input_file: requests/G2-SSAP-INVALID-PRD-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD]
+    invalid: [ca:PRD]
+    unchecked: [ca:STS, ca:HNO]
+  notes: >
+    Unchecked elements are those below the invalid element in hierarchy order.
+  spec_ref: "§7 (Gate 2, SSAP)"
+  status: has_test
+
+- id: G2-SSAP-INVALID-A3-001
+  description: >
+    A3 (city) value of "NoSuchCity" does not match any GIS record for the submitted
+    country/A1/A2. Both SSAP and RCL fail at ca:A3. Default mapping returned due to
+    coverage miss.
+  preconditions:
+    - GIS data contains Burleigh County records but no A3=NoSuchCity
+  input_file: requests/G2-SSAP-INVALID-A3-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2]
+    invalid: [ca:A3]
+    unchecked: [ca:RD, ca:STS, ca:HNO]
+  notes: >
+    When both layers fail at A3 and no boundary can be identified for the submitted
+    address, a default mapping is returned with <defaultMappingReturned> warning.
+  spec_ref: "§7 (Gate 2, SSAP), §7.5"
+  status: has_test
+
+- id: G2-SSAP-INVALID-COUNTRY-001
+  description: >
+    Country code CA (Canada) submitted. No boundary is provisioned for CA addresses
+    in this LVF deployment. SSAP filter fails at ca:country because no GIS records
+    match country=CA. Returns invalid at ca:country with default mapping and
+    <defaultMappingReturned> warning.
+  preconditions:
+    - GIS data contains only US-country records
+    - No boundary provisioned for CA country code
+  input_file: requests/G2-SSAP-INVALID-COUNTRY-001.xml
+  expected:
+    response_type: locationValidation
+    invalid: [ca:country]
+    unchecked: [ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    Distinct from G0-URN-UNSUPPORTED-001: Gate 0 passes (urn:service:sos is
+    provisioned), but Gate 2 SSAP fails because no GIS records match the country.
+    The coverage lookup also fails, triggering the default mapping path.
+  spec_ref: "§6.1, §7 (Gate 2, SSAP), §7.5"
+  status: has_test
+
+- id: G2-SSAP-INVALID-A2-001
+  description: >
+    A2 (county) value "Cass County" does not exist in the GIS data for this
+    deployment. Cass County is a real North Dakota county (seat: Fargo) but is not
+    provisioned here. The SSAP progressive filter finds no records matching
+    country=US / A1=ND / A2=Cass County. Evaluation stops at A2. Default mapping
+    returned because no coverage area can be identified from the submitted fields.
+  preconditions:
+    - No SSAP or RCL records with A2="Cass County" in the GIS data
+    - Default mapping configured (LVF_DEFAULT_MAPPING_SOURCE_ID)
+  input_file: requests/G2-SSAP-INVALID-A2-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1]
+    invalid: [ca:A2]
+    unchecked: [ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    Distinct from G2-FALL-PREHN-STOPS-001 and G2-SSAP-INVALID-A3-001 which both
+    use counties that DO exist in GIS (Morton County, Burleigh County) and therefore
+    produce valid A2 before failing at a lower level. For invalid at A2, the submitted
+    county must be absent from the GIS data entirely.
+    Counties in GIS data: Burleigh, McLean, Mercer, Morton, Oliver (as of 2026-05-15).
+  spec_ref: "§6.1, §7 (Gate 2, SSAP), §7.5"
+  status: has_test

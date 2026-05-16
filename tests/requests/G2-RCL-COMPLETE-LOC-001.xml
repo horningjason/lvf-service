@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Highway 83 (STP=Highway, RD=83) in Bismarck, HNO=5900 falls within the RCL address range
+(4300-6799 odd-right side). The submission omits POD and PC. The matched RCL segment has
+POD=Northeast and PC=58503 on the determined side but absent from the submission.
+Expected: RCL match with HNO unchecked, and <rli:completeLocation> adding POD and PC.
+This is the scenario from sample.xml that motivated adding completeLocation to RCL matches.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+                  xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
+                  xml:lang="en-US">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <cae:STP>Highway</cae:STP>
+      <RD>83</RD>
+      <HNO>5900</HNO>
+      <PCN>Bismarck</PCN>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

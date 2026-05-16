@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Highway 83 (STP=Highway, RD=83) exists in RCL for A3=Bismarck (HNO ranges 4300-6799)
+but has no SSAP records. SSAP fails at ca:RD and is discarded; RCL validates through
+RD and STP but fails at HNO=3401 (below all segment ranges, minimum 4300).
+Result: invalid at ca:HNO.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+                  xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
+                  xml:lang="en-US">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <cae:STP>Highway</cae:STP>
+      <RD>83</RD>
+      <HNO>5900</HNO>
+      <PCN>Bismarck</PCN>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>
