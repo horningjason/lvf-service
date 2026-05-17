@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — out-of-coverage admin failure with recursive="true" and loop detected → <errors><loop>.
+
+Cass County is outside this LVF's civic coverage region. Gate 2 fails at ca:A2.
+The client (or a forwarding server) sets recursive="true". The incoming request
+already contains this server's URI (child.lvf.ndaco.org) as a <via> source in
+the <path> element, indicating this request has already passed through this server.
+
+The LVF detects its own URI in <path> before making any outbound HTTP call and
+returns <errors><loop> per RFC 5222 §13.1. No upstream request is attempted.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true" recursive="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Cass County</A2>
+      <A3>Fargo</A3>
+      <RD>Main</RD>
+      <STS>Avenue</STS>
+      <HNO>100</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+  <path>
+    <via source="child.lvf.ndaco.org"/>
+  </path>
+</findService>

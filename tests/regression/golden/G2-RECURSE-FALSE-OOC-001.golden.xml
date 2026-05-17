@@ -1,0 +1,4 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<redirect xmlns="urn:ietf:params:xml:ns:lost1" target="http://192.168.1.69:8001" source="child.lvf.ndaco.org">
+  <message xml:lang="en">Location is outside this LVF's coverage area</message>
+</redirect>

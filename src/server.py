@@ -33,6 +33,7 @@ import pandas as pd
 from shapely.ops import transform, unary_union
 from fastapi import FastAPI, Request, Response
 from lxml import etree
+import httpx
 
 from src import gate0, gate1, gate2, response_assembly
 from src.utils import _is_temporally_active
@@ -816,6 +817,15 @@ def _parse_return_additional_location(body: bytes) -> str:
         return "complete"
 
 
+def _parse_recursive(body: bytes) -> bool:
+    """Return True iff the <findService> recursive attribute is 'true' (RFC 5222 §10)."""
+    try:
+        root = etree.fromstring(body)
+        return root.get("recursive", "false").lower() == "true"
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # XML serialization
 # ---------------------------------------------------------------------------
@@ -1108,6 +1118,116 @@ def _check_ooc_admin(address: CivicAddress, g2):
 
 
 # ---------------------------------------------------------------------------
+# Recursion helpers (RFC 5222 §10 recursive mode)
+# ---------------------------------------------------------------------------
+
+def _has_loop(body: bytes) -> bool:
+    """Return True if _server_uri already appears as a <via> source in the request <path>."""
+    try:
+        root = etree.fromstring(body)
+        path_el = root.find(f"{{{_NS_LOST}}}path")
+        if path_el is None:
+            return False
+        return any(
+            via.get("source") == _server_uri
+            for via in path_el.findall(f"{{{_NS_LOST}}}via")
+        )
+    except Exception:
+        return False
+
+
+def _add_via_to_request(body: bytes) -> bytes:
+    """Add <via source=_server_uri> to the <path> in the outbound request, creating <path> if absent."""
+    try:
+        root = etree.fromstring(body)
+        path_el = root.find(f"{{{_NS_LOST}}}path")
+        if path_el is None:
+            path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
+        via_el = etree.SubElement(path_el, f"{{{_NS_LOST}}}via")
+        via_el.set("source", _server_uri)
+        return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+    except Exception:
+        return body
+
+
+def _prepend_via_to_response(response_body: bytes) -> bytes:
+    """Prepend <via source=_server_uri> to the front of the upstream response <path>."""
+    try:
+        root = etree.fromstring(response_body)
+        path_el = root.find(f".//{{{_NS_LOST}}}path")
+        if path_el is not None:
+            via_el = etree.Element(f"{{{_NS_LOST}}}via")
+            via_el.set("source", _server_uri)
+            path_el.insert(0, via_el)
+        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    except Exception:
+        return response_body
+
+
+def _make_errors_xml(error_type: str, message: str = "") -> bytes:
+    """Build a <errors> response containing loop, serverTimeout, or serverError."""
+    root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+    root.set("source", _server_uri)
+    err = etree.SubElement(root, f"{{{_NS_LOST}}}{error_type}")
+    err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+    if message:
+        err.text = message
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+
+
+def _do_recurse_sync(request_body: bytes) -> bytes:
+    """Synchronous recursive LoST lookup to parent LVF. Returns raw XML response bytes."""
+    if _has_loop(request_body):
+        return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
+    modified = _add_via_to_request(request_body)
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                _parent_uri.rstrip("/") + "/validate",
+                content=modified,
+                headers={"Content-Type": "application/xml"},
+            )
+        if resp.status_code == 200:
+            try:
+                result = _prepend_via_to_response(resp.content)
+                etree.fromstring(result)  # verify response is parseable XML
+                return result
+            except Exception:
+                return _make_errors_xml("serverError", "Parent LVF returned unparseable XML")
+        return _make_errors_xml("serverError", f"Parent LVF returned HTTP {resp.status_code}")
+    except httpx.TimeoutException:
+        return _make_errors_xml("serverTimeout", "Request to parent LVF timed out")
+    except Exception as exc:
+        return _make_errors_xml("serverError", f"Could not reach parent LVF: {exc}")
+
+
+async def _do_recurse_async(request_body: bytes) -> bytes:
+    """Asynchronous recursive LoST lookup to parent LVF. Returns raw XML response bytes."""
+    if _has_loop(request_body):
+        return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
+    modified = _add_via_to_request(request_body)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                _parent_uri.rstrip("/") + "/validate",
+                content=modified,
+                headers={"Content-Type": "application/xml"},
+            )
+        if resp.status_code == 200:
+            try:
+                result = _prepend_via_to_response(resp.content)
+                etree.fromstring(result)  # verify response is parseable XML
+                return result
+            except Exception:
+                return _make_errors_xml("serverError", "Parent LVF returned unparseable XML")
+        return _make_errors_xml("serverError", f"Parent LVF returned HTTP {resp.status_code}")
+    except httpx.TimeoutException:
+        return _make_errors_xml("serverTimeout", "Request to parent LVF timed out")
+    except Exception as exc:
+        return _make_errors_xml("serverError", f"Could not reach parent LVF: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Programmatic entry point (for test harnesses — bypasses HTTP)
 # ---------------------------------------------------------------------------
 
@@ -1137,6 +1257,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     except ValueError as exc:
         return _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body
 
+    recursive = _parse_recursive(xml_bytes)
+
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200).body
 
@@ -1161,6 +1283,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
+        if recursive and isinstance(ooc, RedirectResponse):
+            return _do_recurse_sync(xml_bytes)
         return _to_xml_response(ooc, status=200).body
 
     final = response_assembly.assemble(
@@ -1369,6 +1493,8 @@ async def validate(request: Request) -> Response:
     except ValueError as exc:
         return _to_xml_response(BadRequestResponse(message=str(exc)), status=200)
 
+    recursive = _parse_recursive(body)
+
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200)
 
@@ -1400,6 +1526,9 @@ async def validate(request: Request) -> Response:
 
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
+        if recursive and isinstance(ooc, RedirectResponse):
+            result = await _do_recurse_async(body)
+            return Response(content=result, status_code=200, media_type="application/xml")
         return _to_xml_response(ooc, status=200)
 
     final = response_assembly.assemble(

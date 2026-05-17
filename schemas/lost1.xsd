@@ -49,6 +49,21 @@
 
         <xs:element name="service" type="xs:anyURI"/>
 
+        <!-- <path> is added by intermediate recursive servers before forwarding (RFC 5222 §10) -->
+        <xs:element name="path">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="via" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="source" type="xs:token" use="required"/>
+                  <xs:anyAttribute namespace="##other" processContents="lax"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+            <xs:anyAttribute namespace="##other" processContents="lax"/>
+          </xs:complexType>
+        </xs:element>
+
         <!-- Extension elements from other namespaces (e.g. planned:asOf, rli:*) -->
         <xs:any namespace="##other" processContents="lax"/>
 
