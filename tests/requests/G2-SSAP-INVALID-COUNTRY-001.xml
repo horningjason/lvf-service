@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-This request submits a civic address with an out-of-coverage country code (CA).
-Gate 2 fails at ca:country; all remaining submitted elements are <unchecked> per
-the stop-on-first-invalid rule.
+Gate 2 — admin-level failure at ca:country outside civic coverage → <redirect>.
+
+Country code CA has no provisioned boundary and no civic coverage region entry.
+The progressive filter fails at ca:country (no GIS records match CA). Because the
+failure is at an admin element outside coverage and LVF_PARENT_URI is configured,
+the response is <redirect> to the parent LVF — not <locationValidation> with
+<invalid> at ca:country.
+
+Note: the A1/A2/A3 values below are internally inconsistent (ND/Burleigh County
+are US values, not Canadian). The filter never reaches them — it stops at
+ca:country — so the inconsistency has no effect on the response.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

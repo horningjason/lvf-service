@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-Gate 2 SSAP — progressive filter fails at ca:A2 (county not in GIS data).
+Gate 2 — admin-level failure at ca:A2 outside civic coverage → <redirect>.
 
-The submitted A2 value "Cass County" is a real North Dakota county (seat: Fargo)
-but is not provisioned in this GIS deployment. The SSAP progressive filter finds
-no records matching country=US / A1=ND / A2=Cass County. Evaluation stops at A2.
+Cass County (seat: Fargo) is a real North Dakota county but is not provisioned
+in this GIS deployment. The progressive filter fails at ca:A2 (no GIS records
+match US / ND / Cass County). The civic coverage lookup for the submitted admin
+tuple also yields no match — Cass County is outside this LVF's coverage region.
+Because the failure is at an admin element outside coverage and LVF_PARENT_URI is
+configured, the response is <redirect> to the parent LVF.
 
-This is distinct from G2-FALL-INVALID-A3-001 (Morton County + Bismarck), which
-uses a county that IS in GIS data — that test produces valid A2 / invalid A3.
-Here A2 itself is the point of failure.
-
-Expected: locationValidation with invalid at ca:A2, all elements below unchecked.
+Distinct from G2-FALL-INVALID-A3-001 (Morton County + Bismarck), which uses a
+county that IS in GIS data — that test produces a genuine in-coverage invalid at
+ca:A3, not a redirect.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

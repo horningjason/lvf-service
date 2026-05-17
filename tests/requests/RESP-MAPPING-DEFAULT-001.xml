@@ -1,20 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-Response — defaultMappingReturned when civic coverage lookup cannot resolve.
+Gate 2 — admin-level failure at ca:country outside civic coverage → <redirect>.
 
-When Gate 2 produces a non-conforming result AND the civic coverage region lookup
-does not resolve to a single unambiguous boundary, the LVF must construct a
-synthetic default mapping and emit the <defaultMappingReturned> warning.
+Country code CA has no provisioned boundary and no civic coverage region entry.
+Gate 2 fails at ca:country (no SSAP or RCL records match CA). Because the failure
+is at an admin element outside coverage and LVF_PARENT_URI is configured, the
+response is <redirect> to the parent LVF.
 
-This request submits a completely out-of-coverage address (country=CA, which has
-no provisioned service boundary and no civic coverage region entry). Gate 2 fails
-at ca:country (no SSAP or RCL records match CA). The civic coverage lookup also
-fails because no entry exists for country=CA. The synthetic default mapping
-(displayName="VALIDATION RESULT ONLY", sourceId={00000000-...}, expires=NO-EXPIRATION)
-is returned with <defaultMappingReturned> present in <warnings>.
-
-This confirms the complete fallback path: non-conforming result + coverage miss
-+ synthetic mapping + warning emission.
+This test originally exercised the defaultMappingReturned fallback path before
+the redirect rule was implemented. The redirect rule takes precedence: when an
+out-of-coverage admin failure occurs and a parent LVF is configured, the client
+is redirected rather than receiving a synthetic default mapping.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

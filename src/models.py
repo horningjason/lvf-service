@@ -446,6 +446,15 @@ class LocationInvalidResponse(BaseModel):
 class NotFoundResponse(BaseModel):
     """Gate 2 terminal — filter yielded zero or ambiguous candidates."""
     type: Literal["notFound"] = "notFound"
+    message: Optional[str] = None
+
+
+class RedirectResponse(BaseModel):
+    """Gate 2 out-of-coverage at admin level — redirect to a parent LVF (RFC 5222 §8.6)."""
+    type: Literal["redirect"] = "redirect"
+    target: str
+    source: str
+    message: str = "Location is outside this LVF's coverage area"
 
 
 class LocationValidationUnavailableResponse(BaseModel):
@@ -475,6 +484,7 @@ FindServiceResponse = Annotated[
     | ServiceNotImplementedResponse
     | LocationInvalidResponse
     | NotFoundResponse
+    | RedirectResponse
     | LocationValidationUnavailableResponse
     | LocationValidationResponse,
     Field(discriminator="type"),

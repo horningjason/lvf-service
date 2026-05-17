@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Environment — never bake secrets into the image
+.env
+
+# Development and tooling
+.claude/
+CLAUDE.md
+tests/
+.gitignore
+.gitattributes
+
+# Git
+.git/
+
+# Archives
+*.zip
+*.pkl
+*.pickle
+

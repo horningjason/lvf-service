@@ -44,7 +44,9 @@ from src.models import (
     ForbiddenResponse,
     LocationValidationUnavailableResponse,
     MappingElement,
+    NotFoundResponse,
     RCLRecord,
+    RedirectResponse,
     SSAPRecord,
     ServiceBoundary,
     ValidationRequest,
@@ -145,6 +147,12 @@ _reloading_lock = threading.Lock()
 
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
+_parent_uri:        str = os.environ.get("LVF_PARENT_URI",          "")
+
+# PIDF-LO names of the six admin-level elements subject to the OOC redirect rule
+_ADMIN_PIDF_LO: frozenset[str] = frozenset({
+    "ca:country", "ca:A1", "ca:A2", "ca:A3", "ca:A4", "ca:A5",
+})
 
 _default_mapping_source_id: str = os.environ.get("LVF_DEFAULT_MAPPING_SOURCE_ID", "")
 if not _default_mapping_source_id:
@@ -889,6 +897,17 @@ def _serialize_find_service_response(resp) -> etree._Element:
     return root
 
 
+def _serialize_redirect(resp) -> etree._Element:
+    """Build a <redirect> element per RFC 5222 §8.6."""
+    root = etree.Element(f"{{{_NS_LOST}}}redirect", nsmap={None: _NS_LOST})
+    root.set("target", resp.target)
+    root.set("source", resp.source)
+    msg = etree.SubElement(root, f"{{{_NS_LOST}}}message")
+    msg.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+    msg.text = resp.message
+    return root
+
+
 def _serialize_errors(resp) -> etree._Element:
     """Build an <errors> element for notFound, locationInvalid, serviceNotImplemented."""
     root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
@@ -898,7 +917,7 @@ def _serialize_errors(resp) -> etree._Element:
     err.text = {
         "badRequest":             getattr(resp, "message", None) or "Request does not conform to the LoST findService schema",
         "forbidden":              "This server is provisioned as a Location Validation Function (LVF). Only requests with validateLocation='true' are accepted.",
-        "notFound":               "No matching address record found",
+        "notFound":               getattr(resp, "message", None) or "No matching address record found",
         "locationInvalid":        getattr(resp, "message", None) or "Required element missing or empty",
         "serviceNotImplemented":  "Requested service URN has no provisioned boundary",
     }.get(resp.type, resp.type)
@@ -908,6 +927,8 @@ def _serialize_errors(resp) -> etree._Element:
 def _to_xml_response(resp, status: int) -> Response:
     if resp.type == "locationValidation":
         tree = _serialize_find_service_response(resp)
+    elif resp.type == "redirect":
+        tree = _serialize_redirect(resp)
     elif resp.type == "locationValidationUnavailable":
         # Warning — wrap in findServiceResponse with <warnings>
         root = etree.Element(
@@ -1059,6 +1080,34 @@ def _emit_complete_location(parent: etree._Element, elements: list[tuple[str, st
 
 
 # ---------------------------------------------------------------------------
+# Out-of-coverage admin redirect helper
+# ---------------------------------------------------------------------------
+
+def _check_ooc_admin(address: CivicAddress, g2):
+    """
+    Return a redirect or notFound response when Gate 2 stop-on-first-invalid
+    fired at an admin element (country/A1–A5) that lies outside this LVF's
+    civic coverage region.  Returns None for:
+      - non-admin invalid elements (existing invalid behavior unchanged)
+      - admin invalid elements that ARE within civic coverage (genuine
+        validation failures — e.g. A3=NoSuchCity within a covered county)
+    """
+    if g2.outcome != "invalid" or g2.state.invalid not in _ADMIN_PIDF_LO:
+        return None
+    coverage = lookup_civic_coverage(
+        address.country, address.a1, address.a2,
+        address.a3, address.a4, address.a5,
+    )
+    if coverage is not None:
+        return None  # in coverage — existing invalid behavior applies
+    if _parent_uri:
+        return RedirectResponse(target=_parent_uri, source=_server_uri)
+    return NotFoundResponse(
+        message="Location is outside this LVF's coverage area and no parent LVF is configured"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Programmatic entry point (for test harnesses — bypasses HTTP)
 # ---------------------------------------------------------------------------
 
@@ -1081,12 +1130,12 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     schema_error = _validate_schema(xml_bytes)
     if schema_error is not None:
-        return _to_xml_response(BadRequestResponse(message=schema_error), status=400).body
+        return _to_xml_response(BadRequestResponse(message=schema_error), status=200).body
 
     try:
         req = _parse_request(xml_bytes)
     except ValueError as exc:
-        return _to_xml_response(BadRequestResponse(message=str(exc)), status=400).body
+        return _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200).body
@@ -1109,6 +1158,11 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     ]
     ral = _parse_return_additional_location(xml_bytes)
     g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
+
+    ooc = _check_ooc_admin(req.civic_address, g2)
+    if ooc is not None:
+        return _to_xml_response(ooc, status=200).body
+
     final = response_assembly.assemble(
         g2,
         matched_boundaries,
@@ -1308,12 +1362,12 @@ async def validate(request: Request) -> Response:
 
     schema_error = _validate_schema(body)
     if schema_error is not None:
-        return _to_xml_response(BadRequestResponse(message=schema_error), status=400)
+        return _to_xml_response(BadRequestResponse(message=schema_error), status=200)
 
     try:
         req = _parse_request(body)
     except ValueError as exc:
-        return _to_xml_response(BadRequestResponse(message=str(exc)), status=400)
+        return _to_xml_response(BadRequestResponse(message=str(exc)), status=200)
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200)
@@ -1343,6 +1397,10 @@ async def validate(request: Request) -> Response:
     ]
     ral = _parse_return_additional_location(body)
     g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
+
+    ooc = _check_ooc_admin(req.civic_address, g2)
+    if ooc is not None:
+        return _to_xml_response(ooc, status=200)
 
     final = response_assembly.assemble(
         g2,

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — admin-level failure at ca:A2 outside civic coverage → <redirect>.
+
+Cass County (seat: Fargo) is a real North Dakota county but is not provisioned
+in this LVF deployment. The progressive filter fails at ca:A2 (no GIS records
+match US / ND / Cass County). The civic coverage lookup for the submitted admin
+tuple also yields no match — Cass County is outside this LVF's coverage region.
+
+Because LVF_PARENT_URI is configured and the failure is at an admin element
+outside coverage, the response is <redirect> pointing to the parent LVF rather
+than <locationValidation> with <invalid> at ca:A2.
+
+Companion to G2-SSAP-INVALID-A2-001, which documents the same GIS-level failure
+before the redirect rule was added. That test now also returns <redirect> since
+the behavior of an out-of-coverage admin failure changed globally.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Cass County</A2>
+      <A3>Fargo</A3>
+      <RD>Main</RD>
+      <STS>Avenue</STS>
+      <HNO>100</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

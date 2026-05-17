@@ -1,0 +1,12 @@
+services:
+  lvf:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Optional: mount a local data/ folder to override the included GeoPackage
+      # or supply your own. Remove this volume entry to use only the baked-in data.
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped
