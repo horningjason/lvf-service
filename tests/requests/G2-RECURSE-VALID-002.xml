@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — recursive="true" on provisioned Cass County SSAP record with postal
+elements (PCN, PC) added → findServiceResponse from parent with all elements valid.
+
+REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent
+LVF instance provisioned with Cass County GIS data. This test will fail with a
+serverTimeout or serverError outcome if the parent is unreachable.
+
+Address: 1522 8th Street North, Fargo, ND 58102
+Parent GIS record: NGUID {D2E0AD84-A4B9-4282-A83A-ECA05AE12E6A}
+Source: casscountynd.gov, effective 2023-08-18
+GIS postal fields: Post_Comm=Fargo, Post_Code=58102
+
+Companion to G2-RECURSE-VALID-001. Adds PCN=Fargo and PC=58102 to confirm
+that postal community and ZIP code are validated against the parent's SSAP record.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true" recursive="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Cass County</A2>
+      <A3>Fargo</A3>
+      <RD>8th</RD>
+      <STS>Street</STS>
+      <POD>North</POD>
+      <HNO>1522</HNO>
+      <PCN>Fargo</PCN>
+      <PC>58102</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

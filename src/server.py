@@ -1158,6 +1158,7 @@ def _prepend_via_to_response(response_body: bytes) -> bytes:
         if path_el is not None:
             via_el = etree.Element(f"{{{_NS_LOST}}}via")
             via_el.set("source", _server_uri)
+            via_el.tail = path_el.text  # preserve indentation before the existing <via>
             path_el.insert(0, via_el)
         return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
     except Exception:
