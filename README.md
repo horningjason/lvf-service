@@ -126,7 +126,7 @@ compares the response to a golden file in `tests/regression/golden/`.
 python -m tests.regression.runner
 
 # Run a single test
-python -m tests.regression.runner --test G2-SSAP-VALID-001
+python -m tests.regression.runner --test G2-SSAP-VALID-002
 ```
 
 Exit code is `0` if all pass, `1` if any fail or a golden file is missing.

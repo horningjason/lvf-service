@@ -4,20 +4,6 @@
 # locationValidation response with all submitted elements (including HNO) in <valid>.
 # When SSAP yields no single match, RCL is consulted regardless of which element failed.
 
-- id: G2-SSAP-VALID-001
-  description: >
-    Basic SSAP match: Capitol Way, Bismarck, HNO 1661. No geodetic data submitted.
-    All submitted elements validated against the SSAP record. Response is
-    locationValidation with every submitted element in <valid>.
-  preconditions:
-    - SSAP record exists for Capitol Way, Bismarck, Burleigh County, HNO 1661
-  input_file: requests/G2-SSAP-VALID-001.xml
-  expected:
-    response_type: locationValidation
-    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
-  spec_ref: "§7 (Gate 2, SSAP)"
-  status: has_test
-
 - id: G2-SSAP-VALID-002
   description: >
     Basic SSAP match on a different address: Monreo Drive, Bismarck, HNO 3702.

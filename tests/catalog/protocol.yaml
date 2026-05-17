@@ -71,22 +71,6 @@
   spec_ref: "Pre-Gate-0, RFC 5222 §8"
   status: has_test
 
-- id: PROTO-REQ-ASOF-001
-  description: >
-    findService request containing a <planned:asOf> element. Time-travel queries
-    are not supported by this LVF implementation. Returns <badRequest>.
-  preconditions:
-    - No GIS data required
-  input_file: requests/PROTO-REQ-ASOF-001.xml
-  expected:
-    response_type: badRequest
-  notes: >
-    The asOf rejection is a deliberate scope limitation, not a schema enforcement.
-    The element itself is schema-valid; the server inspects for it explicitly and
-    rejects before any gate logic runs.
-  spec_ref: "Pre-Gate-0, §10"
-  status: has_test
-
 - id: PROTO-REQ-ASOF-FUTURE-001
   description: >
     findService request with a <planned:asOf> datetime specifically in the future
@@ -99,8 +83,10 @@
   expected:
     response_type: badRequest
   notes: >
-    Distinct from PROTO-REQ-ASOF-001 in that the datetime is future-dated.
-    The rejection should be identical — future asOf is not a special case.
-    The asOf value used is 2027-05-15T00:00:00Z (one year from 2026-05-15).
+    Uses a future-dated asOf to confirm the rejection is unconditional — a future
+    asOf is not a special case. The asOf value used is 2027-05-15T00:00:00Z (one
+    year from 2026-05-15). The asOf rejection is a deliberate scope limitation,
+    not a schema enforcement; the element is schema-valid but rejected before
+    any gate logic runs.
   spec_ref: "Pre-Gate-0, §10"
   status: has_test

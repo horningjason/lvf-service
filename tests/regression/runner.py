@@ -11,7 +11,7 @@ Comparison is semantic (parsed XML), not a string diff. Checked fields:
 
 Usage:
     python -m tests.regression.runner                           # run all tests
-    python -m tests.regression.runner --test G2-SSAP-VALID-001  # run one test by name
+    python -m tests.regression.runner --test G2-SSAP-VALID-002  # run one test by name
 """
 
 import argparse

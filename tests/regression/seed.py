@@ -7,7 +7,7 @@ resetting the baseline after an intentional behavior change.
 Usage:
     python -m tests.regression.seed                               # seed all, skip existing
     python -m tests.regression.seed --force                       # overwrite all
-    python -m tests.regression.seed --force G2-SSAP-VALID-001    # overwrite one by name
+    python -m tests.regression.seed --force G2-SSAP-VALID-002    # overwrite one by name
 """
 
 import argparse
