@@ -141,6 +141,28 @@ def _str_match(submitted: str, gis: Optional[str]) -> bool:
     return submitted.lower() == (gis or "").lower()
 
 
+def _field_outcome(
+    submitted: str,
+    gis: Optional[str],
+    null_unchecked: bool = False,
+) -> Literal["match", "null", "mismatch"]:
+    """
+    Categorise one field comparison.
+
+    "match"    — GIS has a value that matches submitted (case-insensitive), or
+                 both are absent/empty (§2.5.7 — empty submitted matches null GIS).
+    "null"     — GIS field is absent, submitted is non-empty, and null_unchecked
+                 is True; the LVF cannot verify the submitted value against GIS.
+    "mismatch" — GIS has a value that does not match submitted, or GIS is absent
+                 and null_unchecked is False (null treated as empty-string mismatch).
+    """
+    if gis is None and submitted and null_unchecked:
+        return "null"
+    if _str_match(submitted, gis):
+        return "match"
+    return "mismatch"
+
+
 def _seed_unchecked(state: FilterState, address: CivicAddress, is_rcl: bool) -> None:
     """
     Pre-populate state.unchecked with submitted elements that will never enter
@@ -214,14 +236,20 @@ def _filter_ssap(
                 candidates = [r for r in candidates if r.add_number == hno_int]
             except ValueError:
                 candidates = []
+            any_match = bool(candidates)
         else:
             attr = _SSAP_FIELD.get(field)
             if attr is None:
                 continue
-            candidates = [
-                r for r in candidates
-                if _str_match(submitted, getattr(r, attr))
-            ]
+            any_match = False
+            next_candidates: list[SSAPRecord] = []
+            for r in candidates:
+                outcome = _field_outcome(submitted, getattr(r, attr), elem.null_unchecked)
+                if outcome != "mismatch":
+                    next_candidates.append(r)
+                    if outcome == "match":
+                        any_match = True
+            candidates = next_candidates
 
         if not candidates:
             state.invalid = elem.pidf_lo
@@ -229,8 +257,10 @@ def _filter_ssap(
             state.terminal = True
             break
 
-        # non-zero candidate set → element evaluated successfully → <valid>
-        state.valid.append(elem.pidf_lo)
+        if any_match:
+            state.valid.append(elem.pidf_lo)
+        else:
+            state.unchecked.append(elem.pidf_lo)
 
     return state, candidates
 
@@ -316,30 +346,39 @@ def _filter_rcl(
             if field_spec is None:
                 continue
 
+            any_match = False
+            next_candidates: list[_RCLCandidate] = []
+
             if isinstance(field_spec, str):
                 # Shared field (street name elements) — same value both sides
-                candidates = [
-                    (r, s) for r, s in candidates
-                    if _str_match(submitted, getattr(r, field_spec))
-                ]
+                for r, s in candidates:
+                    outcome = _field_outcome(submitted, getattr(r, field_spec), elem.null_unchecked)
+                    if outcome != "mismatch":
+                        next_candidates.append((r, s))
+                        if outcome == "match":
+                            any_match = True
             elif not side_determined:
-                # Pre-HNO side-specific: retain if either side matches
+                # Pre-HNO side-specific: retain if neither side disqualifies
                 left_attr, right_attr = field_spec
-                candidates = [
-                    (r, s) for r, s in candidates
-                    if (_str_match(submitted, getattr(r, left_attr))
-                        or _str_match(submitted, getattr(r, right_attr)))
-                ]
+                for r, s in candidates:
+                    l_out = _field_outcome(submitted, getattr(r, left_attr), elem.null_unchecked)
+                    r_out = _field_outcome(submitted, getattr(r, right_attr), elem.null_unchecked)
+                    if l_out != "mismatch" or r_out != "mismatch":
+                        next_candidates.append((r, s))
+                        if l_out == "match" or r_out == "match":
+                            any_match = True
             else:
                 # Post-HNO: use the per-record determined side
                 left_attr, right_attr = field_spec
-                candidates = [
-                    (r, s) for r, s in candidates
-                    if _str_match(
-                        submitted,
-                        getattr(r, left_attr if s == "L" else right_attr),
-                    )
-                ]
+                for r, s in candidates:
+                    gis_val = getattr(r, left_attr if s == "L" else right_attr)
+                    outcome = _field_outcome(submitted, gis_val, elem.null_unchecked)
+                    if outcome != "mismatch":
+                        next_candidates.append((r, s))
+                        if outcome == "match":
+                            any_match = True
+
+            candidates = next_candidates
 
             if not candidates:
                 state.invalid = elem.pidf_lo
@@ -347,8 +386,10 @@ def _filter_rcl(
                 state.terminal = True
                 break
 
-            # non-zero candidate set → element evaluated successfully → <valid>
-            state.valid.append(elem.pidf_lo)
+            if any_match:
+                state.valid.append(elem.pidf_lo)
+            else:
+                state.unchecked.append(elem.pidf_lo)
 
     return state, candidates
 

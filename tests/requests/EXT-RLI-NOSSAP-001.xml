@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-Extension — rli:returnAdditionalLocation="complete" requested on an RCL-path address.
+Extension — rli:returnAdditionalLocation="complete" on an RCL-path address.
 
-State Street, Bismarck, HNO 3401 produces an RCL match (no SSAP exists for this
-address). The rli:returnAdditionalLocation="complete" attribute is included in the
-request. Per the Similar Location Extension spec, completeLocation is only populated
-on SSAP matches where HNO appears in <valid>. An RCL match (HNO unchecked) must
-NOT return <rli:completeLocation> regardless of the attribute value.
+State Street, Bismarck, HNO 3401 produces an RCL match (no SSAP record exists for
+this address). The submission omits PCN and PC. The matched RCL segment has
+PostComm_R=Bismarck and PostCode_R=58503, both absent from the submission.
 
-This test is meaningful when LVF_ENABLE_SIMILAR_LOCATION=true. When the extension
-is disabled, the rli attribute is silently ignored and the response is identical.
-The golden file is correct in both configurations since no rli: elements appear for
-an RCL match.
-
-Expected: locationValidation with HNO unchecked and no rli:completeLocation in
-the response body.
+Expected: RCL match with HNO unchecked, and <rli:completeLocation> adding PCN and PC.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1"
              xmlns:rli="urn:ietf:params:xml:ns:lost-rli1"

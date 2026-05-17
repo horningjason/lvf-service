@@ -35,3 +35,7 @@ htmlcov/
 
 # Archives
 *.zip
+
+# CLAUDE
+.claude/
+CLAUDE.md

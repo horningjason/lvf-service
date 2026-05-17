@@ -4,7 +4,7 @@ Protocol — missing <service> element returns <badRequest>.
 
 The LoST findService schema requires a <service> element containing the requested
 service URN. A request missing this element is structurally incomplete and must
-return a <badRequest> error response. This is distinct from validate_21
+return a <badRequest> error response. This is distinct from G0-URN-UNSUPPORTED-001
 (well-formed request with a URN that has no provisioned boundary, which returns
 <serviceNotImplemented> from Gate 0).
 

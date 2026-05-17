@@ -5,7 +5,7 @@ Gate 2 — DT and HNC are always-unchecked on all layers.
 DT (Direction of Travel) and HNC (Address Number Complete) are defined as
 always-unchecked: they are never passed to the progressive filter regardless
 of the active layer, and are always placed in <unchecked> in the response.
-This complements validate_19 (which covers LOC and PLC) by testing the
+This complements EXT-UNCHECKED-LOC-001 (which covers LOC and PLC) by testing the
 remaining two always-unchecked elements.
 
 This request submits DT and HNC alongside a valid SSAP match (Capitol Way 1661,

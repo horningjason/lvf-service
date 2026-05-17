@@ -1,8 +1,11 @@
 # LVF — Location Validation Function
 
 A reference implementation of the NG9-1-1 Location Validation Function (LVF) as specified in
-`LVF_Algorithm_Specification_vXX.docx`. Validates civic PIDF-LO addresses against provisioned
+`LVF_Algorithm_Specification_v44.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222).
+
+> **Note:** This is a reference implementation intended for 911 Authorities, GIS staff,
+> LVF vendors and LIS vendors evaluating LVF conformance. It is not production-hardened.
 
 ---
 
@@ -17,8 +20,8 @@ GIS data using the LoST protocol (RFC 5222).
 
 ```bash
 # 1. Clone the repository
-git clone <repo-url>
-cd <repo-name>
+git clone https://github.com/horningjason/lvf-service
+cd lvf-service
 
 # 2. Create and activate a virtual environment
 python -m venv .venv

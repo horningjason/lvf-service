@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SSAP match on Prairie Pines Loop, Burleigh County (HNO 3806).
+Submitted PC cannot be verified because Post_Code is null on the matched SSAP record.
+A null GIS field is distinct from a mismatch — the LVF has no value to compare against.
+PC is placed in <unchecked>; HNO is <valid> because SSAP confirms the exact point.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <RD>Prairie Pines</RD>
+      <STS>Loop</STS>
+      <HNO>3806</HNO>
+      <PC>58503</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

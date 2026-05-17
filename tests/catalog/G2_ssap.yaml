@@ -200,3 +200,49 @@
     Counties in GIS data: Burleigh, McLean, Mercer, Morton, Oliver (as of 2026-05-15).
   spec_ref: "§6.1, §7 (Gate 2, SSAP), §7.5"
   status: has_test
+
+- id: G2-SSAP-PCN-NULLGIS-001
+  description: >
+    Submitted PCN cannot be verified because the matched GIS record has a null
+    Post_Comm field. The element is placed in <unchecked> rather than <invalid>
+    — the LVF has no GIS value to compare against. SSAP match path.
+  preconditions:
+    - SSAP record NGUID = {C492152E-3D9D-482B-BA3C-6B1C0F4994DC} has null Post_Comm
+    - Submitted HNO 3806 matches the record exactly
+  input_file: requests/G2-SSAP-PCN-NULLGIS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:RD, ca:STS, ca:HNO]
+    invalid: []
+    unchecked: [ca:PCN]
+  notes: >
+    Null GIS field is distinct from a mismatched GIS field. A submitted element
+    whose corresponding GIS field is null cannot be evaluated and is therefore
+    unchecked, not invalid. Tests the same null-handling behavior as the
+    empty-element match cases (INF-027 §2.5.7) but from the opposite direction
+    — the GIS field is null, not the submitted value.
+  spec_ref: "§6.4, §6.6"
+  status: has_test
+
+- id: G2-SSAP-PC-NULLGIS-001
+  description: >
+    Submitted PC cannot be verified because the matched GIS record has a null
+    Post_Code field. The element is placed in <unchecked> rather than <invalid>
+    — the LVF has no GIS value to compare against. SSAP match path.
+  preconditions:
+    - SSAP record NGUID = {C492152E-3D9D-482B-BA3C-6B1C0F4994DC} has null Post_Code
+    - Submitted HNO 3806 matches the record exactly
+  input_file: requests/G2-SSAP-PC-NULLGIS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:RD, ca:STS, ca:HNO]
+    invalid: []
+    unchecked: [ca:PC]
+  notes: >
+    Null GIS field is distinct from a mismatched GIS field. A submitted element
+    whose corresponding GIS field is null cannot be evaluated and is therefore
+    unchecked, not invalid. Tests the same null-handling behavior as the
+    empty-element match cases (INF-027 §2.5.7) but from the opposite direction
+    — the GIS field is null, not the submitted value.
+  spec_ref: "§6.4, §6.6"
+  status: has_test

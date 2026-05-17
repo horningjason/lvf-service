@@ -7,7 +7,7 @@ Gate 1 distinguishes between an absent element (tag missing) and an empty elemen
 vs "is empty". This request has <A1></A1> present but empty. The expected outcome
 is <locationInvalid> with message "Required element ca:A1 is empty".
 
-Compare with validate_28 (A1 absent entirely -> "is absent").
+Compare with G1-STRUCT-MISSING-A1-001 (A1 absent entirely -> "is absent").
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

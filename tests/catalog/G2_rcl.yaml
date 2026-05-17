@@ -145,3 +145,49 @@
     exists in the template dataset. A synthetic fixture record would be required.
   spec_ref: "§8 (Gate 2, RCL)"
   status: no_test_data
+
+- id: G2-RCL-PCN-NULLGIS-001
+  description: >
+    Submitted PCN cannot be verified because the matched GIS record has a null
+    PostComm field. The element is placed in <unchecked> rather than <invalid>
+    — the LVF has no GIS value to compare against. RCL match path.
+  preconditions:
+    - RCL record NGUID = {CDFAEDC6-B945-49FE-AA7F-DC19FFDBCE1D} has null PostComm_L and PostComm_R
+    - Submitted HNO 3601 (odd) falls within the right-side range 3601–3699 of that record
+  input_file: requests/G2-RCL-PCN-NULLGIS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:POD]
+    invalid: []
+    unchecked: [ca:HNO, ca:PCN]
+  notes: >
+    Null GIS field is distinct from a mismatched GIS field. A submitted element
+    whose corresponding GIS field is null cannot be evaluated and is therefore
+    unchecked, not invalid. Tests the same null-handling behavior as the
+    empty-element match cases (INF-027 §2.5.7) but from the opposite direction
+    — the GIS field is null, not the submitted value.
+  spec_ref: "§6.4, §6.6"
+  status: has_test
+
+- id: G2-RCL-PC-NULLGIS-001
+  description: >
+    Submitted PC cannot be verified because the matched GIS record has a null
+    PostCode field. The element is placed in <unchecked> rather than <invalid>
+    — the LVF has no GIS value to compare against. RCL match path.
+  preconditions:
+    - RCL record NGUID = {CDFAEDC6-B945-49FE-AA7F-DC19FFDBCE1D} has null PostCode_L and PostCode_R
+    - Submitted HNO 3601 (odd) falls within the right-side range 3601–3699 of that record
+  input_file: requests/G2-RCL-PC-NULLGIS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:POD]
+    invalid: []
+    unchecked: [ca:HNO, ca:PC]
+  notes: >
+    Null GIS field is distinct from a mismatched GIS field. A submitted element
+    whose corresponding GIS field is null cannot be evaluated and is therefore
+    unchecked, not invalid. Tests the same null-handling behavior as the
+    empty-element match cases (INF-027 §2.5.7) but from the opposite direction
+    — the GIS field is null, not the submitted value.
+  spec_ref: "§6.4, §6.6"
+  status: has_test

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+RCL match on 43rd Avenue Northeast, Bismarck (HNO 3601, right side, odd parity).
+Submitted PC cannot be verified because PostCode_R is null on the matched RCL record.
+A null GIS field is distinct from a mismatch — the LVF has no value to compare against.
+PC is placed in <unchecked>; HNO is <unchecked> per INF-027 §2.5.8.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>43rd</RD>
+      <STS>Avenue</STS>
+      <POD>Northeast</POD>
+      <HNO>3601</HNO>
+      <PC>58503</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

@@ -3,7 +3,7 @@
 This request submits a civic address with an empty HNO element (tag present, no text
 content). Gate 1 requires HNO to be present and non-empty; an empty string fails this
 check and produces a <locationInvalid> error response. This is distinct from a
-non-integer HNO (validate_23), which passes Gate 1 but fails in Gate 2.
+non-integer HNO (G2-FALL-NONINT-HNO-001), which passes Gate 1 but fails in Gate 2.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

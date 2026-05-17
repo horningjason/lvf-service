@@ -3,7 +3,7 @@
 Protocol — malformed XML returns <badRequest>.
 
 A request that is not well-formed XML (as opposed to well-formed but schema-invalid,
-tested in validate_16) must return a <badRequest> error response. This is a
+tested in PROTO-REQ-BADNS-001) must return a <badRequest> error response. This is a
 pre-Gate-0 check that fires before any schema or semantic validation.
 
 The XML below is intentionally malformed: the closing tag for <findService> is

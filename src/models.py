@@ -101,6 +101,7 @@ class ElementInfo:
     pidf_lo: str                # namespaced element name used in RFC 5222 response lists
     always_unchecked: bool = False  # skip on all layers, add to <unchecked>
     rcl_unchecked: bool = False     # skip on RCL only, add to <unchecked>
+    null_unchecked: bool = False    # null GIS field → element unchecked (not invalid)
 
 
 ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
@@ -139,8 +140,8 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("seat",          "ca:SEAT",           rcl_unchecked=True),
     ElementInfo("pn",            "cae:PN",            rcl_unchecked=True),
     # Postal
-    ElementInfo("pcn",           "ca:PCN"),
-    ElementInfo("pc",            "ca:PC"),
+    ElementInfo("pcn",           "ca:PCN",           null_unchecked=True),
+    ElementInfo("pc",            "ca:PC",            null_unchecked=True),
     ElementInfo("pce",           "cae:PCE",           rcl_unchecked=True),
     # Always-unchecked (outside the 33-position filter sequence)
     ElementInfo("dt",            "cdx2:DT",           always_unchecked=True),
