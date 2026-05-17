@@ -3,7 +3,7 @@
 # is exercised. When SSAP yields no single match, RCL is always consulted
 # regardless of which element caused the failure.
 
-- id: G2-FALL-PREHN-STOPS-001
+- id: G2-FALL-INVALID-A3-001
   description: >
     Address submitted with A2=Morton County, A3=Bismarck. Morton County is valid in
     GIS but Bismarck does not exist under Morton County — Bismarck is in Burleigh
@@ -13,7 +13,7 @@
   preconditions:
     - GIS data contains Morton County (A2 match succeeds on both layers)
     - No SSAP or RCL record for A2=Morton County, A3=Bismarck (A3 match fails on both)
-  input_file: requests/G2-FALL-PREHN-STOPS-001.xml
+  input_file: requests/G2-FALL-INVALID-A3-001.xml
   expected:
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2]
@@ -21,9 +21,9 @@
     unchecked: [ca:RD, ca:STS, ca:HNO]
   notes: >
     Both layers independently fail at A3. The result is invalid at ca:A3 regardless
-    of layer search order. (The test name "PREHN-STOPS" is a historical artifact from
-    when a pre-HNO stop rule existed; that rule has since been removed. The behavior
-    being tested — invalid at A3 when the city is in the wrong county — is unchanged.)
+    of layer search order. Distinct from G2-SSAP-INVALID-A3-001 (NoSuchCity — A3
+    doesn't exist anywhere in GIS); here A3 is a real city provisioned under a
+    different county.
   spec_ref: "§6.1"
   status: has_test
 

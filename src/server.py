@@ -972,8 +972,10 @@ def _complete_location_ssap(parent: etree._Element, data) -> None:
     if not elements:
         return
 
+    # Suppress only when every submitted value exactly matches the canonical GIS value
+    # (case-sensitive). Gate 2 comparison is case-insensitive; this check is not.
     if address is not None and all(
-        getattr(address, field, None) is not None for _, field, _ in elements
+        getattr(address, field, None) == gis_val for _, field, gis_val in elements
     ):
         return
 
@@ -1034,8 +1036,10 @@ def _complete_location_rcl(parent: etree._Element, data) -> None:
     if not elements:
         return
 
+    # Suppress only when every submitted value exactly matches the canonical GIS value
+    # (case-sensitive). Gate 2 comparison is case-insensitive; this check is not.
     if address is not None and all(
-        getattr(address, field, None) is not None for _, field, _ in elements
+        getattr(address, field, None) == gis_val for _, field, gis_val in elements
     ):
         return
 

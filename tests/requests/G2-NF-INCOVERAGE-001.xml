@@ -3,17 +3,17 @@
 Gate 2 — street exists in GIS but submitted HNO is outside all RCL address ranges.
 
 Knudsen Avenue in Bismarck has RCL segments with address ranges up to a maximum
-of ToAddr_R=4099 (OBJECTID 147127). HNO=4200 is clearly above that maximum.
-No SSAP record exists for Knudsen Avenue HNO 4200.
+of ToAddr_R=4099. HNO=4200 is above that maximum. No SSAP record exists for
+Knudsen Avenue HNO 4200.
 
 The progressive filter succeeds through country / A1 / A2 / A3 / RD / STS.
 At the HNO step, SSAP finds no matching record and RCL finds no segment whose
-range includes 4200. Both layers fail at HNO.
+range includes 4200. Stop-on-first-invalid fires at ca:HNO.
 
-NOTE: The result is locationValidation with invalid at ca:HNO — NOT <notFound>.
-notFound occurs only when the street is absent from both GIS layers entirely.
-When the street exists but HNO falls outside all ranges, the result is invalid
-at ca:HNO. This test documents that distinction explicitly.
+NOTE: The NF prefix in this test's name describes the scenario (no valid address
+found at this HNO), not the response type. The result is <invalid> at ca:HNO,
+not a <notFound> error response — stop-on-first-invalid always produces <invalid>
+at the failing element regardless of the reason the filter exhausted candidates.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

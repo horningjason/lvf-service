@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SSAP match on Capitol Way 1661 with all nine fields submitted using exact GIS casing.
+
+Every submitted value matches the canonical GIS value case-sensitively, so
+completeLocation is suppressed — there is nothing to correct or complete.
+
+Companion to G2-SSAP-CASING-MISMATCH-001, which submits A2 as "Burleigh county"
+(lowercase 'c') and confirms completeLocation is returned with canonical casing.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS>Way</STS>
+      <HNO>1661</HNO>
+      <PCN>Bismarck</PCN>
+      <PC>58501</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

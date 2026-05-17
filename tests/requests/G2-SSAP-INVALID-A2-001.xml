@@ -6,7 +6,7 @@ The submitted A2 value "Cass County" is a real North Dakota county (seat: Fargo)
 but is not provisioned in this GIS deployment. The SSAP progressive filter finds
 no records matching country=US / A1=ND / A2=Cass County. Evaluation stops at A2.
 
-This is distinct from G2-FALL-PREHN-STOPS-001 (Morton County + Bismarck), which
+This is distinct from G2-FALL-INVALID-A3-001 (Morton County + Bismarck), which
 uses a county that IS in GIS data — that test produces valid A2 / invalid A3.
 Here A2 itself is the point of failure.
 

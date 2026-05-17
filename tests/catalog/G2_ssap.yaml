@@ -193,7 +193,7 @@
     invalid: [ca:A2]
     unchecked: [ca:A3, ca:RD, ca:STS, ca:HNO]
   notes: >
-    Distinct from G2-FALL-PREHN-STOPS-001 and G2-SSAP-INVALID-A3-001 which both
+    Distinct from G2-FALL-INVALID-A3-001 and G2-SSAP-INVALID-A3-001 which both
     use counties that DO exist in GIS (Morton County, Burleigh County) and therefore
     produce valid A2 before failing at a lower level. For invalid at A2, the submitted
     county must be absent from the GIS data entirely.
