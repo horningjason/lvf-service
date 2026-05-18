@@ -787,7 +787,7 @@ def lookup_civic_coverage(
 # XML parsing
 # ---------------------------------------------------------------------------
 
-def _parse_request(body: bytes) -> ValidationRequest:
+def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.datetime]]:
     """
     Parse a LoST findService XML request (RFC 5222) into a ValidationRequest.
 
@@ -819,12 +819,19 @@ def _parse_request(body: bytes) -> ValidationRequest:
             # Present but empty text → "" (empty); absent tag → not in fields → None
             fields[ca_field] = child.text if child.text is not None else ""
 
+    as_of: Optional[datetime.datetime] = None
     as_of_el = root.find(f"{{{_NS_PLANNED}}}asOf")
-    if as_of_el is not None:
-        raise ValueError(
-            "This LVF does not support 'asOf' queries. "
-            "Remove the planned:asOf element and resubmit to validate against the current active dataset."
-        )
+    if as_of_el is not None and as_of_el.text:
+        try:
+            text = as_of_el.text.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            ts = datetime.datetime.fromisoformat(text)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=datetime.timezone.utc)
+            as_of = ts
+        except ValueError:
+            pass  # Unparseable timestamp — treat as absent
 
     validate_location = root.get("validateLocation", "false")
 
@@ -832,7 +839,7 @@ def _parse_request(body: bytes) -> ValidationRequest:
         service_urn=service_urn,
         civic_address=CivicAddress(**fields),
         validate_location=validate_location,
-    )
+    ), as_of
 
 
 def _parse_return_additional_location(body: bytes) -> str:
@@ -868,12 +875,12 @@ def _parse_recursive(body: bytes) -> bool:
 # XML serialization
 # ---------------------------------------------------------------------------
 
-def _mapping_element(parent: etree._Element, mapping) -> None:
+def _mapping_element(parent: etree._Element, mapping, force_no_cache: bool = False) -> None:
     """Append a <mapping> child element to parent (RFC 5222 §8.4.1)."""
     m = etree.SubElement(parent, f"{{{_NS_LOST}}}mapping")
 
     # Required attributes — fall back to spec-defined defaults when GIS data absent
-    m.set("expires",     mapping.expires     or "NO-EXPIRATION")
+    m.set("expires",     "NO-CACHE" if force_no_cache else (mapping.expires or "NO-EXPIRATION"))
     m.set("lastUpdated", mapping.last_updated or
           datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     m.set("source",   mapping.source or _server_uri)
@@ -897,14 +904,26 @@ def _mapping_element(parent: etree._Element, mapping) -> None:
         sn.text = mapping.service_num
 
 
-def _serialize_find_service_response(resp) -> etree._Element:
+def _serialize_find_service_response(
+    resp,
+    as_of_used: Optional[datetime.datetime] = None,
+) -> etree._Element:
     """Build a <findServiceResponse> element for locationValidation outcomes."""
     root = etree.Element(
         f"{{{_NS_LOST}}}findServiceResponse",
         nsmap=_RESPONSE_NSMAP,
     )
     for mapping in resp.mapping:
-        _mapping_element(root, mapping)
+        _mapping_element(root, mapping, force_no_cache=(as_of_used is not None))
+
+    # Per draft-ietf-ecrit-lost-planned-changes §4: echo <asOf> on future-asOf responses
+    if as_of_used is not None:
+        as_of_el = etree.SubElement(
+            root,
+            f"{{{_NS_PLANNED}}}asOf",
+            nsmap={"planned": _NS_PLANNED},
+        )
+        as_of_el.text = as_of_used.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     lv = resp.location_validation
     lv_el = etree.SubElement(root, f"{{{_NS_LOST}}}locationValidation")
@@ -919,12 +938,14 @@ def _serialize_find_service_response(resp) -> etree._Element:
         el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}unchecked")
         el.text = " ".join(lv.unchecked)
 
-    planned_el = etree.SubElement(
-        lv_el,
-        f"{{{_NS_PLANNED}}}revalidateAfter",
-        nsmap={"planned": _NS_PLANNED},
-    )
-    planned_el.text = resp.revalidate_after or "NO-EXPIRATION"
+    # Per draft-ietf-ecrit-lost-planned-changes §5: suppress revalidateAfter on asOf responses
+    if as_of_used is None:
+        planned_el = etree.SubElement(
+            lv_el,
+            f"{{{_NS_PLANNED}}}revalidateAfter",
+            nsmap={"planned": _NS_PLANNED},
+        )
+        planned_el.text = resp.revalidate_after or "NO-EXPIRATION"
 
     if resp.complete_location_record is not None:
         _serialize_complete_location(lv_el, resp.complete_location_record)
@@ -972,9 +993,13 @@ def _serialize_errors(resp) -> etree._Element:
     return root
 
 
-def _to_xml_response(resp, status: int) -> Response:
+def _to_xml_response(
+    resp,
+    status: int,
+    as_of_used: Optional[datetime.datetime] = None,
+) -> Response:
     if resp.type == "locationValidation":
-        tree = _serialize_find_service_response(resp)
+        tree = _serialize_find_service_response(resp, as_of_used=as_of_used)
     elif resp.type == "redirect":
         tree = _serialize_redirect(resp)
     elif resp.type == "locationValidationUnavailable":
@@ -1969,7 +1994,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         return _to_xml_response(BadRequestResponse(message=schema_error), status=200).body
 
     try:
-        req = _parse_request(xml_bytes)
+        req, as_of_raw = _parse_request(xml_bytes)
     except ValueError as exc:
         return _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body
 
@@ -2015,7 +2040,16 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
+    # KNOWN LIMITATION: civic/geodetic coverage regions are derived at load time against
+    # the real datetime.now(). Out-of-coverage redirect decisions for future asOf queries
+    # may not reflect future-staged records — acceptable per the draft's own caveats about
+    # future query stability (draft-ietf-ecrit-lost-planned-changes §4).
     now = datetime.datetime.now(datetime.timezone.utc)
+    as_of_used: Optional[datetime.datetime] = None
+    if as_of_raw is not None and as_of_raw > now:
+        now = as_of_raw
+        as_of_used = as_of_raw
+
     g0 = gate0.check(effective_urn, _boundaries, now)
     if g0 is not None:
         return _to_xml_response(g0, status=200).body
@@ -2053,7 +2087,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    return _to_xml_response(final, status=200).body
+    return _to_xml_response(final, status=200, as_of_used=as_of_used).body
 
 
 # ---------------------------------------------------------------------------
@@ -2293,7 +2327,7 @@ async def validate(request: Request) -> Response:
         return _to_xml_response(BadRequestResponse(message=schema_error), status=200)
 
     try:
-        req = _parse_request(body)
+        req, as_of_raw = _parse_request(body)
     except ValueError as exc:
         return _to_xml_response(BadRequestResponse(message=str(exc)), status=200)
 
@@ -2342,8 +2376,15 @@ async def validate(request: Request) -> Response:
             status=200,
         )
 
-    # Single datetime.now(UTC) captured once per request
+    # KNOWN LIMITATION: civic/geodetic coverage regions are derived at load time against
+    # the real datetime.now(). Out-of-coverage redirect decisions for future asOf queries
+    # may not reflect future-staged records — acceptable per the draft's own caveats about
+    # future query stability (draft-ietf-ecrit-lost-planned-changes §4).
     now = datetime.datetime.now(datetime.timezone.utc)
+    as_of_used: Optional[datetime.datetime] = None
+    if as_of_raw is not None and as_of_raw > now:
+        now = as_of_raw
+        as_of_used = as_of_raw
 
     # Gate 0 — service URN / boundary check
     g0 = gate0.check(effective_urn, _boundaries, now)
@@ -2387,4 +2428,4 @@ async def validate(request: Request) -> Response:
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    return _to_xml_response(final, status=200)
+    return _to_xml_response(final, status=200, as_of_used=as_of_used)
