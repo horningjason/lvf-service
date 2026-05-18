@@ -61,6 +61,7 @@ from src.models import (
     NotFoundResponse,
     RCLRecord,
     RedirectResponse,
+    ServiceNotImplementedResponse,
     SSAPRecord,
     ServiceBoundary,
     ValidationRequest,
@@ -162,6 +163,7 @@ _reloading: bool = False
 _reloading_lock = threading.Lock()
 
 _routing_only: bool = False          # True when no GeoPackage is loaded
+_forest_guide_mode: bool = os.environ.get("LVF_FOREST_GUIDE_MODE", "").lower() == "true"
 _gis_last_loaded: Optional[datetime.datetime] = None  # UTC time of last successful GIS load
 
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
@@ -542,6 +544,23 @@ def initialize(gpkg_path: str | None = None) -> None:
     _schema = _load_schema()
     if _schema is None:
         log.warning("Operating without XML schema validation")
+
+    if _forest_guide_mode:
+        log.info(
+            "Forest Guide mode active (LVF_FOREST_GUIDE_MODE=true): "
+            "this node routes requests via redirect or notFound — no GIS validation"
+        )
+        if gpkg_path or os.environ.get("LVF_GPKG_PATH"):
+            log.warning(
+                "LVF_GPKG_PATH is set but ignored in Forest Guide mode — no GIS data will be loaded"
+            )
+        if os.environ.get("LVF_PARENT_URI"):
+            log.warning(
+                "LVF_PARENT_URI is set but ignored in Forest Guide mode — "
+                "Forest Guides have no parent (RFC 5582 §8)"
+            )
+        _routing_only = True
+        return
 
     path = gpkg_path or os.environ.get("LVF_GPKG_PATH")
     if path:
@@ -1845,7 +1864,7 @@ async def _startup_sync() -> None:
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
 
-    if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri:
+    if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri and not _forest_guide_mode:
         await _push_coverage_to_parent()
 
     for child_url in _sync_children:
@@ -1859,7 +1878,7 @@ def _maybe_schedule_repush() -> None:
     """
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-    if not (sync_source_id_civic or sync_source_id_geodetic) or not _parent_uri:
+    if not (sync_source_id_civic or sync_source_id_geodetic) or not _parent_uri or _forest_guide_mode:
         return
     loop = _event_loop
     if loop is None or not loop.is_running():
@@ -1906,6 +1925,31 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200).body
+
+    # Forest Guide mode: URN check, then always redirect to matched child — never recurse, no parent escalation
+    if _forest_guide_mode:
+        effective_urn, _ = _resolve_service_urn(req.service_urn)
+        if effective_urn.lower() != "urn:service:sos":
+            return _to_xml_response(ServiceNotImplementedResponse(), status=200).body
+        child_match = _lookup_child_coverage(
+            req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
+            req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
+        )
+        if child_match:
+            child_uri = child_match.get("child_uri", "")
+            if child_uri:
+                return _to_xml_response(
+                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                ).body
+            log.warning(
+                "Forest Guide: child coverage match found but child_uri is empty "
+                "(source=%s) — returning notFound",
+                child_match.get("source", ""),
+            )
+        return _to_xml_response(
+            NotFoundResponse(message="No child LVF covers this location"),
+            status=200,
+        ).body
 
     # Child coverage store lookup — before Gate 0 when the store is non-empty
     if _child_coverage:
@@ -2006,6 +2050,29 @@ async def _lifespan(app: FastAPI):
         log.warning("Operating without XML schema validation")
 
     _event_loop = asyncio.get_running_loop()
+
+    if _forest_guide_mode:
+        log.info(
+            "Forest Guide mode active (LVF_FOREST_GUIDE_MODE=true): "
+            "this node routes requests via redirect or notFound — no GIS validation"
+        )
+        gpkg_env = os.environ.get("LVF_GPKG_PATH")
+        if gpkg_env:
+            log.warning(
+                "LVF_GPKG_PATH=%r is set but ignored in Forest Guide mode — no GIS data will be loaded",
+                gpkg_env,
+            )
+        if os.environ.get("LVF_PARENT_URI"):
+            log.warning(
+                "LVF_PARENT_URI=%r is set but ignored in Forest Guide mode — "
+                "Forest Guides have no parent (RFC 5582 §8)",
+                os.environ["LVF_PARENT_URI"],
+            )
+        _routing_only = True
+        _load_child_coverage()
+        asyncio.create_task(_startup_sync())
+        yield
+        return
 
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     gpkg_exists = gpkg_path and os.path.exists(gpkg_path)
@@ -2239,6 +2306,31 @@ async def validate(request: Request) -> Response:
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200)
+
+    # Forest Guide mode: URN check, then always redirect to matched child — never recurse, no parent escalation
+    if _forest_guide_mode:
+        effective_urn, _ = _resolve_service_urn(req.service_urn)
+        if effective_urn.lower() != "urn:service:sos":
+            return _to_xml_response(ServiceNotImplementedResponse(), status=200)
+        child_match = _lookup_child_coverage(
+            req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
+            req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
+        )
+        if child_match:
+            child_uri = child_match.get("child_uri", "")
+            if child_uri:
+                return _to_xml_response(
+                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                )
+            log.warning(
+                "Forest Guide: child coverage match found but child_uri is empty "
+                "(source=%s) — returning notFound",
+                child_match.get("source", ""),
+            )
+        return _to_xml_response(
+            NotFoundResponse(message="No child LVF covers this location"),
+            status=200,
+        )
 
     # Resolve alias URN to the effective provisioned URN
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
