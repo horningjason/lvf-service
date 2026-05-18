@@ -5,17 +5,20 @@ Accepts LoST findService requests as XML (RFC 5222), runs the three-gate
 algorithm, and returns RFC 5222 compliant XML.
 
 Environment variables:
-    LVF_GPKG_PATH       Path to the GeoPackage file (required for real use)
+    LVF_GPKG_PATH       Path to the GeoPackage file (optional — absent means routing-only mode)
     LVF_SSAP_LAYER      GeoPackage layer name for SSAP (default: SiteStructureAddressPoint)
     LVF_RCL_LAYER       GeoPackage layer name for RCL  (default: RoadCenterLine)
     LVF_BOUNDARY_LAYERS Comma-separated GeoPackage layer names for service boundaries
-                        (default: PsapPolygon). All listed layers are loaded into the
-                        single _boundaries list; Gate 0 and response assembly filter
-                        by ServiceURN, so mixing boundary types is safe.
+                        (default: PsapPolygon).
+    LVF_SYNC_CHILDREN   Comma-separated child LVF /sync endpoint URLs to pull from on startup
+    LVF_SYNC_SOURCE_ID_CIVIC     Stable UUID for this node's civic coverage region mapping push
+    LVF_SYNC_SOURCE_ID_GEODETIC  Stable UUID for this node's geodetic coverage region mapping push
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import pickle
@@ -26,6 +29,16 @@ from typing import Any, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Apply LVF_LOG_LEVEL immediately after dotenv so it covers both uvicorn and
+# test-harness usage. Scoped to the 'src' package to avoid overriding uvicorn's
+# own log config. Defaults to INFO; invalid values fall back to INFO with a warning.
+_log_level_name = os.environ.get("LVF_LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_name, None)
+if not isinstance(_log_level, int):
+    logging.warning("LVF_LOG_LEVEL=%r is not a valid level — defaulting to INFO", _log_level_name)
+    _log_level = logging.INFO
+logging.getLogger("src").setLevel(_log_level)
 
 import datetime
 import geopandas as gpd
@@ -66,6 +79,8 @@ _NS_CDX1    = "urn:nena:xml:ns:pidf:nenaCivicAddr"   # legacy NENA namespace —
 _NS_CDX2    = "urn:nena:xml:ns:pidf:nenaCivicAddr2"
 _NS_RLI     = "urn:ietf:params:xml:ns:lost-rli1"
 _NS_PLANNED = "urn:ietf:params:xml:ns:lostPlannedChange1"
+_NS_SYNC    = "urn:ietf:params:xml:ns:lostsync1"
+_NS_GML     = "http://www.opengis.net/gml"
 
 # Namespace map declared on response root elements so QNames in
 # valid/invalid/unchecked text are resolvable by clients
@@ -146,26 +161,39 @@ _civic_coverage: list[CivicCoverageEntry] = []
 _reloading: bool = False
 _reloading_lock = threading.Lock()
 
+_routing_only: bool = False          # True when no GeoPackage is loaded
+_gis_last_loaded: Optional[datetime.datetime] = None  # UTC time of last successful GIS load
+
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
 _parent_uri:        str = os.environ.get("LVF_PARENT_URI",          "")
+
+_sync_children: list[str] = [
+    url.strip()
+    for url in os.environ.get("LVF_SYNC_CHILDREN", "").split(",")
+    if url.strip()
+]
 
 # PIDF-LO names of the six admin-level elements subject to the OOC redirect rule
 _ADMIN_PIDF_LO: frozenset[str] = frozenset({
     "ca:country", "ca:A1", "ca:A2", "ca:A3", "ca:A4", "ca:A5",
 })
 
+# LVF_DEFAULT_MAPPING_SOURCE_ID validation is deferred to _lifespan / initialize()
+# so that routing-only nodes (no GPKG) are not required to set this env var.
 _default_mapping_source_id: str = os.environ.get("LVF_DEFAULT_MAPPING_SOURCE_ID", "")
-if not _default_mapping_source_id:
-    raise RuntimeError(
-        "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
-        "Recommended value: {00000000-0000-0000-0000-000000000000}"
-    )
 
 _SERVER_START_TIME: str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # XML schema (loaded once at startup; None disables validation rather than refusing all requests)
 _schema: Optional[etree.XMLSchema] = None
+
+# Running asyncio event loop captured at startup — used by the GPKG watcher thread
+# to schedule coroutines (e.g. re-push after hot reload).
+_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+# LoST-Sync child coverage store — in-memory; persisted to lvf_child_coverage.json
+_child_coverage: list[dict] = []
 
 
 def _load_schema() -> Optional[etree.XMLSchema]:
@@ -383,7 +411,7 @@ def _build_default_mapping(service_urn: str) -> MappingElement:
 
 def _load_gis_data(gpkg_path: str) -> None:
     """Load SSAP, RCL, and all boundary layers from a GeoPackage into memory."""
-    global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage
+    global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage, _gis_last_loaded
 
     pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
 
@@ -399,6 +427,7 @@ def _load_gis_data(gpkg_path: str) -> None:
                 _boundaries        = data["boundaries"]
                 _civic_coverage    = data["civic_coverage"]
                 _geodetic_coverage = data["geodetic_coverage"]
+                _gis_last_loaded   = datetime.datetime.now(datetime.timezone.utc)
                 log.info(
                     "Loaded from pickle: %d SSAP, %d RCL, %d boundaries, "
                     "%d civic coverage entries, %d geodetic URN(s)",
@@ -452,6 +481,7 @@ def _load_gis_data(gpkg_path: str) -> None:
 
     _derive_geodetic_coverage()
     _derive_civic_coverage()
+    _gis_last_loaded = datetime.datetime.now(datetime.timezone.utc)
 
     try:
         with open(pickle_path, "wb") as f:
@@ -499,6 +529,7 @@ def _watch_gpkg(gpkg_path: str) -> None:
                 with _reloading_lock:
                     _reloading = False
                 log.info("GIS data reload complete — resuming normal service")
+                _maybe_schedule_repush()
             except Exception:
                 log.error(
                     "GIS data reload failed — service remains unavailable", exc_info=True
@@ -507,16 +538,23 @@ def _watch_gpkg(gpkg_path: str) -> None:
 
 def initialize(gpkg_path: str | None = None) -> None:
     """Load GIS data for use by handle_find_service(). Call once before the first request."""
-    global _schema
+    global _schema, _routing_only
     _schema = _load_schema()
     if _schema is None:
         log.warning("Operating without XML schema validation")
 
     path = gpkg_path or os.environ.get("LVF_GPKG_PATH")
     if path:
+        if not _default_mapping_source_id:
+            raise RuntimeError(
+                "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
+                "Recommended value: {00000000-0000-0000-0000-000000000000}"
+            )
         _load_gis_data(path)
+        _routing_only = False
     else:
-        log.warning("No LVF_GPKG_PATH configured — GIS data not loaded")
+        _routing_only = True
+        log.info("Routing-only mode active: no GeoPackage path provided")
 
 
 def _derive_geodetic_coverage() -> None:
@@ -1178,13 +1216,23 @@ def _make_errors_xml(error_type: str, message: str = "") -> bytes:
 
 def _do_recurse_sync(request_body: bytes) -> bytes:
     """Synchronous recursive LoST lookup to parent LVF. Returns raw XML response bytes."""
+    return _do_recurse_to_uri_sync(request_body, _parent_uri.rstrip("/") + "/validate")
+
+
+async def _do_recurse_async(request_body: bytes) -> bytes:
+    """Asynchronous recursive LoST lookup to parent LVF. Returns raw XML response bytes."""
+    return await _do_recurse_to_uri_async(request_body, _parent_uri.rstrip("/") + "/validate")
+
+
+def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
+    """Synchronous recursive LoST lookup to an arbitrary validate endpoint."""
     if _has_loop(request_body):
         return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
     modified = _add_via_to_request(request_body)
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(
-                _parent_uri.rstrip("/") + "/validate",
+                validate_uri,
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
@@ -1194,23 +1242,23 @@ def _do_recurse_sync(request_body: bytes) -> bytes:
                 etree.fromstring(result)  # verify response is parseable XML
                 return result
             except Exception:
-                return _make_errors_xml("serverError", "Parent LVF returned unparseable XML")
-        return _make_errors_xml("serverError", f"Parent LVF returned HTTP {resp.status_code}")
+                return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
+        return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
     except httpx.TimeoutException:
-        return _make_errors_xml("serverTimeout", "Request to parent LVF timed out")
+        return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        return _make_errors_xml("serverError", f"Could not reach parent LVF: {exc}")
+        return _make_errors_xml("serverError", f"Could not reach target LVF: {exc}")
 
 
-async def _do_recurse_async(request_body: bytes) -> bytes:
-    """Asynchronous recursive LoST lookup to parent LVF. Returns raw XML response bytes."""
+async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> bytes:
+    """Asynchronous recursive LoST lookup to an arbitrary validate endpoint."""
     if _has_loop(request_body):
         return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
     modified = _add_via_to_request(request_body)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                _parent_uri.rstrip("/") + "/validate",
+                validate_uri,
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
@@ -1220,12 +1268,679 @@ async def _do_recurse_async(request_body: bytes) -> bytes:
                 etree.fromstring(result)  # verify response is parseable XML
                 return result
             except Exception:
-                return _make_errors_xml("serverError", "Parent LVF returned unparseable XML")
-        return _make_errors_xml("serverError", f"Parent LVF returned HTTP {resp.status_code}")
+                return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
+        return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
     except httpx.TimeoutException:
-        return _make_errors_xml("serverTimeout", "Request to parent LVF timed out")
+        return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        return _make_errors_xml("serverError", f"Could not reach parent LVF: {exc}")
+        return _make_errors_xml("serverError", f"Could not reach target LVF: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# LoST-Sync (RFC 6739) — child coverage store
+# ---------------------------------------------------------------------------
+
+def _child_coverage_path() -> str:
+    """Return the filesystem path for the child coverage JSON store."""
+    gpkg_path = os.environ.get("LVF_GPKG_PATH")
+    if gpkg_path:
+        return os.path.join(os.path.dirname(gpkg_path) or ".", "lvf_child_coverage.json")
+    return "lvf_child_coverage.json"
+
+
+def _load_child_coverage() -> None:
+    """Load the child coverage store from JSON on startup."""
+    global _child_coverage
+    path = _child_coverage_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _child_coverage = data if isinstance(data, list) else []
+        log.info("LoST-Sync: loaded %d child coverage entries from %s", len(_child_coverage), path)
+    except Exception as exc:
+        log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
+
+
+def _save_child_coverage() -> None:
+    """Persist the child coverage store to JSON atomically."""
+    path = _child_coverage_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_child_coverage, f, indent=2, default=str)
+        os.replace(tmp, path)
+    except Exception as exc:
+        log.warning("LoST-Sync: could not save child coverage store to %s: %s", path, exc)
+
+
+def _parse_iso_timestamp(ts: str) -> Optional[datetime.datetime]:
+    """Parse an ISO 8601 timestamp string to a datetime, or None on failure."""
+    if not ts:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _compare_timestamps(a: str, b: str) -> int:
+    """Compare two ISO 8601 timestamp strings. Returns >0 if a is newer, <0 if older, 0 if equal."""
+    ta = _parse_iso_timestamp(a)
+    tb = _parse_iso_timestamp(b)
+    if ta is None and tb is None:
+        return 0
+    if ta is None:
+        return -1
+    if tb is None:
+        return 1
+    if ta > tb:
+        return 1
+    if ta < tb:
+        return -1
+    return 0
+
+
+def _upsert_child_coverage(parsed: dict) -> None:
+    """Apply RFC 6739 §5.2 update rules: update if newer, add if new."""
+    source    = parsed.get("source", "")
+    source_id = parsed.get("source_id", "")
+    new_lu    = parsed.get("last_updated", "")
+
+    for i, entry in enumerate(_child_coverage):
+        if entry.get("source") == source and entry.get("source_id") == source_id:
+            if _compare_timestamps(new_lu, entry.get("last_updated", "")) > 0:
+                _child_coverage[i] = parsed
+                log.info(
+                    "LoST-Sync: updated child coverage entry source=%s sourceId=%s",
+                    source, source_id,
+                )
+            else:
+                log.info(
+                    "LoST-Sync: received stale coverage for source=%s sourceId=%s — ignoring",
+                    source, source_id,
+                )
+            return
+
+    _child_coverage.append(parsed)
+    log.info(
+        "LoST-Sync: added new child coverage entry source=%s sourceId=%s profile=%s",
+        source, source_id, parsed.get("profile", ""),
+    )
+
+
+def _lookup_child_coverage(
+    country: Optional[str],
+    a1: Optional[str],
+    a2: Optional[str],
+    a3: Optional[str] = None,
+    a4: Optional[str] = None,
+    a5: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Longest-prefix match against the child coverage store (civic profile entries only).
+    Returns the matching entry dict with the highest specificity, or None if no match.
+    Geodetic entries are skipped — geodetic-vs-civic matching is not defined.
+    """
+    def norm(v: Optional[str]) -> Optional[str]:
+        return v.upper() if v else None
+
+    c, s, co = norm(country), norm(a1), norm(a2)
+    if not c or not s or not co:
+        return None
+    a3n, a4n, a5n = norm(a3), norm(a4), norm(a5)
+
+    best_entry: Optional[dict] = None
+    best_specificity = -1
+
+    for entry in _child_coverage:
+        if entry.get("profile") != "civic":
+            continue
+        tuples = entry.get("civic_tuples") or []
+
+        entry_best = -1
+        for t in tuples:
+            tc  = norm(t.get("country"))
+            ts  = norm(t.get("a1"))
+            tco = norm(t.get("a2"))
+            ta3 = norm(t.get("a3"))
+            ta4 = norm(t.get("a4"))
+            ta5 = norm(t.get("a5"))
+
+            if tc != c or ts != s or tco != co:
+                continue
+            if ta3 is not None and ta3 != a3n:
+                continue
+            if ta4 is not None and ta4 != a4n:
+                continue
+            if ta5 is not None and ta5 != a5n:
+                continue
+
+            spec = (
+                (1 if ta3 is not None else 0) +
+                (1 if ta4 is not None else 0) +
+                (1 if ta5 is not None else 0)
+            )
+            if spec > entry_best:
+                entry_best = spec
+
+        if entry_best > best_specificity:
+            best_specificity = entry_best
+            best_entry = entry
+
+    return best_entry
+
+
+# ---------------------------------------------------------------------------
+# LoST-Sync — GML serialization helpers
+# ---------------------------------------------------------------------------
+
+def _gml_add_ring(ring_el: etree._Element, coords) -> None:
+    """Add <gml:pos> children to a LinearRing element. Swaps (lon, lat) → (lat, lon)."""
+    for lon, lat in coords:
+        pos = etree.SubElement(ring_el, f"{{{_NS_GML}}}pos")
+        pos.text = f"{lat} {lon}"
+
+
+def _gml_polygon(polygon) -> etree._Element:
+    """Convert a shapely Polygon to a <gml:Polygon> element."""
+    poly_el = etree.Element(
+        f"{{{_NS_GML}}}Polygon",
+        nsmap={"gml": _NS_GML},
+    )
+    poly_el.set("srsName", "urn:ogc:def::crs:EPSG::4326")
+    ext_el  = etree.SubElement(poly_el, f"{{{_NS_GML}}}exterior")
+    ring_el = etree.SubElement(ext_el,  f"{{{_NS_GML}}}LinearRing")
+    _gml_add_ring(ring_el, polygon.exterior.coords)
+    for interior in polygon.interiors:
+        int_el  = etree.SubElement(poly_el, f"{{{_NS_GML}}}interior")
+        iring   = etree.SubElement(int_el,  f"{{{_NS_GML}}}LinearRing")
+        _gml_add_ring(iring, interior.coords)
+    return poly_el
+
+
+def _shapely_to_gml(geom) -> etree._Element:
+    """Convert a shapely Polygon or MultiPolygon to a GML element."""
+    if geom.geom_type == "MultiPolygon":
+        mp = etree.Element(
+            f"{{{_NS_GML}}}MultiPolygon",
+            nsmap={"gml": _NS_GML},
+        )
+        mp.set("srsName", "urn:ogc:def::crs:EPSG::4326")
+        for polygon in geom.geoms:
+            pm = etree.SubElement(mp, f"{{{_NS_GML}}}polygonMember")
+            pm.append(_gml_polygon(polygon))
+        return mp
+    return _gml_polygon(geom)
+
+
+# ---------------------------------------------------------------------------
+# LoST-Sync — coverage region mapping builders
+# ---------------------------------------------------------------------------
+
+def _gis_last_updated_str() -> str:
+    return _gis_last_loaded.strftime("%Y-%m-%dT%H:%M:%SZ") if _gis_last_loaded else _SERVER_START_TIME
+
+
+def _build_civic_coverage_mapping_xml() -> Optional[str]:
+    """
+    Build a <mapping> XML string for this node's civic coverage region.
+    Returns None if LVF_SYNC_SOURCE_ID_CIVIC is unset or there is no civic coverage data.
+    """
+    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    if not src_id or not _civic_coverage:
+        return None
+
+    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
+    mapping_el.set("expires",     "NO-EXPIRATION")
+    mapping_el.set("lastUpdated", _gis_last_updated_str())
+    mapping_el.set("source",      _server_uri)
+    mapping_el.set("sourceId",    src_id)
+
+    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
+    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
+    dn.text = f"{_server_uri} civic coverage"
+
+    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
+    svc.text = "urn:service:sos"
+
+    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
+    sb.set("profile", "civic")
+
+    seen: set = set()
+    for entry in _civic_coverage:
+        key = (entry.country, entry.a1, entry.a2)
+        if key in seen:
+            continue
+        seen.add(key)
+        ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
+        _e = etree.SubElement(ca, f"{{{_NS_CA}}}country")
+        _e.text = entry.country
+        _e = etree.SubElement(ca, f"{{{_NS_CA}}}A1")
+        _e.text = entry.a1
+        _e = etree.SubElement(ca, f"{{{_NS_CA}}}A2")
+        _e.text = entry.a2
+
+    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")  # empty per RFC 6739 Figure 2
+
+    return etree.tostring(mapping_el, encoding="unicode")
+
+
+def _build_geodetic_coverage_mapping_xml() -> Optional[str]:
+    """
+    Build a <mapping> XML string for this node's geodetic coverage region.
+    Returns None if LVF_SYNC_SOURCE_ID_GEODETIC is unset or there is no geodetic coverage.
+    """
+    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+    if not src_id or not _geodetic_coverage:
+        return None
+
+    geom = _geodetic_coverage.get("urn:service:sos")
+    if geom is None:
+        geom = next(iter(_geodetic_coverage.values()))
+
+    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
+    mapping_el.set("expires",     "NO-EXPIRATION")
+    mapping_el.set("lastUpdated", _gis_last_updated_str())
+    mapping_el.set("source",      _server_uri)
+    mapping_el.set("sourceId",    src_id)
+
+    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
+    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
+    dn.text = f"{_server_uri} geodetic coverage"
+
+    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
+    svc.text = "urn:service:sos"
+
+    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
+    sb.set("profile", "geodetic-2d")
+
+    try:
+        gml_el = _shapely_to_gml(geom)
+        sb.append(gml_el)
+    except Exception as exc:
+        log.warning("LoST-Sync: could not serialize geodetic coverage to GML: %s", exc)
+        return None
+
+    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")  # empty per RFC 6739 Figure 2
+
+    return etree.tostring(mapping_el, encoding="unicode")
+
+
+# ---------------------------------------------------------------------------
+# LoST-Sync — mapping element parser
+# ---------------------------------------------------------------------------
+
+def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") -> dict:
+    """
+    Parse a LoST <mapping> element received via pushMappings or getMappingsResponse
+    into the child coverage store dict format.
+    """
+    source    = mapping_el.get("source", "")
+    source_id = mapping_el.get("sourceId", "")
+    last_updated = mapping_el.get("lastUpdated", "")
+    expires      = mapping_el.get("expires", "NO-EXPIRATION")
+
+    service_el = mapping_el.find(f"{{{_NS_LOST}}}service")
+    service = (service_el.text or "").strip() if service_el is not None else "urn:service:sos"
+
+    sb_el = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
+    profile      = ""
+    civic_tuples = None
+    geodetic_wkt = None
+
+    if sb_el is not None:
+        profile = sb_el.get("profile", "")
+
+        if profile == "civic":
+            civic_tuples = []
+            for ca_el in sb_el.findall(f".//{{{_NS_CA}}}civicAddress"):
+                t: dict[str, Optional[str]] = {}
+                for field, tag in [
+                    ("country", "country"), ("a1", "A1"), ("a2", "A2"),
+                    ("a3", "A3"),           ("a4", "A4"), ("a5", "A5"),
+                ]:
+                    el = ca_el.find(f"{{{_NS_CA}}}{tag}")
+                    t[field] = el.text.strip() if (el is not None and el.text) else None
+                civic_tuples.append(t)
+
+        elif profile == "geodetic-2d":
+            # Store the serialised serviceBoundary XML; actual parsing deferred
+            try:
+                geodetic_wkt = etree.tostring(sb_el, encoding="unicode")
+            except Exception:
+                geodetic_wkt = None
+
+    # Derive child validate URI
+    uri_el = mapping_el.find(f"{{{_NS_LOST}}}uri")
+    if uri_el is not None and uri_el.text and uri_el.text.strip():
+        child_uri = uri_el.text.strip()
+    elif child_uri_hint:
+        child_uri = child_uri_hint
+    else:
+        # Derive from source attribute (typically a hostname)
+        if source and "://" not in source:
+            child_uri = f"http://{source}/validate"
+        elif source:
+            child_uri = source.rstrip("/") + "/validate"
+        else:
+            child_uri = ""
+
+    return {
+        "source":      source,
+        "source_id":   source_id,
+        "last_updated": last_updated,
+        "expires":     expires,
+        "service":     service,
+        "profile":     profile,
+        "civic_tuples": civic_tuples,
+        "geodetic_wkt": geodetic_wkt,
+        "child_uri":   child_uri,
+        "raw_xml":     etree.tostring(mapping_el, encoding="unicode"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# LoST-Sync — sync endpoint handlers
+# ---------------------------------------------------------------------------
+
+def _sync_error_response(error_type: str, message: str) -> Response:
+    """Build an HTTP 200 LoST-Sync error response."""
+    root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+    root.set("source", _server_uri)
+    err = etree.SubElement(root, f"{{{_NS_LOST}}}{error_type}")
+    err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+    err.text = message
+    body = etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    return Response(content=body, status_code=200, media_type="application/lostsync+xml")
+
+
+async def _handle_push_mappings(root: etree._Element) -> Response:
+    """Handle an incoming <pushMappings> request per RFC 6739 §5.2."""
+    mapping_els = root.findall(f"{{{_NS_LOST}}}mapping")
+    not_deleted: list[tuple[str, str]] = []
+
+    for mapping_el in mapping_els:
+        sb_el    = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
+        is_delete = sb_el is None
+
+        parsed    = _parse_sync_mapping(mapping_el)
+        source    = parsed["source"]
+        source_id = parsed["source_id"]
+
+        if is_delete:
+            found = False
+            for i, entry in enumerate(_child_coverage):
+                if entry.get("source") == source and entry.get("source_id") == source_id:
+                    _child_coverage.pop(i)
+                    found = True
+                    log.info(
+                        "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
+                        source, source_id,
+                    )
+                    break
+            if not found:
+                log.warning(
+                    "LoST-Sync: delete requested for unknown entry source=%s sourceId=%s",
+                    source, source_id,
+                )
+                not_deleted.append((source, source_id))
+        else:
+            _upsert_child_coverage(parsed)
+
+    _save_child_coverage()
+
+    if not_deleted:
+        root_err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+        root_err.set("source", _server_uri)
+        for src, sid in not_deleted:
+            nd = etree.SubElement(root_err, f"{{{_NS_LOST}}}notDeleted")
+            nd.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            nd.text = f"No mapping found for source={src!r} sourceId={sid!r}"
+        body = etree.tostring(root_err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        return Response(content=body, status_code=200, media_type="application/lostsync+xml")
+
+    body = etree.tostring(
+        etree.Element(f"{{{_NS_SYNC}}}pushMappingsResponse"),
+        xml_declaration=True, encoding="UTF-8",
+    )
+    return Response(content=body, status_code=200, media_type="application/lostsync+xml")
+
+
+async def _handle_get_mappings(root: etree._Element) -> Response:
+    """Handle an incoming <getMappingsRequest> per RFC 6739."""
+    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    exists_el = root.find(f"{{{_NS_SYNC}}}exists")
+    mapping_xml_list: list[str] = []
+
+    if exists_el is None:
+        # Return all mappings this node can provide
+        if sync_source_id_civic:
+            civic_xml = _build_civic_coverage_mapping_xml()
+            if civic_xml:
+                mapping_xml_list.append(civic_xml)
+        if sync_source_id_geodetic:
+            geo_xml = _build_geodetic_coverage_mapping_xml()
+            if geo_xml:
+                mapping_xml_list.append(geo_xml)
+    else:
+        # Return only mappings newer than the requester's fingerprints
+        fingerprints: dict[str, str] = {}
+        for fp in exists_el.findall(f"{{{_NS_SYNC}}}mapping-fingerprint"):
+            sid = fp.get("sourceId")
+            lu  = fp.get("lastUpdated", "")
+            if sid:
+                fingerprints[sid] = lu
+
+        my_lu = _gis_last_updated_str()
+
+        if sync_source_id_civic:
+            fp_lu = fingerprints.get(sync_source_id_civic)
+            if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
+                civic_xml = _build_civic_coverage_mapping_xml()
+                if civic_xml:
+                    mapping_xml_list.append(civic_xml)
+
+        if sync_source_id_geodetic:
+            fp_lu = fingerprints.get(sync_source_id_geodetic)
+            if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
+                geo_xml = _build_geodetic_coverage_mapping_xml()
+                if geo_xml:
+                    mapping_xml_list.append(geo_xml)
+
+    resp_root = etree.Element(f"{{{_NS_SYNC}}}getMappingsResponse")
+    for xml_str in mapping_xml_list:
+        try:
+            resp_root.append(etree.fromstring(xml_str))
+        except Exception as exc:
+            log.warning("LoST-Sync: could not include mapping in getMappingsResponse: %s", exc)
+
+    body = etree.tostring(resp_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    return Response(content=body, status_code=200, media_type="application/lostsync+xml")
+
+
+# ---------------------------------------------------------------------------
+# LoST-Sync — outbound push / pull
+# ---------------------------------------------------------------------------
+
+def _get_parent_sync_uri() -> str:
+    """Derive the parent's /sync endpoint URL from LVF_PARENT_URI."""
+    if not _parent_uri:
+        return ""
+    base = _parent_uri.rstrip("/")
+    if base.endswith("/validate"):
+        base = base[: -len("/validate")]
+    return base + "/sync"
+
+
+async def _push_coverage_to_parent() -> None:
+    """Push this node's civic and geodetic coverage regions to the parent LVF."""
+    with _reloading_lock:
+        if _reloading:
+            log.warning("LoST-Sync: skipping push — GIS reload in progress")
+            return
+
+    parent_sync_uri = _get_parent_sync_uri()
+    if not parent_sync_uri:
+        return
+
+    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    for label, mapping_getter, src_id in [
+        ("civic",    _build_civic_coverage_mapping_xml,    sync_source_id_civic),
+        ("geodetic", _build_geodetic_coverage_mapping_xml, sync_source_id_geodetic),
+    ]:
+        if not src_id:
+            continue
+
+        mapping_xml = mapping_getter()
+        if not mapping_xml:
+            log.warning("LoST-Sync: could not build %s coverage mapping (no data?)", label)
+            continue
+
+        push_root = etree.Element(f"{{{_NS_SYNC}}}pushMappings")
+        try:
+            push_root.append(etree.fromstring(mapping_xml))
+        except Exception as exc:
+            log.warning("LoST-Sync: could not parse %s mapping for push: %s", label, exc)
+            continue
+
+        push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        log.info("LoST-Sync: pushing %s coverage to parent %s", label, parent_sync_uri)
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    parent_sync_uri,
+                    content=push_body,
+                    headers={"Content-Type": "application/lostsync+xml"},
+                )
+            if resp.status_code == 200:
+                try:
+                    resp_root = etree.fromstring(resp.content)
+                    if resp_root.tag == f"{{{_NS_SYNC}}}pushMappingsResponse":
+                        log.info(
+                            "LoST-Sync: successfully pushed %s coverage to parent %s",
+                            label, parent_sync_uri,
+                        )
+                    else:
+                        log.warning(
+                            "LoST-Sync: unexpected response pushing %s to parent: %s",
+                            label, resp_root.tag,
+                        )
+                except Exception:
+                    log.warning("LoST-Sync: parent returned unparseable XML when pushing %s", label)
+            else:
+                log.warning(
+                    "LoST-Sync: push %s to parent %s returned HTTP %d",
+                    label, parent_sync_uri, resp.status_code,
+                )
+        except Exception as exc:
+            log.warning(
+                "LoST-Sync: failed to push %s coverage to parent %s: %s",
+                label, parent_sync_uri, exc,
+            )
+
+
+async def _pull_from_child(child_sync_url: str) -> None:
+    """Send a getMappingsRequest to a child LVF /sync endpoint and store received mappings."""
+    with _reloading_lock:
+        if _reloading:
+            log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
+            return
+
+    # Derive the child's /validate URL for use as child_uri in stored entries
+    base = child_sync_url.rstrip("/")
+    child_validate_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/validate"
+
+    get_body = etree.tostring(
+        etree.Element(f"{{{_NS_SYNC}}}getMappingsRequest"),
+        xml_declaration=True, encoding="UTF-8",
+    )
+    log.info("LoST-Sync: sending getMappingsRequest to %s", child_sync_url)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                child_sync_url,
+                content=get_body,
+                headers={"Content-Type": "application/lostsync+xml"},
+            )
+        if resp.status_code != 200:
+            log.warning(
+                "LoST-Sync: getMappingsRequest to %s returned HTTP %d",
+                child_sync_url, resp.status_code,
+            )
+            return
+
+        try:
+            resp_root = etree.fromstring(resp.content)
+        except etree.XMLSyntaxError as exc:
+            log.warning(
+                "LoST-Sync: getMappingsResponse from %s has malformed XML: %s",
+                child_sync_url, exc,
+            )
+            return
+
+        if resp_root.tag != f"{{{_NS_SYNC}}}getMappingsResponse":
+            log.warning(
+                "LoST-Sync: unexpected response element from %s: %s",
+                child_sync_url, resp_root.tag,
+            )
+            return
+
+        count = 0
+        for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping"):
+            parsed = _parse_sync_mapping(mapping_el, child_uri_hint=child_validate_url)
+            _upsert_child_coverage(parsed)
+            count += 1
+
+        if count > 0:
+            _save_child_coverage()
+            log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
+        else:
+            log.info("LoST-Sync: no mappings received from %s", child_sync_url)
+
+    except Exception as exc:
+        log.warning("LoST-Sync: failed to pull from %s: %s", child_sync_url, exc)
+
+
+async def _startup_sync() -> None:
+    """Background task: push coverage to parent and pull from children after startup."""
+    await asyncio.sleep(1)  # allow the server to fully start before making outbound calls
+
+    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri:
+        await _push_coverage_to_parent()
+
+    for child_url in _sync_children:
+        await _pull_from_child(child_url)
+
+
+def _maybe_schedule_repush() -> None:
+    """
+    Schedule re-push of coverage regions to parent after a GIS hot reload.
+    Called from the GPKG watcher thread, so uses run_coroutine_threadsafe.
+    """
+    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+    if not (sync_source_id_civic or sync_source_id_geodetic) or not _parent_uri:
+        return
+    loop = _event_loop
+    if loop is None or not loop.is_running():
+        log.warning("LoST-Sync: no running event loop — cannot schedule re-push after reload")
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(_push_coverage_to_parent(), loop)
+        log.info("LoST-Sync: scheduled coverage re-push to parent after GIS reload")
+    except Exception as exc:
+        log.warning("LoST-Sync: could not schedule re-push: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1262,6 +1977,41 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     if req.validate_location != "true":
         return _to_xml_response(ForbiddenResponse(), status=200).body
+
+    # Child coverage store lookup — before Gate 0 when the store is non-empty
+    if _child_coverage:
+        child_match = _lookup_child_coverage(
+            req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
+            req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
+        )
+        if child_match:
+            child_uri = child_match.get("child_uri", "")
+            if child_uri:
+                if recursive:
+                    return _do_recurse_to_uri_sync(xml_bytes, child_uri)
+                return _to_xml_response(
+                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                ).body
+            log.warning(
+                "LoST-Sync: child coverage match found but child_uri is empty "
+                "(source=%s) — falling through to local processing",
+                child_match.get("source", ""),
+            )
+
+    # Routing-only mode: skip Gate 0/1/2 and route via parent or return unavailable
+    if _routing_only:
+        if _parent_uri:
+            if recursive:
+                return _do_recurse_sync(xml_bytes)
+            return _to_xml_response(
+                RedirectResponse(target=_parent_uri, source=_server_uri), status=200
+            ).body
+        return _to_xml_response(
+            LocationValidationUnavailableResponse(
+                message="This node has no GIS data and no configured parent for this location"
+            ),
+            status=200,
+        ).body
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
@@ -1312,14 +2062,24 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global _schema
+    global _schema, _routing_only, _event_loop
     _schema = _load_schema()
     if _schema is None:
         log.warning("Operating without XML schema validation")
 
+    _event_loop = asyncio.get_running_loop()
+
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
-    if gpkg_path:
+    gpkg_exists = gpkg_path and os.path.exists(gpkg_path)
+
+    if gpkg_exists:
+        if not _default_mapping_source_id:
+            raise RuntimeError(
+                "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
+                "Recommended value: {00000000-0000-0000-0000-000000000000}"
+            )
         _load_gis_data(gpkg_path)
+        _routing_only = False
         poll_interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
         if poll_interval > 0:
             threading.Thread(
@@ -1327,7 +2087,22 @@ async def _lifespan(app: FastAPI):
             ).start()
             log.info("GPKG watcher started (poll interval: %ds)", poll_interval)
     else:
-        log.warning("LVF_GPKG_PATH not set — starting with empty GIS data")
+        _routing_only = True
+        if gpkg_path:
+            log.info(
+                "Routing-only mode: LVF_GPKG_PATH is set but file not found at %s",
+                gpkg_path,
+            )
+        else:
+            log.info("Routing-only mode: LVF_GPKG_PATH is not configured")
+        if not _parent_uri and not _sync_children:
+            log.warning(
+                "Routing-only mode: neither LVF_PARENT_URI nor LVF_SYNC_CHILDREN is configured "
+                "— this node cannot answer or route requests"
+            )
+
+    _load_child_coverage()
+    asyncio.create_task(_startup_sync())
     yield
 
 
@@ -1347,10 +2122,10 @@ async def health():
 
 @app.get("/coverage/geodetic")
 async def geodetic_coverage():
-    import json
+    import json as _json
     from shapely.geometry import mapping
     return {
-        urn: json.loads(json.dumps(mapping(geom)))
+        urn: _json.loads(_json.dumps(mapping(geom)))
         for urn, geom in _geodetic_coverage.items()
     }
 
@@ -1463,6 +2238,34 @@ async def civic_coverage_explain(
     }
 
 
+@app.post("/sync")
+async def sync_endpoint(request: Request) -> Response:
+    """
+    LoST-Sync endpoint (RFC 6739).
+    Accepts pushMappings and getMappingsRequest in application/lostsync+xml.
+    Returns HTTP 200 for both success and protocol-level errors.
+    """
+    body = await request.body()
+    try:
+        root = etree.fromstring(body)
+    except etree.XMLSyntaxError as exc:
+        return _sync_error_response("badRequest", f"Malformed XML: {exc}")
+
+    if root.tag == f"{{{_NS_SYNC}}}pushMappings":
+        log.info("LoST-Sync: received pushMappings from %s", request.client)
+        return await _handle_push_mappings(root)
+    elif root.tag == f"{{{_NS_SYNC}}}getMappingsRequest":
+        log.info("LoST-Sync: received getMappingsRequest from %s", request.client)
+        return await _handle_get_mappings(root)
+    else:
+        return _sync_error_response(
+            "badRequest",
+            f"Unexpected root element {root.tag!r}; "
+            "expected {urn:ietf:params:xml:ns:lostsync1}pushMappings "
+            "or {urn:ietf:params:xml:ns:lostsync1}getMappingsRequest",
+        )
+
+
 @app.post("/validate")
 async def validate(request: Request) -> Response:
     """
@@ -1501,6 +2304,43 @@ async def validate(request: Request) -> Response:
 
     # Resolve alias URN to the effective provisioned URN
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
+
+    # Child coverage store lookup — before Gate 0 when the store is non-empty
+    if _child_coverage:
+        child_match = _lookup_child_coverage(
+            req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
+            req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
+        )
+        if child_match:
+            child_uri = child_match.get("child_uri", "")
+            if child_uri:
+                if recursive:
+                    result = await _do_recurse_to_uri_async(body, child_uri)
+                    return Response(content=result, status_code=200, media_type="application/xml")
+                return _to_xml_response(
+                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                )
+            log.warning(
+                "LoST-Sync: child coverage match found but child_uri is empty "
+                "(source=%s) — falling through to local processing",
+                child_match.get("source", ""),
+            )
+
+    # Routing-only mode: skip Gate 0/1/2 and route via parent or return unavailable
+    if _routing_only:
+        if _parent_uri:
+            if recursive:
+                result = await _do_recurse_async(body)
+                return Response(content=result, status_code=200, media_type="application/xml")
+            return _to_xml_response(
+                RedirectResponse(target=_parent_uri, source=_server_uri), status=200
+            )
+        return _to_xml_response(
+            LocationValidationUnavailableResponse(
+                message="This node has no GIS data and no configured parent for this location"
+            ),
+            status=200,
+        )
 
     # Single datetime.now(UTC) captured once per request
     now = datetime.datetime.now(datetime.timezone.utc)
