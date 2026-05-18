@@ -1674,6 +1674,11 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
             geo_xml = _build_geodetic_coverage_mapping_xml()
             if geo_xml:
                 mapping_xml_list.append(geo_xml)
+        own_count = len(mapping_xml_list)
+        for entry in _child_coverage:
+            raw = entry.get("raw_xml")
+            if raw:
+                mapping_xml_list.append(raw)
     else:
         # Return only mappings newer than the requester's fingerprints
         fingerprints: dict[str, str] = {}
@@ -1698,6 +1703,21 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
                 geo_xml = _build_geodetic_coverage_mapping_xml()
                 if geo_xml:
                     mapping_xml_list.append(geo_xml)
+
+        own_count = len(mapping_xml_list)
+        for entry in _child_coverage:
+            raw = entry.get("raw_xml")
+            if not raw:
+                continue
+            fp_lu = fingerprints.get(entry.get("source_id", ""))
+            entry_lu = entry.get("last_updated", "")
+            if fp_lu is None or _compare_timestamps(entry_lu, fp_lu) > 0:
+                mapping_xml_list.append(raw)
+
+    log.debug(
+        "LoST-Sync: getMappingsResponse includes %d mapping(s) (%d own, %d child)",
+        len(mapping_xml_list), own_count, len(mapping_xml_list) - own_count,
+    )
 
     resp_root = etree.Element(f"{{{_NS_SYNC}}}getMappingsResponse")
     for xml_str in mapping_xml_list:
