@@ -14,7 +14,7 @@
   expected:
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
-  spec_ref: "§7 (Gate 2, SSAP)"
+  spec_ref: "§6 (Gate 2, SSAP)"
   status: has_test
 
 - id: G2-SSAP-VALID-GEODETIC-001
@@ -31,8 +31,8 @@
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
   notes: >
     Geodetic coordinates in the request are silently ignored during civic validation
-    per §7.1. The SSAP result is identical to the no-geodetic case.
-  spec_ref: "§7.1, §7.5"
+    per §6. The SSAP result is identical to the no-geodetic case.
+  spec_ref: "§6, §8.5"
   status: has_test
 
 - id: G2-SSAP-VALID-CASE-001
@@ -50,7 +50,7 @@
   notes: >
     All comparisons are case-insensitive per spec. No normalization is applied to
     the returned <valid> list — the submitted casing is reflected back.
-  spec_ref: "§3.4"
+  spec_ref: "§6.7"
   status: has_test
 
 - id: G2-SSAP-VALID-SUBUNIT-001
@@ -119,7 +119,7 @@
     unchecked: [ca:STS, ca:HNO]
   notes: >
     Unchecked elements are those below the invalid element in hierarchy order.
-  spec_ref: "§7 (Gate 2, SSAP)"
+  spec_ref: "§6 (Gate 2, SSAP)"
   status: has_test
 
 - id: G2-SSAP-INVALID-A3-001
@@ -138,7 +138,7 @@
   notes: >
     When both layers fail at A3 and no boundary can be identified for the submitted
     address, a default mapping is returned with <defaultMappingReturned> warning.
-  spec_ref: "§7 (Gate 2, SSAP), §7.5"
+  spec_ref: "§6 (Gate 2), §8.5"
   status: has_test
 
 - id: G2-SSAP-INVALID-COUNTRY-001
@@ -159,7 +159,7 @@
     Distinct from G0-URN-UNSUPPORTED-001: Gate 0 passes (urn:service:sos is
     provisioned), but Gate 2 SSAP fails because no GIS records match the country.
     The coverage lookup also fails, triggering the default mapping path.
-  spec_ref: "§6.1, §7 (Gate 2, SSAP), §7.5"
+  spec_ref: "§6.1, §6 (Gate 2), §8.5"
   status: has_test
 
 - id: G2-SSAP-INVALID-A2-001
@@ -184,7 +184,7 @@
     produce valid A2 before failing at a lower level. For invalid at A2, the submitted
     county must be absent from the GIS data entirely.
     Counties in GIS data: Burleigh, McLean, Mercer, Morton, Oliver (as of 2026-05-15).
-  spec_ref: "§6.1, §7 (Gate 2, SSAP), §7.5"
+  spec_ref: "§6.1, §6 (Gate 2), §8.5"
   status: has_test
 
 - id: G2-SSAP-PCN-NULLGIS-001
@@ -207,7 +207,7 @@
     unchecked, not invalid. Tests the same null-handling behavior as the
     empty-element match cases (INF-027 §2.5.7) but from the opposite direction
     — the GIS field is null, not the submitted value.
-  spec_ref: "§6.4, §6.6"
+  spec_ref: "§6.2, §6.7"
   status: has_test
 
 - id: G2-SSAP-PC-NULLGIS-001
@@ -230,5 +230,5 @@
     unchecked, not invalid. Tests the same null-handling behavior as the
     empty-element match cases (INF-027 §2.5.7) but from the opposite direction
     — the GIS field is null, not the submitted value.
-  spec_ref: "§6.4, §6.6"
+  spec_ref: "§6.2, §6.7"
   status: has_test

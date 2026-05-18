@@ -1,6 +1,6 @@
 ---
 # Response assembly tests: mapping element selection and warning generation.
-# These tests focus on the §7.5 mapping selection logic and the defaultMappingReturned
+# These tests focus on the §8.5 mapping selection logic and the defaultMappingReturned
 # warning path when no boundary can be identified for the submitted address.
 
 - id: RESP-MAPPING-DEFAULT-001
@@ -25,7 +25,7 @@
     result. Distinct from G2-SSAP-INVALID-COUNTRY-001 only in that this test submits
     a non-US address entirely outside coverage, while that test also submits CA but
     from a different address.
-  spec_ref: "§7.5, RFC 5222 §12"
+  spec_ref: "§8.5, RFC 5222 §12"
   status: has_test
 
 - id: RESP-MAPPING-PARTIAL-001
@@ -51,5 +51,5 @@
     data currently exists for this scenario as a dedicated test; most existing
     invalid-result tests implicitly cover this (e.g. G2-SSAP-INVALID-A3-001
     returns the real CDCC mapping despite A3 being invalid).
-  spec_ref: "§7.5"
+  spec_ref: "§8.5"
   status: no_test_data

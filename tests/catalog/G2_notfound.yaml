@@ -26,7 +26,7 @@
     coverage) which is why we get notFound rather than defaultMappingReturned.
     Compare with G2-SSAP-INVALID-A3-001 where A3 itself is invalid and triggers
     the default mapping path.
-  spec_ref: "§7, §8, §9"
+  spec_ref: "§6, §6.3"
   status: has_test
 
 - id: G2-NF-INCOVERAGE-001
@@ -54,5 +54,5 @@
     the filter narrows to zero candidates at the HNO step, reporting invalid at HNO.
     This test is placed here to document the complementary behavior to G2-NF-NOSTREET-001
     and clarify the notFound boundary.
-  spec_ref: "§7, §8, §9"
+  spec_ref: "§6, §6.3"
   status: has_test

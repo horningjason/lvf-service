@@ -27,7 +27,7 @@
     LOC and PLC are never validated against GIS data in any LVF implementation —
     they are free-text qualifiers. The spec requires them to appear in <unchecked>
     when submitted so the caller knows they were received but not evaluated.
-  spec_ref: "§7.6"
+  spec_ref: "§6.5.1"
   status: has_test
 
 - id: EXT-UNCHECKED-CDXELEM-001
@@ -43,7 +43,7 @@
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
     unchecked: [cdx2:DT, cdx2:HNC]
-  spec_ref: "§7.6"
+  spec_ref: "§6.5.1"
   status: has_test
 
 - id: EXT-RLI-COMPLETE-001

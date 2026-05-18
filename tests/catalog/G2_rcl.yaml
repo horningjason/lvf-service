@@ -19,7 +19,7 @@
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PCN]
     unchecked: [ca:HNO]
-  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  spec_ref: "§6 (Gate 2), §2.5.8"
   status: has_test
 
 - id: G2-RCL-VALID-PC-001
@@ -35,7 +35,7 @@
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PC]
     unchecked: [ca:HNO]
-  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  spec_ref: "§6 (Gate 2), §2.5.8"
   status: has_test
 
 - id: G2-RCL-VALID-UNITAMB-001
@@ -55,7 +55,7 @@
     The multi-unit ambiguity occurs because no unit discriminator (UNIT_VALUE) was
     submitted. With a unit submitted, the same address resolves to a single SSAP
     record (see G2-SSAP-VALID-SUBUNIT-001).
-  spec_ref: "§7.4, §8 (Gate 2, RCL), §2.5.8"
+  spec_ref: "§7.4, §6 (Gate 2), §2.5.8"
   status: has_test
 
 - id: G2-RCL-VALID-NOSSAP-001
@@ -77,7 +77,7 @@
     Unit elements (UNIT_PRETYPE, UNIT_VALUE) are unchecked on RCL match because
     RCL does not carry per-unit data. Compare with G2-SSAP-VALID-SUBUNIT-001 where
     unit elements are validated on SSAP.
-  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  spec_ref: "§6 (Gate 2), §2.5.8"
   status: has_test
 
 - id: G2-RCL-VALID-HNS-001
@@ -96,7 +96,7 @@
   notes: >
     HNS is always unchecked on an RCL match because RCL address ranges do not
     include suffix-level granularity.
-  spec_ref: "§8 (Gate 2, RCL), §2.5.8"
+  spec_ref: "§6 (Gate 2), §2.5.8"
   status: has_test
 
 - id: G2-RCL-HNO-RANGE-END-001
@@ -120,7 +120,7 @@
     Boundary inclusivity is easy to get wrong with < vs <= comparisons. This test
     specifically targets the edge case where HNO equals the exact ToAddr_R value.
     Confirmed: HNO=3435 returns unchecked (in range); HNO=3437 returns invalid (out of range).
-  spec_ref: "§8.2"
+  spec_ref: "§6.6.2"
   status: has_test
 
 - id: G2-RCL-HNP-VALID-001
@@ -143,7 +143,7 @@
     always unchecked. GIS inspection (2026-05-15) found that all AdNumPre_L and
     AdNumPre_R values in RoadCenterLine are blank spaces — no non-null HNP data
     exists in the template dataset. A synthetic fixture record would be required.
-  spec_ref: "§8 (Gate 2, RCL)"
+  spec_ref: "§6 (Gate 2)"
   status: no_test_data
 
 - id: G2-RCL-PCN-NULLGIS-001
@@ -166,7 +166,7 @@
     unchecked, not invalid. Tests the same null-handling behavior as the
     empty-element match cases (INF-027 §2.5.7) but from the opposite direction
     — the GIS field is null, not the submitted value.
-  spec_ref: "§6.4, §6.6"
+  spec_ref: "§6.2, §6.7"
   status: has_test
 
 - id: G2-RCL-PC-NULLGIS-001
@@ -189,5 +189,5 @@
     unchecked, not invalid. Tests the same null-handling behavior as the
     empty-element match cases (INF-027 §2.5.7) but from the opposite direction
     — the GIS field is null, not the submitted value.
-  spec_ref: "§6.4, §6.6"
+  spec_ref: "§6.2, §6.7"
   status: has_test

@@ -47,7 +47,7 @@
     It fails at the Gate 2 HNO range check because the integer parse fails. This is
     classified as a fallthrough test because the failure path goes through both SSAP
     HNO evaluation and RCL HNO evaluation before concluding invalid.
-  spec_ref: "§7.4, §8.2"
+  spec_ref: "§7.3, §6.6"
   status: has_test
 
 - id: G2-FALL-PARITY-001
@@ -69,7 +69,7 @@
     parity (even/odd sides). HNO must match both the range bounds AND the parity of
     the applicable side. An HNO that falls within the numeric range but violates
     parity is invalid.
-  spec_ref: "§8.2"
+  spec_ref: "§6.6.2"
   status: has_test
 
 - id: G2-FALL-RCL-ONLY-RD-001

@@ -117,5 +117,5 @@
     A synthetic fixture record would be required to test this path. This is a
     critical test case because an expired boundary affecting Gate 0 has significant
     operational impact (no calls dispatched for affected area).
-  spec_ref: "§3.5, §5 (Gate 0)"
+  spec_ref: "§3.5, §4 (Gate 0)"
   status: no_test_data

@@ -24,7 +24,7 @@
   notes: >
     Stop-on-first behavior: even though A1 and A2 are also absent, only ca:country
     is reported. This is intentional — the caller sees the highest-priority problem.
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-MISSING-HNO-001
@@ -37,7 +37,7 @@
   input_file: requests/G1-STRUCT-MISSING-HNO-001.xml
   expected:
     response_type: locationInvalid
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-EMPTY-HNO-001
@@ -53,7 +53,7 @@
   notes: >
     Distinguishes the absent case (G1-STRUCT-MISSING-HNO-001) from the present-but-empty
     case. Both produce locationInvalid but the error message text differs.
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-MISSING-A1-001
@@ -65,7 +65,7 @@
   input_file: requests/G1-STRUCT-MISSING-A1-001.xml
   expected:
     response_type: locationInvalid
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-MISSING-A2-001
@@ -77,7 +77,7 @@
   input_file: requests/G1-STRUCT-MISSING-A2-001.xml
   expected:
     response_type: locationInvalid
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-MISSING-RD-001
@@ -89,7 +89,7 @@
   input_file: requests/G1-STRUCT-MISSING-RD-001.xml
   expected:
     response_type: locationInvalid
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-EMPTY-COUNTRY-001
@@ -102,7 +102,7 @@
   input_file: requests/G1-STRUCT-EMPTY-COUNTRY-001.xml
   expected:
     response_type: locationInvalid
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
 
 - id: G1-STRUCT-EMPTY-A1-001
@@ -114,5 +114,5 @@
   input_file: requests/G1-STRUCT-EMPTY-A1-001.xml
   expected:
     response_type: locationInvalid
-  spec_ref: "§6 (Gate 1)"
+  spec_ref: "§5 (Gate 1)"
   status: has_test
