@@ -3,13 +3,14 @@
 
 
 ecrit                                                           B. Rosen
-Internet-Draft                                             29 April 2026
+Internet-Draft                                               13 May 2026
+Updates: 5222 (if approved)                                             
 Intended status: Standards Track                                        
-Expires: 31 October 2026
+Expires: 14 November 2026
 
 
             Validation of Locations Around a Planned Change
-                draft-ietf-ecrit-lost-planned-changes-15
+                draft-ietf-ecrit-lost-planned-changes-17
 
 Abstract
 
@@ -44,19 +45,23 @@ Status of This Memo
    time.  It is inappropriate to use Internet-Drafts as reference
    material or to cite them other than as "work in progress."
 
-   This Internet-Draft will expire on 31 October 2026.
+   This Internet-Draft will expire on 14 November 2026.
+
+
+
+
+
+
+
+Rosen                   Expires 14 November 2026                [Page 1]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
 
 Copyright Notice
 
    Copyright (c) 2026 IETF Trust and the persons identified as the
    document authors.  All rights reserved.
-
-
-
-Rosen                    Expires 31 October 2026                [Page 1]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
 
    This document is subject to BCP 78 and the IETF Trust's Legal
    Provisions Relating to IETF Documents (https://trustee.ietf.org/
@@ -74,16 +79,16 @@ Table of Contents
    3.  Planned Change Poll Interface . . . . . . . . . . . . . . . .   4
    4.  <asOf> Element  . . . . . . . . . . . . . . . . . . . . . . .   6
    5.  <revalidateAfter> in Response . . . . . . . . . . . . . . . .   7
-   6.  Replacement XML schema  . . . . . . . . . . . . . . . . . . .   8
+   6.  Replacement XML schema  . . . . . . . . . . . . . . . . . . .   7
    7.  Extension XML Schema  . . . . . . . . . . . . . . . . . . . .  16
-   8.  plannedChangePoll Interface Description . . . . . . . . . . .  17
-   9.  Security Considerations . . . . . . . . . . . . . . . . . . .  20
-   10. IANA Considerations . . . . . . . . . . . . . . . . . . . . .  20
-     10.1.  Application Service Tag  . . . . . . . . . . . . . . . .  20
-     10.2.  LoST XML Schema Registration . . . . . . . . . . . . . .  20
-     10.3.  Planned Change Extension XML Schema Registration . . . .  20
-   11. Normative References  . . . . . . . . . . . . . . . . . . . .  21
-   Author's Address  . . . . . . . . . . . . . . . . . . . . . . . .  21
+   8.  plannedChangePoll Interface Description . . . . . . . . . . .  16
+   9.  Security Considerations . . . . . . . . . . . . . . . . . . .  19
+   10. IANA Considerations . . . . . . . . . . . . . . . . . . . . .  19
+     10.1.  Application Service Tag  . . . . . . . . . . . . . . . .  19
+     10.2.  LoST XML Schema Registration . . . . . . . . . . . . . .  19
+     10.3.  Planned Change Extension XML Schema Registration . . . .  19
+   11. Normative References  . . . . . . . . . . . . . . . . . . . .  20
+   Author's Address  . . . . . . . . . . . . . . . . . . . . . . . .  20
 
 1.  Introduction
 
@@ -101,19 +106,19 @@ Table of Contents
    changes may also occur, and these will almost always also have an
    effective date that is known in advance.
 
+
+
+
+Rosen                   Expires 14 November 2026                [Page 2]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
    Records in a LoST client such as a Location Information Server (LIS)
    must change around these kinds of events.  Each affected old record
    must be discarded, and a new, validated record must be loaded into
    the client's database.  It is often difficult for a LIS operator to
    know that records must be changed around such events.  There are
-
-
-
-Rosen                    Expires 31 October 2026                [Page 2]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
    other circumstances where locations that were previously valid become
    invalid, such as a street renaming or renumbering event.  Using
    [RFC5222] validation, the only way for a LoST client such as a LIS to
@@ -153,27 +158,18 @@ Internet-Draft            LoST Planned Changes                April 2026
    planned changes, while the "asOf" date allows it to verify the
    validity of locations before they become active.
 
-
-
-
-
-
-
-
-
-
-
-
-
-Rosen                    Expires 31 October 2026                [Page 3]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
    Unplanned changes will occur, and periodic revalidation can still be
    used to maintain the data in the client's records.  However, LoST
    servers should be able to influence the rate of such revalidation.
    For this purpose, this extension adds an optional "expires" element
+
+
+
+Rosen                   Expires 14 November 2026                [Page 3]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
    to the <findServiceResponse> to provide advice from a server to a
    client as to when revalidation is suggested.  In a
    <findServiceResponse>, a LoST server may include the "expires"
@@ -219,16 +215,17 @@ Internet-Draft            LoST Planned Changes                April 2026
    A ChangeSet object contains an identifier (changeSetId), a date
    (changeSetEffective) and an array of partial locations.
 
-
-
-Rosen                    Expires 31 October 2026                [Page 4]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
    A partial location is an array of location information element
    namespace/name and value pairs.  A LoST client (such as a LIS)
    compares the location elements with its records.  For each of the
+
+
+
+Rosen                   Expires 14 November 2026                [Page 4]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
    client's records where all of the location elements provided in the
    partial location have the same values as those in the partial
    location, that client record may be affected by the planned change.
@@ -274,17 +271,17 @@ Internet-Draft            LoST Planned Changes                April 2026
    consisting of the major version, a dot, and the minor version.  A
    backwards-compatible change within a major version MAY increment only
    the minor version number.  A non-backwards-compatible change MUST
-
-
-
-Rosen                    Expires 31 October 2026                [Page 5]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
    increment the major version number.  To achieve backwards
    compatibility, implementations MUST ignore any object members they do
    not recognize.  Minor version specifications SHALL only add objects,
+
+
+
+Rosen                   Expires 14 November 2026                [Page 5]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
    non-required members of existing objects, and non-mandatory-to-use
    functions and SHALL NOT delete any objects, members of objects or
    functions.  This means an implementation of a specific major version
@@ -321,23 +318,6 @@ Internet-Draft            LoST Planned Changes                April 2026
    A server responds with what it knows (as of the moment of the
    request) will be in effect on or before the <asOf> date
 
-
-
-
-
-
-
-
-
-
-
-
-
-Rosen                    Expires 31 October 2026                [Page 6]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
    The LoST server is not expected to retain a history of changes.
    Therefore, an <asOf> date in the past will return the same results as
    omitting it (meaning current data).  There are no constraints on how
@@ -348,6 +328,15 @@ Internet-Draft            LoST Planned Changes                April 2026
    (including any planned or unplanned changes that have already
    occurred) and makes no guarantees about future queries of the same
    location.
+
+
+
+
+
+Rosen                   Expires 14 November 2026                [Page 6]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
 
    When a server responds with a result <asOf> a time other than the
    time of the query, the <findServiceResponse> MUST include <asOf>
@@ -375,25 +364,6 @@ Internet-Draft            LoST Planned Changes                April 2026
    client is asking for validation <asOf> a specified time significantly
    into the future.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Rosen                    Expires 31 October 2026                [Page 7]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
    Selecting a revalidation interval is a complex balancing of
    timeliness, server load, stability of the underlying data, and policy
    at the LoST server.  Too short, and load on the server may be
@@ -416,6 +386,13 @@ Internet-Draft            LoST Planned Changes                April 2026
    Future extensions to LoST are expected to use this schema as the base
    for the extensions, rather than the Relax NG schema.  Existing
    extensions described using the Relax NG schema continue to be valid.
+
+
+
+Rosen                   Expires 14 November 2026                [Page 7]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
 
    <?xml version="1.0" encoding="UTF-8"?>
    <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
@@ -442,14 +419,6 @@ Internet-Draft            LoST Planned Changes                April 2026
          </xs:attribute>
          <xs:attribute name="recursive" type="xs:boolean"
               default="false"/>
-
-
-
-Rosen                    Expires 31 October 2026                [Page 8]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
        </xs:complexType>
      </xs:element>
 
@@ -473,6 +442,14 @@ Internet-Draft            LoST Planned Changes                April 2026
      <xs:element name="getServiceBoundary">
        <xs:complexType>
          <xs:group ref="extensionPoint"/>
+
+
+
+Rosen                   Expires 14 November 2026                [Page 8]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
          <xs:attributeGroup ref="serviceBoundaryKey"/>
        </xs:complexType>
      </xs:element>
@@ -498,14 +475,6 @@ Internet-Draft            LoST Planned Changes                April 2026
      </xs:element>
 
      <xs:element name="listServicesByLocationResponse">
-
-
-
-Rosen                    Expires 31 October 2026                [Page 9]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
        <xs:complexType>
          <xs:sequence>
            <xs:element ref="serviceList"/>
@@ -529,6 +498,14 @@ Internet-Draft            LoST Planned Changes                April 2026
          <xs:group ref="service"/>
          <xs:element ref="path" minOccurs="0"/>
          <xs:group ref="extensionPoint"/>
+
+
+
+Rosen                   Expires 14 November 2026                [Page 9]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
        </xs:sequence>
      </xs:group>
 
@@ -554,21 +531,13 @@ Internet-Draft            LoST Planned Changes                April 2026
              <xs:attribute name="id" type="xs:token"
                  use="required"/>
            </xs:extension>
-
-
-
-Rosen                    Expires 31 October 2026               [Page 10]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
          </xs:complexContent>
        </xs:complexType>
      </xs:element>
 
      <xs:complexType name="locationInformation">
        <xs:group ref="extensionPoint" maxOccurs="unbounded"/>
-       <xs:attribute name="profile" type="xs:NMTOKEN" use="required"/>
+       <xs:attribute name="profile" type="xs:NMTOKEN"/>
      </xs:complexType>
 
      <xs:group name="serviceBoundary">
@@ -585,6 +554,14 @@ Internet-Draft            LoST Planned Changes                April 2026
          <xs:attributeGroup ref="source"/>
          <xs:attributeGroup ref="serviceBoundaryKey"/>
        </xs:complexType>
+
+
+
+Rosen                   Expires 14 November 2026               [Page 10]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
      </xs:element>
 
      <xs:attributeGroup name="serviceBoundaryKey">
@@ -610,14 +587,6 @@ Internet-Draft            LoST Planned Changes                April 2026
        <xs:sequence>
          <xs:element ref="locationUsed" minOccurs="0"/>
        </xs:sequence>
-
-
-
-Rosen                    Expires 31 October 2026               [Page 11]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
      </xs:group>
 
      <xs:element name="locationUsed">
@@ -641,6 +610,14 @@ Internet-Draft            LoST Planned Changes                April 2026
                </xs:restriction>
              </xs:simpleType>
            </xs:union>
+
+
+
+Rosen                   Expires 14 November 2026               [Page 11]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
          </xs:simpleType>
        </xs:attribute>
      </xs:attributeGroup>
@@ -666,14 +643,6 @@ Internet-Draft            LoST Planned Changes                April 2026
          </xs:sequence>
          <xs:attributeGroup ref="expires"/>
          <xs:attribute name="lastUpdated" type="xs:dateTime"
-
-
-
-Rosen                    Expires 31 October 2026               [Page 12]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
                use="required"/>
          <xs:attributeGroup ref="source"/>
          <xs:attribute name="sourceId" type="xs:token"
@@ -697,6 +666,14 @@ Internet-Draft            LoST Planned Changes                April 2026
      <xs:element name="serviceNumber">
        <xs:simpleType>
          <xs:restriction base="xs:token">
+
+
+
+Rosen                   Expires 14 November 2026               [Page 12]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
            <xs:pattern value="[0-9*#]+"/>
          </xs:restriction>
        </xs:simpleType>
@@ -722,14 +699,6 @@ Internet-Draft            LoST Planned Changes                April 2026
      <xs:complexType name="exceptionContainer">
        <xs:sequence>
          <xs:choice minOccurs="0" maxOccurs="unbounded">
-
-
-
-Rosen                    Expires 31 October 2026               [Page 13]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
            <xs:element ref="badRequest"/>
            <xs:element ref="internalError"/>
            <xs:element ref="serviceSubstitution"/>
@@ -752,6 +721,14 @@ Internet-Draft            LoST Planned Changes                April 2026
      <xs:element name="errors" type="exceptionContainer"/>
 
      <xs:element name="warnings" type="exceptionContainer"/>
+
+
+
+
+Rosen                   Expires 14 November 2026               [Page 13]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
 
      <xs:complexType name="basicException">
        <xs:annotation>
@@ -779,13 +756,6 @@ Internet-Draft            LoST Planned Changes                April 2026
 
      <xs:element name="serviceNotImplemented" type="basicException"/>
 
-
-
-Rosen                    Expires 31 October 2026               [Page 14]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
      <xs:element name="serverTimeout" type="basicException"/>
 
      <xs:element name="serverError" type="basicException"/>
@@ -797,17 +767,8 @@ Internet-Draft            LoST Planned Changes                April 2026
      <xs:element name="locationValidationUnavailable"
              type="basicException"/>
 
-     <xs:element name="locationProfileUnrecognized">
-         <xs:complexType>
-           <xs:complexContent>
-             <xs:extension base="basicException">
-               <xs:attribute name="unsupportedProfiles"
-                      type="xs:NMTOKENS" use="required"/>
-             </xs:extension>
-           </xs:complexContent>
-         </xs:complexType>
-       </xs:element>
-
+     <xs:element name="locationProfileUnrecognized"
+             type="basicException"/>
      <xs:element name="redirect">
        <xs:complexType>
          <xs:group ref="extensionPoint"/>
@@ -817,6 +778,13 @@ Internet-Draft            LoST Planned Changes                April 2026
          <xs:attributeGroup ref="message"/>
        </xs:complexType>
      </xs:element>
+
+
+
+Rosen                   Expires 14 November 2026               [Page 14]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
 
      <xs:attributeGroup name="message">
        <xs:attribute name="message" type="xs:token"/>
@@ -834,14 +802,6 @@ Internet-Draft            LoST Planned Changes                April 2026
      <xs:simpleType name="appUniqueString">
        <xs:restriction base="xs:token">
          <xs:pattern value="([a-zA-Z0-9\-]+\.)+[a-zA-Z0-9]+"/>
-
-
-
-Rosen                    Expires 31 October 2026               [Page 15]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
        </xs:restriction>
      </xs:simpleType>
 
@@ -874,6 +834,14 @@ Internet-Draft            LoST Planned Changes                April 2026
            A point where future extensions
            (elements from other namespaces)
            can be added.
+
+
+
+Rosen                   Expires 14 November 2026               [Page 15]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
          </xs:documentation>
        </xs:annotation>
        <xs:sequence>
@@ -888,15 +856,6 @@ Internet-Draft            LoST Planned Changes                April 2026
 
    This schema provides the extension to the prior section schema for
    planned changes:
-
-
-
-
-
-Rosen                    Expires 31 October 2026               [Page 16]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
 
    <?xml version="1.0" encoding="UTF-8"?>
    <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
@@ -931,6 +890,14 @@ Internet-Draft            LoST Planned Changes                April 2026
    servers:
      - url: "{baseUri}/LoST/v1"
        variables:
+
+
+
+Rosen                   Expires 14 November 2026               [Page 16]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
          baseUri:
            default: https://localhost
            description: The base URI that is the output of
@@ -945,15 +912,7 @@ Internet-Draft            LoST Planned Changes                April 2026
            "200":
              description: Planned Changes
              content:
-               application/json:
-
-
-
-Rosen                    Expires 31 October 2026               [Page 17]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
+               application/xml:
                  schema:
                    $ref: "#/components/schemas/PlannedChangeIdList"
 
@@ -971,7 +930,7 @@ Internet-Draft            LoST Planned Changes                April 2026
            "200":
              description: return ChangeSet object
              content:
-               application/json:
+               application/xml:
                  schema:
                    $ref: "#/components/schemas/ChangeSet"
 
@@ -987,10 +946,18 @@ Internet-Draft            LoST Planned Changes                April 2026
          summary: Retrieves all supported versions
          operationId: RetrieveVersions
          responses:
+
+
+
+Rosen                   Expires 14 November 2026               [Page 17]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
            "200":
              description: Versions supported
              content:
-               application/json:
+               application/xml:
                  schema:
                    $ref: "#/components/schemas/VersionsArray"
 
@@ -1002,14 +969,6 @@ Internet-Draft            LoST Planned Changes                April 2026
            type: string
 
        ChangeSet:
-
-
-
-Rosen                    Expires 31 October 2026               [Page 18]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
-
          type: object
          properties:
            changeSetId:
@@ -1043,6 +1002,14 @@ Internet-Draft            LoST Planned Changes                April 2026
          properties:
            versions:
              type: array
+
+
+
+Rosen                   Expires 14 November 2026               [Page 18]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
              items:
                type: object
                required:
@@ -1057,14 +1024,6 @@ Internet-Draft            LoST Planned Changes                April 2026
                    type: integer
                    format: int32
                    description: Version minor number
-
-
-
-
-Rosen                    Expires 31 October 2026               [Page 19]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
 
 9.  Security Considerations
 
@@ -1093,6 +1052,20 @@ Internet-Draft            LoST Planned Changes                April 2026
 
 10.3.  Planned Change Extension XML Schema Registration
 
+
+
+
+
+
+
+
+
+
+Rosen                   Expires 14 November 2026               [Page 19]
+
+Internet-Draft            LoST Planned Changes                  May 2026
+
+
       BEGIN
       <?xml version="2.0"?>
       <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML Basic 1.0//EN"
@@ -1113,14 +1086,6 @@ Internet-Draft            LoST Planned Changes                April 2026
       END
 
    The XML Schema is found in Section 7.
-
-
-
-
-Rosen                    Expires 31 October 2026               [Page 20]
-
-Internet-Draft            LoST Planned Changes                April 2026
-
 
 11.  Normative References
 
@@ -1152,25 +1117,4 @@ Author's Address
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Rosen                    Expires 31 October 2026               [Page 21]
+Rosen                   Expires 14 November 2026               [Page 20]

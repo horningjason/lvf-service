@@ -81,8 +81,8 @@ uvicorn src.server:app --reload
 ## GIS Data
 
 The repository includes `data/child_lvf_data.gpkg` — a sample GeoPackage provisioned for
-Burleigh County, ND. This is sufficient to run the service and evaluate LVF behavior out of
-the box.
+Burleigh County, McLean County, Mercer County and Oliver County, ND. This is sufficient to 
+run the service and evaluate LVF behavior out of the box.
 
 The server requires a GeoPackage containing three layer types:
 
@@ -167,7 +167,7 @@ src/                    Application source
   utils.py              Shared utilities
 schemas/                XSD files for XML schema validation
 data/                   GeoPackage data files
-  child_lvf_data.gpkg   Sample data — Burleigh County, ND
+  child_lvf_data.gpkg   Sample data — Burleigh, McLean, Mercer, Oliver counties.
 tests/                  Test XML inputs and regression infrastructure
   regression/
     golden/             Expected output files (committed)
@@ -186,3 +186,9 @@ tests/                  Test XML inputs and regression infrastructure
 - RFC 5222 — LoST protocol
 - RFC 5139 — PIDF-LO civic address schema
 - RFC 6848 — PIDF-LO civic address extensions
+
+## Other Documents
+- RFC 5582 - LoST mapping architecture (informational)
+- RFC 6739 - LoST sync (experimental)
+- draft-ietf-ecrit-similar-location-19
+- draft-ietf-ecrit-lost-planned-changes-17

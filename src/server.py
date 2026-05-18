@@ -579,27 +579,17 @@ def _derive_civic_coverage() -> None:
     For each RCL record and each side (L/R):
     - Compute perpendicular test point 0.0001 degrees from segment midpoint
     - Point-in-polygon test against service boundaries
-    - If inside: record (admin_tuple, boundary) association
+    - If inside: record the exact admin tuple from that side of the record
 
-    Then aggregate at three levels ("apply the same aggregation logic for
-    A4 and A5 where present"):
-    - A3: if ALL A3 values within (country, A1, A2) map to the same boundary →
-           wildcard entry (A3=None, A4=None, A5=None)
-    - A4: for remaining specific-A3 groups, if ALL A4 values within
-           (country, A1, A2, A3) map to the same boundary →
-           wildcard entry (A4=None, A5=None)
-    - A5: for remaining specific-A4 groups, if ALL A5 values within
-           (country, A1, A2, A3, A4) map to the same boundary →
-           wildcard entry (A5=None); otherwise specific A5 entries
+    Deduplicates on the full 8-field key. No wildcard collapsing.
     """
     global _civic_coverage
-    from collections import defaultdict
 
     now = datetime.datetime.now(datetime.timezone.utc)
     active_rcl = [r for r in _rcl if _is_temporally_active(r.effective, r.expire, now)]
     active_boundaries = [b for b in _boundaries if _is_temporally_active(b.effective, b.expires, now)]
 
-    raw: list[tuple[dict, ServiceBoundary]] = []
+    dedup: dict = {}
 
     for record in active_rcl:
         for side in ("L", "R"):
@@ -617,113 +607,23 @@ def _derive_civic_coverage() -> None:
             if containing is None:
                 continue
             suffix = "_l" if side == "L" else "_r"
-            t = {
-                "country": getattr(record, f"country{suffix}"),
-                "a1":      getattr(record, f"a1{suffix}"),
-                "a2":      getattr(record, f"a2{suffix}"),
-                "a3":      getattr(record, f"a3{suffix}"),
-                "a4":      getattr(record, f"a4{suffix}"),
-                "a5":      getattr(record, f"a5{suffix}"),
-            }
-            if not all([t["country"], t["a1"], t["a2"]]):
+
+            def _up(v): return v.upper() if v else None
+
+            country = _up(getattr(record, f"country{suffix}"))
+            a1      = _up(getattr(record, f"a1{suffix}"))
+            a2      = _up(getattr(record, f"a2{suffix}"))
+            if not all([country, a1, a2]):
                 continue
-            raw.append((t, containing))
+            a3 = _up(getattr(record, f"a3{suffix}"))
+            a4 = _up(getattr(record, f"a4{suffix}"))
+            a5 = _up(getattr(record, f"a5{suffix}"))
 
-    # Normalize all admin values to uppercase once for consistent grouping
-    norm_raw = [
-        ({k: v.upper() if v else None for k, v in t.items()}, b)
-        for t, b in raw
-    ]
-
-    raw_entries: list[CivicCoverageEntry] = []
-
-    # ---- A3 aggregation: group by (country, a1, a2, boundary) ----
-    a3_grp: dict = defaultdict(set)
-    a3_bnd: dict = {}
-    for t, b in norm_raw:
-        key = (t["country"], t["a1"], t["a2"], id(b))
-        a3_grp[key].add(t["a3"])
-        a3_bnd[key] = b
-
-    all_a3: dict = defaultdict(set)
-    for (country, a1, a2, _), a3s in a3_grp.items():
-        all_a3[(country, a1, a2)].update(a3s)
-
-    a3_wildcarded: set = set()  # (country, a1, a2, bid) that produced a wildcard A3 entry
-
-    for (country, a1, a2, bid), a3s in a3_grp.items():
-        b = a3_bnd[(country, a1, a2, bid)]
-        if a3s == all_a3[(country, a1, a2)]:
-            a3_wildcarded.add((country, a1, a2, bid))
-            raw_entries.append(CivicCoverageEntry(
-                country=country, a1=a1, a2=a2, a3=None, a4=None, a5=None, boundary=b,
-            ))
-        # specific A3 values are resolved in the A4 aggregation step below
-
-    # ---- A4 aggregation: within each specific (country, a1, a2, a3, boundary) ----
-    a4_grp: dict = defaultdict(set)
-    a4_bnd: dict = {}
-    for t, b in norm_raw:
-        country, a1, a2 = t["country"], t["a1"], t["a2"]
-        if (country, a1, a2, id(b)) in a3_wildcarded:
-            continue  # already covered by the A3 wildcard entry
-        key = (country, a1, a2, t["a3"], id(b))
-        a4_grp[key].add(t["a4"])
-        a4_bnd[key] = b
-
-    all_a4: dict = defaultdict(set)
-    for (country, a1, a2, a3, _), a4s in a4_grp.items():
-        all_a4[(country, a1, a2, a3)].update(a4s)
-
-    a4_wildcarded: set = set()  # (country, a1, a2, a3, bid) that produced a wildcard A4 entry
-
-    for (country, a1, a2, a3, bid), a4s in a4_grp.items():
-        b = a4_bnd[(country, a1, a2, a3, bid)]
-        if a4s == all_a4[(country, a1, a2, a3)]:
-            a4_wildcarded.add((country, a1, a2, a3, bid))
-            raw_entries.append(CivicCoverageEntry(
-                country=country, a1=a1, a2=a2, a3=a3, a4=None, a5=None, boundary=b,
-            ))
-        # specific A4 values are resolved in the A5 aggregation step below
-
-    # ---- A5 aggregation: within each specific (country, a1, a2, a3, a4, boundary) ----
-    a5_grp: dict = defaultdict(set)
-    a5_bnd: dict = {}
-    for t, b in norm_raw:
-        country, a1, a2, a3 = t["country"], t["a1"], t["a2"], t["a3"]
-        bid = id(b)
-        if (country, a1, a2, bid) in a3_wildcarded:
-            continue
-        if (country, a1, a2, a3, bid) in a4_wildcarded:
-            continue  # already covered by the A4 wildcard entry
-        key = (country, a1, a2, a3, t["a4"], bid)
-        a5_grp[key].add(t["a5"])
-        a5_bnd[key] = b
-
-    all_a5: dict = defaultdict(set)
-    for (country, a1, a2, a3, a4, _), a5s in a5_grp.items():
-        all_a5[(country, a1, a2, a3, a4)].update(a5s)
-
-    for (country, a1, a2, a3, a4, bid), a5s in a5_grp.items():
-        b = a5_bnd[(country, a1, a2, a3, a4, bid)]
-        if a5s == all_a5[(country, a1, a2, a3, a4)]:
-            raw_entries.append(CivicCoverageEntry(
-                country=country, a1=a1, a2=a2, a3=a3, a4=a4, a5=None, boundary=b,
-            ))
-        else:
-            for a5_val in a5s:
-                raw_entries.append(CivicCoverageEntry(
-                    country=country, a1=a1, a2=a2, a3=a3, a4=a4, a5=a5_val, boundary=b,
-                ))
-
-    # Deduplicate on the final output tuple — same 8 fields the endpoint returns
-    dedup: dict = {}
-    for e in raw_entries:
-        b_name = e.boundary.display_name if e.boundary is not None else None
-        b_urn  = e.boundary.service_urn  if e.boundary is not None else None
-        key = (e.country, e.a1, e.a2, e.a3, e.a4, e.a5, b_name, b_urn)
-        if key not in dedup:
-            dedup[key] = e
+            key = (country, a1, a2, a3, a4, a5, containing.display_name, containing.service_urn)
+            if key not in dedup:
+                dedup[key] = CivicCoverageEntry(
+                    country=country, a1=a1, a2=a2, a3=a3, a4=a4, a5=a5, boundary=containing,
+                )
 
     _civic_coverage = list(dedup.values())
     log.info("Derived civic coverage region: %d entries", len(_civic_coverage))
@@ -1535,7 +1435,7 @@ def _build_civic_coverage_mapping_xml() -> Optional[str]:
 
     seen: set = set()
     for entry in _civic_coverage:
-        key = (entry.country, entry.a1, entry.a2)
+        key = (entry.country, entry.a1, entry.a2, entry.a3, entry.a4, entry.a5)
         if key in seen:
             continue
         seen.add(key)
@@ -1546,6 +1446,10 @@ def _build_civic_coverage_mapping_xml() -> Optional[str]:
         _e.text = entry.a1
         _e = etree.SubElement(ca, f"{{{_NS_CA}}}A2")
         _e.text = entry.a2
+        for field, val in (("A3", entry.a3), ("A4", entry.a4), ("A5", entry.a5)):
+            if val is not None and val != "*":
+                _e = etree.SubElement(ca, f"{{{_NS_CA}}}{field}")
+                _e.text = val
 
     etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")  # empty per RFC 6739 Figure 2
 
