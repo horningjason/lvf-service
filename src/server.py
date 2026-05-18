@@ -1517,6 +1517,55 @@ def _build_geodetic_coverage_mapping_xml() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# LoST-Sync — GML → shapely helpers (inverse of _gml_polygon / _shapely_to_gml)
+# ---------------------------------------------------------------------------
+
+def _gml_ring_coords(ring_el: etree._Element) -> list[tuple[float, float]]:
+    """Extract (lon, lat) coordinate pairs from a <gml:LinearRing> element."""
+    coords: list[tuple[float, float]] = []
+    for pos in ring_el.findall(f"{{{_NS_GML}}}pos"):
+        parts = (pos.text or "").split()
+        if len(parts) >= 2:
+            lat, lon = float(parts[0]), float(parts[1])
+            coords.append((lon, lat))
+    return coords
+
+
+def _gml_polygon_to_shapely(poly_el: etree._Element):
+    """Convert a <gml:Polygon> element to a shapely Polygon."""
+    from shapely.geometry import Polygon as _Polygon
+    ext_ring = poly_el.find(f"{{{_NS_GML}}}exterior/{{{_NS_GML}}}LinearRing")
+    exterior = _gml_ring_coords(ext_ring) if ext_ring is not None else []
+    interiors = [
+        _gml_ring_coords(ir)
+        for int_el in poly_el.findall(f"{{{_NS_GML}}}interior")
+        for ir in [int_el.find(f"{{{_NS_GML}}}LinearRing")]
+        if ir is not None
+    ]
+    return _Polygon(exterior, interiors)
+
+
+def _gml_sb_to_shapely(sb_el: etree._Element):
+    """
+    Parse the GML geometry inside a <serviceBoundary> element to a shapely geometry.
+    Returns a Polygon, MultiPolygon, or None on failure.
+    """
+    from shapely.geometry import MultiPolygon as _MultiPolygon
+    mp_el = sb_el.find(f".//{{{_NS_GML}}}MultiPolygon")
+    if mp_el is not None:
+        polys = []
+        for pm_el in mp_el.findall(f"{{{_NS_GML}}}polygonMember"):
+            poly_el = pm_el.find(f"{{{_NS_GML}}}Polygon")
+            if poly_el is not None:
+                polys.append(_gml_polygon_to_shapely(poly_el))
+        return _MultiPolygon(polys)
+    poly_el = sb_el.find(f".//{{{_NS_GML}}}Polygon")
+    if poly_el is not None:
+        return _gml_polygon_to_shapely(poly_el)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # LoST-Sync — mapping element parser
 # ---------------------------------------------------------------------------
 
@@ -1524,6 +1573,9 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
     """
     Parse a LoST <mapping> element received via pushMappings or getMappingsResponse
     into the child coverage store dict format.
+
+    All fields are discrete scalar or structured values — no raw XML is stored,
+    so json.dump() always produces valid JSON with no embedded control characters.
     """
     source    = mapping_el.get("source", "")
     source_id = mapping_el.get("sourceId", "")
@@ -1533,10 +1585,13 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
     service_el = mapping_el.find(f"{{{_NS_LOST}}}service")
     service = (service_el.text or "").strip() if service_el is not None else "urn:service:sos"
 
+    dn_el = mapping_el.find(f"{{{_NS_LOST}}}displayName")
+    display_name = (dn_el.text or "").strip() if dn_el is not None else ""
+
     sb_el = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
-    profile      = ""
-    civic_tuples = None
-    geodetic_wkt = None
+    profile           = ""
+    civic_tuples      = None
+    geodetic_geom_wkt = None
 
     if sb_el is not None:
         profile = sb_el.get("profile", "")
@@ -1554,11 +1609,12 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
                 civic_tuples.append(t)
 
         elif profile == "geodetic-2d":
-            # Store the serialised serviceBoundary XML; actual parsing deferred
             try:
-                geodetic_wkt = etree.tostring(sb_el, encoding="unicode")
+                from shapely.wkt import dumps as _wkt_dumps
+                geom = _gml_sb_to_shapely(sb_el)
+                geodetic_geom_wkt = _wkt_dumps(geom) if geom is not None else None
             except Exception:
-                geodetic_wkt = None
+                geodetic_geom_wkt = None
 
     # Derive child validate URI
     uri_el = mapping_el.find(f"{{{_NS_LOST}}}uri")
@@ -1576,17 +1632,70 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
             child_uri = ""
 
     return {
-        "source":      source,
-        "source_id":   source_id,
-        "last_updated": last_updated,
-        "expires":     expires,
-        "service":     service,
-        "profile":     profile,
-        "civic_tuples": civic_tuples,
-        "geodetic_wkt": geodetic_wkt,
-        "child_uri":   child_uri,
-        "raw_xml":     etree.tostring(mapping_el, encoding="unicode"),
+        "source":           source,
+        "source_id":        source_id,
+        "last_updated":     last_updated,
+        "expires":          expires,
+        "service":          service,
+        "display_name":     display_name,
+        "profile":          profile,
+        "civic_tuples":     civic_tuples,
+        "geodetic_geom_wkt": geodetic_geom_wkt,
+        "child_uri":        child_uri,
     }
+
+
+def _child_entry_to_mapping_xml(entry: dict) -> Optional[str]:
+    """
+    Reconstruct a <mapping> XML string from a child coverage store entry.
+    Returns None if the entry cannot be serialised (e.g. missing geodetic geometry).
+    """
+    profile = entry.get("profile", "")
+
+    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
+    mapping_el.set("expires",     entry.get("expires", "NO-EXPIRATION"))
+    mapping_el.set("lastUpdated", entry.get("last_updated", ""))
+    mapping_el.set("source",      entry.get("source", ""))
+    mapping_el.set("sourceId",    entry.get("source_id", ""))
+
+    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
+    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
+    dn.text = entry.get("display_name") or f"{entry.get('source', '')} {profile} coverage"
+
+    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
+    svc.text = entry.get("service", "urn:service:sos")
+
+    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
+    sb.set("profile", profile)
+
+    if profile == "civic":
+        for t in (entry.get("civic_tuples") or []):
+            ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
+            for field, tag in [
+                ("country", "country"), ("a1", "A1"), ("a2", "A2"),
+                ("a3", "A3"),           ("a4", "A4"), ("a5", "A5"),
+            ]:
+                val = t.get(field)
+                if val is not None:
+                    el = etree.SubElement(ca, f"{{{_NS_CA}}}{tag}")
+                    el.text = val
+    elif profile == "geodetic-2d":
+        geom_wkt = entry.get("geodetic_geom_wkt")
+        if not geom_wkt:
+            return None
+        try:
+            from shapely.wkt import loads as _wkt_loads
+            geom = _wkt_loads(geom_wkt)
+            sb.append(_shapely_to_gml(geom))
+        except Exception as exc:
+            log.warning("LoST-Sync: could not reconstruct geodetic GML for child entry source=%s: %s",
+                        entry.get("source", ""), exc)
+            return None
+    else:
+        return None
+
+    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
+    return etree.tostring(mapping_el, encoding="unicode")
 
 
 # ---------------------------------------------------------------------------
@@ -1676,9 +1785,9 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
                 mapping_xml_list.append(geo_xml)
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
-            raw = entry.get("raw_xml")
-            if raw:
-                mapping_xml_list.append(raw)
+            xml = _child_entry_to_mapping_xml(entry)
+            if xml:
+                mapping_xml_list.append(xml)
     else:
         # Return only mappings newer than the requester's fingerprints
         fingerprints: dict[str, str] = {}
@@ -1706,13 +1815,12 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
 
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
-            raw = entry.get("raw_xml")
-            if not raw:
-                continue
             fp_lu = fingerprints.get(entry.get("source_id", ""))
             entry_lu = entry.get("last_updated", "")
             if fp_lu is None or _compare_timestamps(entry_lu, fp_lu) > 0:
-                mapping_xml_list.append(raw)
+                xml = _child_entry_to_mapping_xml(entry)
+                if xml:
+                    mapping_xml_list.append(xml)
 
     log.debug(
         "LoST-Sync: getMappingsResponse includes %d mapping(s) (%d own, %d child)",
