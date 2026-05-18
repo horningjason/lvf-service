@@ -25,7 +25,11 @@ cd lvf-service
 cp .env.example .env
 # Edit .env as needed — defaults work with the included child_lvf_data.gpkg
 
-# 3. Build and start
+#3. Configure docker-compose.yml (optional)
+nano docker-compose.yml
+# Edit docker-compose.yml as needed - if running multiple instances on different ports
+
+# 4. Build and start
 docker compose up -d
 ```
 
@@ -73,7 +77,7 @@ cp .env.example .env
 # Edit .env as needed
 
 # 5. Start the server
-uvicorn src.server:app --reload
+uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Prerequisites:** Python 3.10 or later.

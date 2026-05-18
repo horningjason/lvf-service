@@ -1229,7 +1229,7 @@ def _child_coverage_path() -> str:
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     if gpkg_path:
         return os.path.join(os.path.dirname(gpkg_path) or ".", "lvf_child_coverage.json")
-    return "lvf_child_coverage.json"
+    return os.path.join("data", "lvf_child_coverage.json")
 
 
 def _load_child_coverage() -> None:
