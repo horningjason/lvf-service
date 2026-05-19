@@ -1103,9 +1103,13 @@ def _check_ooc_admin(address: CivicAddress, g2):
     """
     if g2.outcome != "invalid" or g2.state.invalid not in _ADMIN_PIDF_LO:
         return None
+    invalid_field = g2.state.invalid  # e.g. "ca:A3"
+    a3 = address.a3 if invalid_field not in ("ca:A3", "ca:A4", "ca:A5") else None
+    a4 = address.a4 if invalid_field not in ("ca:A4", "ca:A5") else None
+    a5 = address.a5 if invalid_field != "ca:A5" else None
     coverage = lookup_civic_coverage(
         address.country, address.a1, address.a2,
-        address.a3, address.a4, address.a5,
+        a3, a4, a5,
     )
     if coverage is not None:
         return None  # in coverage — existing invalid behavior applies
