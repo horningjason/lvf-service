@@ -13,8 +13,7 @@ queries relevant to LVF and location validation.
 
 ## Quick Start — Docker (Recommended)
 
-Docker is the easiest way to run the LVF on any platform (Windows, macOS, Linux).
-[Docker Desktop](https://www.docker.com/products/docker-desktop/) must be installed.
+Docker provides a simple cross-platform way to run the LVF on Windows, macOS, and Linux. Windows and macOS users typically use [Docker Desktop](https://www.docker.com/products/docker-desktop/), while Linux users can use either Docker Desktop or Docker Engine.
 
 ```bash
 # 1. Clone the repository
