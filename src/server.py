@@ -646,14 +646,14 @@ def _derive_civic_coverage() -> None:
                 continue
             suffix = "_l" if side == "L" else "_r"
 
-            country = getattr(record, f"country{suffix}") or None
-            a1      = getattr(record, f"a1{suffix}") or None
-            a2      = getattr(record, f"a2{suffix}") or None
+            country = (getattr(record, f"country{suffix}") or "").strip() or None
+            a1      = (getattr(record, f"a1{suffix}") or "").strip() or None
+            a2      = (getattr(record, f"a2{suffix}") or "").strip() or None
             if not all([country, a1, a2]):
                 continue
-            a3 = getattr(record, f"a3{suffix}") or None
-            a4 = getattr(record, f"a4{suffix}") or None
-            a5 = getattr(record, f"a5{suffix}") or None
+            a3 = (getattr(record, f"a3{suffix}") or "").strip() or None
+            a4 = (getattr(record, f"a4{suffix}") or "").strip() or None
+            a5 = (getattr(record, f"a5{suffix}") or "").strip() or None
 
             key = (country, a1, a2, a3, a4, a5, containing.display_name, containing.service_urn)
             if key not in dedup:
@@ -691,13 +691,13 @@ def lookup_civic_coverage(
     conflict = False
 
     for entry in _civic_coverage:
-        if entry.country != c or entry.a1 != s or entry.a2 != co:
+        if norm(entry.country) != c or norm(entry.a1) != s or norm(entry.a2) != co:
             continue
-        if entry.a3 is not None and entry.a3 != a3n:
+        if entry.a3 is not None and norm(entry.a3) != a3n:
             continue
-        if entry.a4 is not None and entry.a4 != a4n:
+        if entry.a4 is not None and norm(entry.a4) != a4n:
             continue
-        if entry.a5 is not None and entry.a5 != a5n:
+        if entry.a5 is not None and norm(entry.a5) != a5n:
             continue
         specificity = (
             (1 if entry.a3 is not None else 0) +
