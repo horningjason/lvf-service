@@ -2378,7 +2378,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                 child_match.get("source", ""),
             )
         return _to_xml_response(
-            NotFoundResponse(message="No child LVF covers this location"),
+            NotFoundResponse(message="No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address."),
             status=200,
         ).body
 
@@ -2765,7 +2765,7 @@ async def validate(request: Request) -> Response:
                 child_match.get("source", ""),
             )
         return _to_xml_response(
-            NotFoundResponse(message="No child LVF covers this location"),
+            NotFoundResponse(message="No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address."),
             status=200,
         )
 
