@@ -1,140 +1,209 @@
-# Vendor Integration Notes
+# LVF Vendor Integration Guide
 
-This document provides guidance for vendors integrating this implementation into commercial or operational 911 systems.
-
-The goal is to ensure interoperability, stability, and long-term compatibility across implementations.
-
----
-
-## 1. Purpose of This Implementation
-
-This project provides a reference implementation for 911 data exchange and mapping interoperability. It is intended to:
-
-- Support CAD and mapping system integration
-- Enable standardized spatial and event data exchange
-- Serve as a vendor-neutral reference implementation
-
-It is not intended to replace proprietary CAD systems.
+This document is written for companies building Location Validation Function (LVF) implementations
+who want to evaluate conformance against this reference, understand the algorithm's expected
+behavior, or use the test suite to identify divergence between implementations.
 
 ---
 
-## 2. Integration Model
+## 1. Why This Exists — The Consistency Problem
 
-This system is designed to be integrated via:
+NENA-INF-027.1-2018 identified a fundamental problem: because the LVF algorithm was never fully
+specified, two different LVF implementations can produce different validation results for the same
+address. This is an immediate problem for nationwide carriers fulfilling "phase 2" location
+requests under FCC Report and Order 24-78, and a longer-term problem for any 911 authority that
+might switch LVF providers and find that validation results change.
 
-- REST APIs
-- Event-based messaging (where applicable)
-- GIS layer services
-- Optional embedded SDK components
-
-Direct modification of core logic is discouraged for production integrations.
-
----
-
-## 3. Stability Expectations
-
-The following components are considered stable:
-
-- Public API endpoints
-- Data schemas
-- Core event definitions
-- Geographic data structures
-
-The following may evolve:
-
-- Internal processing logic
-- Reference UI components
-- Experimental modules
-
-Breaking changes will be versioned using semantic versioning.
+This repository is an attempt to close that gap. The algorithm is specified in detail in
+`LVF_Algorithm_Specification_v53.docx`, and this codebase is a normative implementation of that
+specification. Where the code and the spec conflict, the spec governs.
 
 ---
 
-## 4. Data Model Guidelines
+## 2. The Algorithm Specification
 
-Vendors should adhere to the published schemas located in `/schemas`.
+`LVF_Algorithm_Specification_v53.docx` (in this repository) is the authoritative description of
+the algorithm. It defines:
 
-Rules:
+- The three-gate structure (Pre-Gate-0 → Gate 0 → Gate 1 → Gate 2)
+- The 33-position element evaluation hierarchy
+- The progressive filter logic and stop-on-first-invalid rule
+- The SSAP-to-RCL fallthrough conditions
+- Out-of-coverage admin-level redirect behavior
+- Response assembly and mapping element selection
 
-- Do not extend required fields without namespace separation
-- Preserve field types exactly as defined
-- Unknown fields should be ignored, not rejected
-- Timestamp format: ISO 8601
-
----
-
-## 5. Interoperability Principles
-
-This system assumes:
-
-- Multiple vendors may operate on the same dataset
-- Data may be merged from multiple jurisdictions
-- Latency-sensitive operations may occur (real-time dispatch environments)
-
-Therefore:
-
-- Avoid hard dependencies on synchronous responses
-- Design for eventual consistency where applicable
-- Do not assume single-source-of-truth control
+Vendors building conformant LVF implementations should treat this document as the primary
+reference, not this codebase. The codebase exists to make the specification executable and
+testable.
 
 ---
 
-## 6. Extension Guidelines
+## 3. GIS Data Requirements
 
-Vendors may extend the system using:
+The algorithm operates against three GIS layers. Field names are standardized per
+**NENA-STA-006.3-2026** and used verbatim — no field mapping or configuration is supported.
 
-- Namespaced fields (e.g. `vendorX_customField`)
-- Separate sidecar services
-- External enrichment pipelines
+### SiteStructureAddressPoint (SSAP)
 
-Do not modify core schema definitions directly for vendor-specific needs.
+Point layer. Key fields used in validation:
+
+| Field | Type | Used for |
+|---|---|---|
+| `Country`, `A1`–`A5` | String | Admin hierarchy matching |
+| `St_Name`, `St_PreDir`, `St_PreTyp`, `St_PreSep`, `St_PreMod`, `St_PosTyp`, `St_PosDir`, `St_PosMod` | String | Street name element matching |
+| `Add_Number` | Integer | HNO exact integer comparison |
+| `AddNum_Pre`, `AddNum_Suf` | String | HNP, HNS matching |
+| `Site`, `SubSite`, `Structure`, `Wing`, `Floor`, `UnitPreTyp`, `UnitValue`, `Room`, `Section`, `Row`, `Seat`, `LocMarker` | String | Named location elements |
+| `Post_Comm`, `Post_Code`, `PostCodeEx` | String | Postal elements (PCN, PC, PCE) |
+| `Effective`, `Expire` | ISO 8601 datetime | Temporal filtering |
+
+### RoadCenterLine (RCL)
+
+Line layer. Administrative and postal fields are side-specific (`_L` / `_R`). Street name fields
+are shared.
+
+| Field | Type | Used for |
+|---|---|---|
+| `Country_L/R`, `A1_L/R`–`A5_L/R` | String | Admin hierarchy matching (side-specific) |
+| `St_Name`, `St_PreDir`, etc. | String | Street name matching (shared) |
+| `FromAddr_L/R`, `ToAddr_L/R` | Integer | HNO range check |
+| `Parity_L/R` | `E`, `O`, or `B` | HNO parity check |
+| `Valid_L/R` | `Y` or `N` | HNO validation flag |
+| `AdNumPre_L/R` | String | HNP (post-HNO, side-specific) |
+| `PostComm_L/R`, `PostCode_L/R` | String | PCN, PC (side-specific) |
+| `Effective`, `Expire` | ISO 8601 datetime | Temporal filtering |
+| `NGUID` | String | Segment identifier (diagnostic) |
+
+### Service Boundary
+
+Polygon layer. One polygon per PSAP service area.
+
+| Field | Used for |
+|---|---|
+| `ServiceURN` | Gate 0 URN match; `urn:service:sos` required |
+| `NGUID` | `sourceId` attribute on `<mapping>` |
+| `Agency_ID` | `source` attribute on `<mapping>` |
+| `ServiceURI` | `<uri>` child of `<mapping>` |
+| `ServiceNum` | `<serviceNumber>` child of `<mapping>` |
+| `DsplayName` | `<displayName>` child of `<mapping>` |
+| `Expire`, `DateUpdate` | `expires`, `lastUpdated` attributes on `<mapping>` |
+| `Effective`, `Expire` | Temporal filtering (Gate 0 active boundary check) |
 
 ---
 
-## 7. Performance Considerations
+## 4. Protocol — Request and Response
 
-This system may be used in real-time operational environments.
+### Request
 
-Recommended:
+The `/validate` endpoint accepts `POST` with `Content-Type: application/xml`.
 
-- Cache static GIS layers locally where possible
-- Use incremental updates instead of full dataset refreshes
-- Avoid blocking API calls in dispatch-critical paths
+The body must be a valid RFC 5222 `<findService>` element with `validateLocation="true"` and
+`profile="civic"`. The service URN must be `urn:service:sos` (or a configured alias).
+
+The minimum civic address for Gate 1 to pass is: `country`, `A1`, `A2`, `RD`, `HNO`. Any
+additional submitted elements are evaluated in hierarchical order (§3 of the spec).
+
+### Responses
+
+| Element returned | Meaning | RFC 5222 reference |
+|---|---|---|
+| `<findServiceResponse>` with `<locationValidation>` | Gate 2 completed; contains `<valid>`, `<invalid>`, and/or `<unchecked>` | §8.4.2 |
+| `<errors><notFound>` | No single matching GIS record found | §8.5 |
+| `<errors><locationInvalid>` | Gate 1 failure — required element missing or empty | §8.5 |
+| `<errors><serviceNotImplemented>` | Gate 0 failure — no provisioned boundary for the URN | §8.5 |
+| `<errors><badRequest>` | Pre-Gate-0 failure — request does not conform to schema | §8.5 |
+| `<redirect>` | Out-of-coverage admin-level failure with a configured parent | §8.6 |
+| `<findServiceResponse>` with `<warnings><locationValidationUnavailable>` | `validateLocation` was not `"true"` | §13.2 |
+
+All responses are HTTP 200. Error conditions are expressed in the XML body, not HTTP status codes,
+per RFC 5222.
+
+### Key Behavioral Invariants
+
+These are the points where vendor implementations most commonly diverge:
+
+- **Stop-on-first-invalid.** Exactly one element ever appears in `<invalid>`. The filter stops
+  immediately when the candidate set reaches zero. All submitted elements after the stop position
+  go to `<unchecked>`.
+
+- **HNO on RCL is always `<unchecked>`, never `<valid>`.** Even when HNO narrows the candidate
+  set to a single record, it is placed in `<unchecked>` on an RCL match. (INF-027 §2.5.8)
+
+- **SSAP terminal → fall through to RCL.** If SSAP exists but yields zero candidates (terminal),
+  the algorithm discards the SSAP result and runs the full RCL filter. SSAP terminal does not
+  produce an invalid response.
+
+- **Element ordering in responses.** The `<valid>`, `<invalid>`, and `<unchecked>` text content
+  lists elements in the canonical 33-position hierarchy order, regardless of submission order.
+
+- **All comparisons are case-insensitive exact string match.** No fuzzy matching, no
+  normalization beyond case folding.
+
+- **Null GIS field behavior is element-specific.** PCN and PC treat a null GIS field as
+  `<unchecked>` (the LVF cannot verify what it doesn't have). Other fields treat null GIS as
+  an empty string, which only matches an empty submitted value.
 
 ---
 
-## 8. Security & Data Handling
+## 5. Using the Test Suite for Conformance Testing
 
-Vendors are responsible for:
+The regression suite in `tests/regression/` defines the reference behavior. Each test is a pair
+of files: a `tests/requests/<TEST-ID>.xml` request and a `tests/regression/golden/<TEST-ID>.golden.xml`
+expected response.
 
-- Securing any deployed integration endpoints
-- Ensuring encryption in transit (TLS required)
-- Complying with CJIS and applicable state/federal requirements
+The test runner currently calls `handle_find_service()` directly (no HTTP). To use it against
+your own LVF implementation, you would need to adapt `tests/regression/runner.py` to POST the
+request XML to your endpoint and compare the response. The structure of the runner is
+straightforward — the comparison logic is a normalized XML diff.
 
-This project does not provide security accreditation for production deployments.
+The sample GeoPackage at `data/child_lvf_data.gpkg` (Burleigh, McLean, Mercer, and Oliver
+counties, ND) is the dataset against which all golden files are produced. To run the suite
+meaningfully against your implementation, your system must load the same GeoPackage.
 
----
-
-## 9. Versioning & Compatibility
-
-- API versioning follows semantic versioning (MAJOR.MINOR.PATCH)
-- Breaking changes will increment MAJOR version
-- Deprecated endpoints will remain available for at least one major version cycle
-
----
-
-## 10. Reference Implementation
-
-This repository is considered the reference implementation. Vendors are encouraged to:
-
-- Fork for experimentation
-- Build adapters around it rather than modifying core logic
-- Contribute improvements upstream when applicable
+Test IDs follow a structured naming convention (`{GATE}-{LAYER}-{CATEGORY}-{SEQ}`) described in
+`CLAUDE.md`. The gate prefix tells you what behavior each test exercises before opening the files.
 
 ---
 
-## 11. Support
+## 6. LoST-Sync (RFC 6739)
 
-Support is provided on a best-effort basis via GitHub Issues.
+The `/sync` endpoint accepts `pushMappings` and `getMappingsRequest` per RFC 6739. Coverage
+regions are exchanged as `<mapping>` elements with `<serviceBoundary profile="civic">` or
+`profile="geodetic-2d"`. The `<uri/>` child is intentionally empty on coverage region mappings
+(RFC 6739 Figure 2).
 
-For vendor-specific integration discussions, open an issue tagged `vendor-integration`.
+If your implementation participates in a LoST hierarchy with this reference node as parent or
+child, the sync protocol is the mechanism for exchanging coverage regions. See the `POST /sync`
+section of the README for request/response examples.
+
+---
+
+## 7. Limitations of This Implementation
+
+This is an open reference implementation intended for conformance evaluation and interoperability
+testing. It is **not production-hardened**:
+
+- No authentication or access control on any endpoint
+- No rate limiting
+- Single-process; not designed for horizontal scaling
+- The GeoPackage pickle cache is not secured against tampering
+- No formal SLA or uptime guarantee
+
+Vendors evaluating this implementation for production deployment should conduct their own security
+review and add appropriate hardening for their environment.
+
+---
+
+## 8. Reporting Divergence
+
+If your implementation produces a different result than this reference for the same input and GIS
+data, open a GitHub issue tagged `conformance` with:
+
+- The request XML
+- Your implementation's response
+- This reference implementation's response (from the test suite or the running service)
+- Which spec section you believe your behavior follows
+
+Divergence reports are the most valuable contribution this project can receive. The goal is not
+to prove that this implementation is correct — it is to identify and resolve ambiguities in the
+specification so that all implementations can agree.

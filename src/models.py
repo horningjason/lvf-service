@@ -27,7 +27,7 @@ class CivicAddress(BaseModel):
       - ""    → element present but empty
 
     Elements are grouped and ordered by the 33-position evaluation hierarchy.
-    The four always-unchecked elements are included for completeness but are
+    The five always-unchecked elements are included for completeness but are
     never passed to the progressive filter.
 
     Retired elements (A6, LMK, LMKP, POBOX, ADDCODE, RDSEC, RDBR, RDSUBBR,
@@ -56,7 +56,7 @@ class CivicAddress(BaseModel):
     hno: Optional[str] = None       # ca:HNO  — Gate 1 required; integer value as string
     hnp: Optional[str] = None       # cae:HNP
     hns: Optional[str] = None       # ca:HNS  — RCL unchecked
-    mp:  Optional[str] = None       # cae:MP  — RCL unchecked
+    mp:  Optional[str] = None       # cae:MP  — always unchecked (§6.5.1)
 
     # Named location elements (hierarchy positions 19–30; all RCL unchecked)
     site:         Optional[str] = None  # cdx2:SITE
@@ -125,7 +125,6 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("hno",           "ca:HNO"),
     ElementInfo("hnp",           "cae:HNP"),
     ElementInfo("hns",           "ca:HNS",           rcl_unchecked=True),
-    ElementInfo("mp",            "cae:MP",            rcl_unchecked=True),
     # Named location — all RCL unchecked
     ElementInfo("site",          "cdx2:SITE",         rcl_unchecked=True),
     ElementInfo("subsite",       "cdx2:SUBSITE",      rcl_unchecked=True),
@@ -148,6 +147,7 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     ElementInfo("hnc",           "cdx2:HNC",          always_unchecked=True),
     ElementInfo("loc",           "ca:LOC",            always_unchecked=True),
     ElementInfo("plc",           "ca:PLC",            always_unchecked=True),
+    ElementInfo("mp",            "cae:MP",            always_unchecked=True),
 )
 
 
