@@ -1243,10 +1243,11 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
 
 def _child_coverage_path() -> str:
     """Return the filesystem path for the child coverage JSON store."""
+    filename = "fg_tree_coverage.json" if _forest_guide_mode else "lvf_child_coverage.json"
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     if gpkg_path:
-        return os.path.join(os.path.dirname(gpkg_path) or ".", "lvf_child_coverage.json")
-    return os.path.join("data", "lvf_child_coverage.json")
+        return os.path.join(os.path.dirname(gpkg_path) or ".", filename)
+    return os.path.join("data", filename)
 
 
 def _load_child_coverage() -> None:
