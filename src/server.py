@@ -2383,7 +2383,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         ).body
 
     # Child coverage store lookup — before Gate 0 when the store is non-empty
-    if _child_coverage:
+    if _child_coverage and _routing_only:
         child_match = _lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
@@ -2773,7 +2773,7 @@ async def validate(request: Request) -> Response:
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
     # Child coverage store lookup — before Gate 0 when the store is non-empty
-    if _child_coverage:
+    if _child_coverage and _routing_only:
         child_match = _lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
