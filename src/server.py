@@ -15,7 +15,7 @@ Environment variables:
     LVF_SYNC_SOURCE_ID_GEODETIC  Stable UUID for this node's geodetic coverage region mapping push
     LVF_ROOT_AMS        When 'true', suppresses programmatic push to LVF_PARENT_URI and activates
                         provisioned file push to LVF_FOREST_GUIDE_URI instead.
-                        Requires ams_civic_coverage.json and ams_geodetic_coverage.geojson in the
+                        Requires ams_civic_coverage.json and ams_geodetic_coverage.json in the
                         GPKG directory (or working directory if no GPKG).
     LVF_FOREST_GUIDE_URI  Full /sync URL of the Forest Guide (e.g. http://host:8002/sync).
                         Only used when LVF_ROOT_AMS=true.
@@ -177,8 +177,6 @@ _gis_last_loaded: Optional[datetime.datetime] = None  # UTC time of last success
 _root_ams:          bool = os.environ.get("LVF_ROOT_AMS", "").lower() == "true"
 _forest_guide_uri:  str  = os.environ.get("LVF_FOREST_GUIDE_URI", "")
 _root_ams_active:   bool = False   # True only when all activation conditions are met
-_ams_civic_tuples:  list[dict] = []   # validated tuples from ams_civic_coverage.json
-_ams_geodetic_geom: Any = None        # shapely Polygon from ams_geodetic_coverage.geojson
 
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
@@ -1381,17 +1379,17 @@ def _lookup_child_coverage(
 
             if tc != c or ts != s or tco != co:
                 continue
-            if ta3 is not None and ta3 != a3n:
+            if ta3 is not None and ta3 != "*" and ta3 != a3n:
                 continue
-            if ta4 is not None and ta4 != a4n:
+            if ta4 is not None and ta4 != "*" and ta4 != a4n:
                 continue
-            if ta5 is not None and ta5 != a5n:
+            if ta5 is not None and ta5 != "*" and ta5 != a5n:
                 continue
 
             spec = (
-                (1 if ta3 is not None else 0) +
-                (1 if ta4 is not None else 0) +
-                (1 if ta5 is not None else 0)
+                (1 if (ta3 is not None and ta3 != "*") else 0) +
+                (1 if (ta4 is not None and ta4 != "*") else 0) +
+                (1 if (ta5 is not None and ta5 != "*") else 0)
             )
             if spec > entry_best:
                 entry_best = spec
@@ -1547,8 +1545,6 @@ def _build_geodetic_coverage_mapping_xml() -> Optional[str]:
 # Root AMS mode — provisioned coverage region for Forest Guide push
 # ---------------------------------------------------------------------------
 
-_KNOWN_AMS_CIVIC_KEYS: frozenset[str] = frozenset({"country", "A1", "A2", "A3", "A4", "A5"})
-
 
 def _ams_provisioning_dir() -> str:
     """Return the directory where AMS provisioning files live (same dir as GPKG, or '.')."""
@@ -1577,7 +1573,7 @@ def geojson_to_gml(geojson_feature: dict) -> etree._Element:
 
 
 def _validate_ams_civic_file(path: str) -> Optional[list]:
-    """Load and validate ams_civic_coverage.json. Returns the tuple list or None on error."""
+    """Load and validate ams_civic_coverage.json. Returns a list of entry dicts or None on error."""
     if not os.path.exists(path):
         log.warning("AMS: ams_civic_coverage.json not found at %s", path)
         return None
@@ -1590,71 +1586,87 @@ def _validate_ams_civic_file(path: str) -> Optional[list]:
     if not isinstance(data, list) or not data:
         log.error("AMS: ams_civic_coverage.json must be a non-empty JSON array")
         return None
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            log.error("AMS: ams_civic_coverage.json element %d is not an object", i)
+
+    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "child_uri"}
+    _TUPLE_REQUIRED = {"country", "a1", "a2", "lost_server"}
+    _TUPLE_OPTIONAL = {"a3", "a4", "a5"}
+
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            log.error("AMS: ams_civic_coverage.json entry %d is not an object", i)
             return None
-        if "country" not in item:
-            log.error('AMS: ams_civic_coverage.json element %d is missing required key "country"', i)
+        missing = _ENTRY_REQUIRED - entry.keys()
+        if missing:
+            log.error("AMS: ams_civic_coverage.json entry %d missing required key(s): %s", i, missing)
             return None
-        unknown = set(item.keys()) - _KNOWN_AMS_CIVIC_KEYS
-        if unknown:
-            log.error("AMS: ams_civic_coverage.json element %d has unknown key(s): %s", i, unknown)
+        if entry.get("profile") != "civic":
+            log.error('AMS: ams_civic_coverage.json entry %d has profile %r — expected "civic"', i, entry.get("profile"))
             return None
+        tuples = entry.get("civic_tuples")
+        if not isinstance(tuples, list) or not tuples:
+            log.error("AMS: ams_civic_coverage.json entry %d must have a non-empty civic_tuples array", i)
+            return None
+        for j, t in enumerate(tuples):
+            if not isinstance(t, dict):
+                log.error("AMS: ams_civic_coverage.json entry %d civic_tuples[%d] is not an object", i, j)
+                return None
+            tmissing = _TUPLE_REQUIRED - t.keys()
+            if tmissing:
+                log.error("AMS: ams_civic_coverage.json entry %d civic_tuples[%d] missing required key(s): %s", i, j, tmissing)
+                return None
     return data
 
 
-def _validate_ams_geodetic_file(path: str) -> Any:
-    """
-    Load and validate ams_geodetic_coverage.geojson.
-    Returns a shapely Polygon (exterior ring of largest polygon) or None on error.
-    """
-    from shapely.geometry import shape as _shape, Polygon as _Polygon
+def _validate_ams_geodetic_file(path: str) -> Optional[list]:
+    """Load and validate ams_geodetic_coverage.json. Returns a list of entry dicts or None on error."""
+    from shapely.wkt import loads as _wkt_loads
 
     if not os.path.exists(path):
-        log.warning("AMS: ams_geodetic_coverage.geojson not found at %s", path)
+        log.warning("AMS: ams_geodetic_coverage.json not found at %s", path)
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
-        log.error("AMS: ams_geodetic_coverage.geojson is not valid JSON: %s", exc)
+        log.error("AMS: ams_geodetic_coverage.json is not valid JSON: %s", exc)
+        return None
+    if not isinstance(data, list) or not data:
+        log.error("AMS: ams_geodetic_coverage.json must be a non-empty JSON array")
         return None
 
-    geom_dict = data.get("geometry", data) if data.get("type") == "Feature" else data
-    if geom_dict.get("type") not in ("Polygon", "MultiPolygon"):
-        log.error(
-            "AMS: ams_geodetic_coverage.geojson geometry type must be Polygon or MultiPolygon, got %r",
-            geom_dict.get("type"),
-        )
-        return None
+    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "child_uri"}
 
-    try:
-        geom = _shape(geom_dict)
-    except Exception as exc:
-        log.error("AMS: could not parse ams_geodetic_coverage.geojson geometry: %s", exc)
-        return None
-
-    if geom.geom_type == "MultiPolygon":
-        geom = max(geom.geoms, key=lambda p: p.area)
-
-    poly = _Polygon(geom.exterior)
-    if len(list(poly.exterior.coords)) < 4:
-        log.error(
-            "AMS: ams_geodetic_coverage.geojson exterior ring has fewer than 4 coordinate pairs"
-        )
-        return None
-    return poly
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            log.error("AMS: ams_geodetic_coverage.json entry %d is not an object", i)
+            return None
+        missing = _ENTRY_REQUIRED - entry.keys()
+        if missing:
+            log.error("AMS: ams_geodetic_coverage.json entry %d missing required key(s): %s", i, missing)
+            return None
+        if entry.get("profile") != "geodetic-2d":
+            log.error('AMS: ams_geodetic_coverage.json entry %d has profile %r — expected "geodetic-2d"', i, entry.get("profile"))
+            return None
+        wkt = entry.get("geodetic_geom_wkt")
+        if not wkt or not isinstance(wkt, str):
+            log.error("AMS: ams_geodetic_coverage.json entry %d missing or invalid geodetic_geom_wkt", i)
+            return None
+        try:
+            _wkt_loads(wkt)
+        except Exception as exc:
+            log.error("AMS: ams_geodetic_coverage.json entry %d geodetic_geom_wkt is not valid WKT: %s", i, exc)
+            return None
+    return data
 
 
 def _load_ams_provisioning() -> bool:
     """
-    Load and validate AMS provisioning files; set _root_ams_active and related globals.
+    Load and validate AMS provisioning files; inject entries into the child coverage store.
     Returns True if all conditions are met and root AMS mode is fully activated.
 
     LVF spec §3.9.3 (civic provisioning file), §3.9.4 (geodetic provisioning file).
     """
-    global _root_ams_active, _ams_civic_tuples, _ams_geodetic_geom
+    global _root_ams_active
 
     if not _forest_guide_uri:
         log.warning(
@@ -1666,102 +1678,29 @@ def _load_ams_provisioning() -> bool:
 
     base_dir = _ams_provisioning_dir()
     civic_path    = os.path.join(base_dir, "ams_civic_coverage.json")
-    geodetic_path = os.path.join(base_dir, "ams_geodetic_coverage.geojson")
+    geodetic_path = os.path.join(base_dir, "ams_geodetic_coverage.json")
 
-    civic_tuples = _validate_ams_civic_file(civic_path)
-    if civic_tuples is None:
+    civic_entries    = _validate_ams_civic_file(civic_path)
+    if civic_entries is None:
         _root_ams_active = False
         return False
 
-    geodetic_geom = _validate_ams_geodetic_file(geodetic_path)
-    if geodetic_geom is None:
+    geodetic_entries = _validate_ams_geodetic_file(geodetic_path)
+    if geodetic_entries is None:
         _root_ams_active = False
         return False
 
-    _ams_civic_tuples  = civic_tuples
-    _ams_geodetic_geom = geodetic_geom
-    _root_ams_active   = True
+    for entry in civic_entries + geodetic_entries:
+        _upsert_child_coverage(entry)
+
+    _root_ams_active = True
+    civic_tuple_count = sum(len(e.get("civic_tuples") or []) for e in civic_entries)
     log.info(
-        "AMS: provisioning files loaded (%d civic tuple(s)) — FG push active targeting %s",
-        len(_ams_civic_tuples), _forest_guide_uri,
+        "AMS: provisioning files loaded (%d civic entry/entries, %d civic tuple(s), "
+        "%d geodetic entry/entries) — FG push active targeting %s",
+        len(civic_entries), civic_tuple_count, len(geodetic_entries), _forest_guide_uri,
     )
     return True
-
-
-def _build_ams_civic_mapping_xml() -> Optional[str]:
-    """
-    Build a <mapping> XML string for this node's AMS-provisioned civic coverage region.
-    Returns None if LVF_SYNC_SOURCE_ID_CIVIC is unset or provisioned data is absent.
-    """
-    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    if not src_id or not _ams_civic_tuples:
-        return None
-
-    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
-    mapping_el.set("expires",     "NO-EXPIRATION")
-    mapping_el.set("lastUpdated", _gis_last_updated_str())
-    mapping_el.set("source",      _server_uri)
-    mapping_el.set("sourceId",    src_id)
-
-    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
-    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
-    dn.text = f"{_server_uri} civic coverage"
-
-    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
-    svc.text = "urn:service:sos"
-
-    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
-    sb.set("profile", "civic")
-
-    for tuple_dict in _ams_civic_tuples:
-        ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
-        for json_key, xml_tag in [
-            ("country", "country"), ("A1", "A1"), ("A2", "A2"),
-            ("A3", "A3"),           ("A4", "A4"), ("A5", "A5"),
-        ]:
-            val = tuple_dict.get(json_key)
-            if val is not None:
-                el = etree.SubElement(ca, f"{{{_NS_CA}}}{xml_tag}")
-                el.text = str(val)
-
-    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
-    return etree.tostring(mapping_el, encoding="unicode")
-
-
-def _build_ams_geodetic_mapping_xml() -> Optional[str]:
-    """
-    Build a <mapping> XML string for this node's AMS-provisioned geodetic coverage region.
-    Returns None if LVF_SYNC_SOURCE_ID_GEODETIC is unset or provisioned data is absent.
-    """
-    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-    if not src_id or _ams_geodetic_geom is None:
-        return None
-
-    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
-    mapping_el.set("expires",     "NO-EXPIRATION")
-    mapping_el.set("lastUpdated", _gis_last_updated_str())
-    mapping_el.set("source",      _server_uri)
-    mapping_el.set("sourceId",    src_id)
-
-    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
-    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
-    dn.text = f"{_server_uri} geodetic coverage"
-
-    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
-    svc.text = "urn:service:sos"
-
-    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
-    sb.set("profile", "geodetic-2d")
-
-    try:
-        gml_el = _shapely_to_gml(_ams_geodetic_geom)
-        sb.append(gml_el)
-    except Exception as exc:
-        log.warning("AMS: could not serialize geodetic coverage to GML: %s", exc)
-        return None
-
-    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
-    return etree.tostring(mapping_el, encoding="unicode")
 
 
 # ---------------------------------------------------------------------------
@@ -1853,7 +1792,7 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
                     ("a3", "A3"),           ("a4", "A4"), ("a5", "A5"),
                 ]:
                     el = ca_el.find(f"{{{_NS_CA}}}{tag}")
-                    t[field] = el.text.strip() if (el is not None and el.text) else None
+                    t[field] = el.text.strip() if (el is not None and el.text) else ("*" if field in ("a3", "a4", "a5") else None)
                 civic_tuples.append(t)
 
         elif profile == "geodetic-2d":
@@ -1878,6 +1817,10 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
             child_uri = source.rstrip("/") + "/validate"
         else:
             child_uri = ""
+
+    if civic_tuples is not None:
+        for t in civic_tuples:
+            t["lost_server"] = child_uri
 
     return {
         "source":           source,
@@ -1924,7 +1867,7 @@ def _child_entry_to_mapping_xml(entry: dict) -> Optional[str]:
                 ("a3", "A3"),           ("a4", "A4"), ("a5", "A5"),
             ]:
                 val = t.get(field)
-                if val is not None:
+                if val is not None and val != "*":
                     el = etree.SubElement(ca, f"{{{_NS_CA}}}{tag}")
                     el.text = val
     elif profile == "geodetic-2d":
@@ -2209,14 +2152,22 @@ async def _push_coverage_to_fg() -> None:
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
 
-    for label, mapping_getter, src_id in [
-        ("civic",    _build_ams_civic_mapping_xml,    sync_source_id_civic),
-        ("geodetic", _build_ams_geodetic_mapping_xml, sync_source_id_geodetic),
+    for label, profile, src_id in [
+        ("civic",    "civic",       sync_source_id_civic),
+        ("geodetic", "geodetic-2d", sync_source_id_geodetic),
     ]:
         if not src_id:
             continue
 
-        mapping_xml = mapping_getter()
+        entry = next(
+            (e for e in _child_coverage
+             if e.get("source_id") == src_id and e.get("profile") == profile),
+            None,
+        )
+        if not entry:
+            log.warning("AMS: could not find %s coverage entry in child store for FG push (no data?)", label)
+            continue
+        mapping_xml = _child_entry_to_mapping_xml(entry)
         if not mapping_xml:
             log.warning("AMS: could not build %s coverage mapping for FG push (no data?)", label)
             continue
