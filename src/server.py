@@ -13,6 +13,12 @@ Environment variables:
     LVF_SYNC_CHILDREN   Comma-separated child LVF /sync endpoint URLs to pull from on startup
     LVF_SYNC_SOURCE_ID_CIVIC     Stable UUID for this node's civic coverage region mapping push
     LVF_SYNC_SOURCE_ID_GEODETIC  Stable UUID for this node's geodetic coverage region mapping push
+    LVF_ROOT_AMS        When 'true', suppresses programmatic push to LVF_PARENT_URI and activates
+                        provisioned file push to LVF_FOREST_GUIDE_URI instead.
+                        Requires ams_civic_coverage.json and ams_geodetic_coverage.geojson in the
+                        GPKG directory (or working directory if no GPKG).
+    LVF_FOREST_GUIDE_URI  Full /sync URL of the Forest Guide (e.g. http://host:8002/sync).
+                        Only used when LVF_ROOT_AMS=true.
 """
 
 from __future__ import annotations
@@ -165,6 +171,14 @@ _reloading_lock = threading.Lock()
 _routing_only: bool = False          # True when no GeoPackage is loaded
 _forest_guide_mode: bool = os.environ.get("LVF_FOREST_GUIDE_MODE", "").lower() == "true"
 _gis_last_loaded: Optional[datetime.datetime] = None  # UTC time of last successful GIS load
+
+# Root AMS mode — operator-declared coverage pushed to Forest Guide instead of
+# programmatically derived coverage pushed to parent LVF.
+_root_ams:          bool = os.environ.get("LVF_ROOT_AMS", "").lower() == "true"
+_forest_guide_uri:  str  = os.environ.get("LVF_FOREST_GUIDE_URI", "")
+_root_ams_active:   bool = False   # True only when all activation conditions are met
+_ams_civic_tuples:  list[dict] = []   # validated tuples from ams_civic_coverage.json
+_ams_geodetic_geom: Any = None        # shapely Polygon from ams_geodetic_coverage.geojson
 
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
@@ -531,6 +545,8 @@ def _watch_gpkg(gpkg_path: str) -> None:
                 with _reloading_lock:
                     _reloading = False
                 log.info("GIS data reload complete — resuming normal service")
+                if _root_ams:
+                    _load_ams_provisioning()  # re-validate provisioned files from disk
                 _maybe_schedule_repush()
             except Exception:
                 log.error(
@@ -574,6 +590,11 @@ def initialize(gpkg_path: str | None = None) -> None:
     else:
         _routing_only = True
         log.info("Routing-only mode active: no GeoPackage path provided")
+
+    if _root_ams:
+        _load_ams_provisioning()
+    elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
+        log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
 
 
 def _derive_geodetic_coverage() -> None:
@@ -835,7 +856,7 @@ def _serialize_find_service_response(
     for mapping in resp.mapping:
         _mapping_element(root, mapping, force_no_cache=(as_of_used is not None))
 
-    # Per draft-ietf-ecrit-lost-planned-changes §4: echo <asOf> on future-asOf responses
+    # Per draft-ietf-ecrit-lost-planned-changes: echo <asOf> on future-asOf responses
     if as_of_used is not None:
         as_of_el = etree.SubElement(
             root,
@@ -857,7 +878,7 @@ def _serialize_find_service_response(
         el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}unchecked")
         el.text = " ".join(lv.unchecked)
 
-    # Per draft-ietf-ecrit-lost-planned-changes §5: suppress revalidateAfter on asOf responses
+    # Per draft-ietf-ecrit-lost-planned-changes: suppress revalidateAfter on asOf responses
     if as_of_used is None:
         planned_el = etree.SubElement(
             lv_el,
@@ -1286,8 +1307,12 @@ def _compare_timestamps(a: str, b: str) -> int:
     return 0
 
 
-def _upsert_child_coverage(parsed: dict) -> None:
-    """Apply RFC 6739 §5.2 update rules: update if newer, add if new."""
+def _upsert_child_coverage(parsed: dict) -> bool:
+    """
+    Apply RFC 6739 §5.2 update rules: update if newer, add if new.
+    Returns True if the store was actually modified (new entry or updated entry),
+    False if the incoming data was stale and ignored.
+    """
     source    = parsed.get("source", "")
     source_id = parsed.get("source_id", "")
     new_lu    = parsed.get("last_updated", "")
@@ -1300,18 +1325,20 @@ def _upsert_child_coverage(parsed: dict) -> None:
                     "LoST-Sync: updated child coverage entry source=%s sourceId=%s",
                     source, source_id,
                 )
+                return True
             else:
                 log.info(
                     "LoST-Sync: received stale coverage for source=%s sourceId=%s — ignoring",
                     source, source_id,
                 )
-            return
+                return False
 
     _child_coverage.append(parsed)
     log.info(
         "LoST-Sync: added new child coverage entry source=%s sourceId=%s profile=%s",
         source, source_id, parsed.get("profile", ""),
     )
+    return True
 
 
 def _lookup_child_coverage(
@@ -1517,6 +1544,227 @@ def _build_geodetic_coverage_mapping_xml() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Root AMS mode — provisioned coverage region for Forest Guide push
+# ---------------------------------------------------------------------------
+
+_KNOWN_AMS_CIVIC_KEYS: frozenset[str] = frozenset({"country", "A1", "A2", "A3", "A4", "A5"})
+
+
+def _ams_provisioning_dir() -> str:
+    """Return the directory where AMS provisioning files live (same dir as GPKG, or '.')."""
+    gpkg_path = os.environ.get("LVF_GPKG_PATH", "")
+    d = os.path.dirname(gpkg_path) if gpkg_path else ""
+    return d or "."
+
+
+def geojson_to_gml(geojson_feature: dict) -> etree._Element:
+    """
+    Convert a GeoJSON Polygon or MultiPolygon (Feature or bare geometry) to a
+    <gml:Polygon> element suitable for embedding in <serviceBoundary profile="geodetic-2d">.
+
+    For MultiPolygon input, the largest polygon by area is selected and only its
+    exterior ring is used.  GeoJSON coordinates are [lon, lat]; gml:pos is "lat lon"
+    — the swap is performed by the existing _gml_add_ring helper.
+    """
+    from shapely.geometry import shape as _shape, Polygon as _Polygon
+
+    geom_dict = geojson_feature.get("geometry", geojson_feature) if geojson_feature.get("type") == "Feature" else geojson_feature
+    geom = _shape(geom_dict)
+    if geom.geom_type == "MultiPolygon":
+        largest = max(geom.geoms, key=lambda p: p.area)
+        geom = _Polygon(largest.exterior)
+    return _gml_polygon(geom)
+
+
+def _validate_ams_civic_file(path: str) -> Optional[list]:
+    """Load and validate ams_civic_coverage.json. Returns the tuple list or None on error."""
+    if not os.path.exists(path):
+        log.warning("AMS: ams_civic_coverage.json not found at %s", path)
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        log.error("AMS: ams_civic_coverage.json is not valid JSON: %s", exc)
+        return None
+    if not isinstance(data, list) or not data:
+        log.error("AMS: ams_civic_coverage.json must be a non-empty JSON array")
+        return None
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            log.error("AMS: ams_civic_coverage.json element %d is not an object", i)
+            return None
+        if "country" not in item:
+            log.error('AMS: ams_civic_coverage.json element %d is missing required key "country"', i)
+            return None
+        unknown = set(item.keys()) - _KNOWN_AMS_CIVIC_KEYS
+        if unknown:
+            log.error("AMS: ams_civic_coverage.json element %d has unknown key(s): %s", i, unknown)
+            return None
+    return data
+
+
+def _validate_ams_geodetic_file(path: str) -> Any:
+    """
+    Load and validate ams_geodetic_coverage.geojson.
+    Returns a shapely Polygon (exterior ring of largest polygon) or None on error.
+    """
+    from shapely.geometry import shape as _shape, Polygon as _Polygon
+
+    if not os.path.exists(path):
+        log.warning("AMS: ams_geodetic_coverage.geojson not found at %s", path)
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        log.error("AMS: ams_geodetic_coverage.geojson is not valid JSON: %s", exc)
+        return None
+
+    geom_dict = data.get("geometry", data) if data.get("type") == "Feature" else data
+    if geom_dict.get("type") not in ("Polygon", "MultiPolygon"):
+        log.error(
+            "AMS: ams_geodetic_coverage.geojson geometry type must be Polygon or MultiPolygon, got %r",
+            geom_dict.get("type"),
+        )
+        return None
+
+    try:
+        geom = _shape(geom_dict)
+    except Exception as exc:
+        log.error("AMS: could not parse ams_geodetic_coverage.geojson geometry: %s", exc)
+        return None
+
+    if geom.geom_type == "MultiPolygon":
+        geom = max(geom.geoms, key=lambda p: p.area)
+
+    poly = _Polygon(geom.exterior)
+    if len(list(poly.exterior.coords)) < 4:
+        log.error(
+            "AMS: ams_geodetic_coverage.geojson exterior ring has fewer than 4 coordinate pairs"
+        )
+        return None
+    return poly
+
+
+def _load_ams_provisioning() -> bool:
+    """
+    Load and validate AMS provisioning files; set _root_ams_active and related globals.
+    Returns True if all conditions are met and root AMS mode is fully activated.
+
+    LVF spec §3.9.3 (civic provisioning file), §3.9.4 (geodetic provisioning file).
+    """
+    global _root_ams_active, _ams_civic_tuples, _ams_geodetic_geom
+
+    if not _forest_guide_uri:
+        log.warning(
+            "LVF_ROOT_AMS=true but LVF_FOREST_GUIDE_URI is not set — "
+            "FG push suppressed; programmatic push to LVF_PARENT_URI is also suppressed"
+        )
+        _root_ams_active = False
+        return False
+
+    base_dir = _ams_provisioning_dir()
+    civic_path    = os.path.join(base_dir, "ams_civic_coverage.json")
+    geodetic_path = os.path.join(base_dir, "ams_geodetic_coverage.geojson")
+
+    civic_tuples = _validate_ams_civic_file(civic_path)
+    if civic_tuples is None:
+        _root_ams_active = False
+        return False
+
+    geodetic_geom = _validate_ams_geodetic_file(geodetic_path)
+    if geodetic_geom is None:
+        _root_ams_active = False
+        return False
+
+    _ams_civic_tuples  = civic_tuples
+    _ams_geodetic_geom = geodetic_geom
+    _root_ams_active   = True
+    log.info(
+        "AMS: provisioning files loaded (%d civic tuple(s)) — FG push active targeting %s",
+        len(_ams_civic_tuples), _forest_guide_uri,
+    )
+    return True
+
+
+def _build_ams_civic_mapping_xml() -> Optional[str]:
+    """
+    Build a <mapping> XML string for this node's AMS-provisioned civic coverage region.
+    Returns None if LVF_SYNC_SOURCE_ID_CIVIC is unset or provisioned data is absent.
+    """
+    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    if not src_id or not _ams_civic_tuples:
+        return None
+
+    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
+    mapping_el.set("expires",     "NO-EXPIRATION")
+    mapping_el.set("lastUpdated", _gis_last_updated_str())
+    mapping_el.set("source",      _server_uri)
+    mapping_el.set("sourceId",    src_id)
+
+    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
+    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
+    dn.text = f"{_server_uri} civic coverage"
+
+    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
+    svc.text = "urn:service:sos"
+
+    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
+    sb.set("profile", "civic")
+
+    for tuple_dict in _ams_civic_tuples:
+        ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
+        for json_key, xml_tag in [
+            ("country", "country"), ("A1", "A1"), ("A2", "A2"),
+            ("A3", "A3"),           ("A4", "A4"), ("A5", "A5"),
+        ]:
+            val = tuple_dict.get(json_key)
+            if val is not None:
+                el = etree.SubElement(ca, f"{{{_NS_CA}}}{xml_tag}")
+                el.text = str(val)
+
+    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
+    return etree.tostring(mapping_el, encoding="unicode")
+
+
+def _build_ams_geodetic_mapping_xml() -> Optional[str]:
+    """
+    Build a <mapping> XML string for this node's AMS-provisioned geodetic coverage region.
+    Returns None if LVF_SYNC_SOURCE_ID_GEODETIC is unset or provisioned data is absent.
+    """
+    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+    if not src_id or _ams_geodetic_geom is None:
+        return None
+
+    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
+    mapping_el.set("expires",     "NO-EXPIRATION")
+    mapping_el.set("lastUpdated", _gis_last_updated_str())
+    mapping_el.set("source",      _server_uri)
+    mapping_el.set("sourceId",    src_id)
+
+    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
+    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
+    dn.text = f"{_server_uri} geodetic coverage"
+
+    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
+    svc.text = "urn:service:sos"
+
+    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
+    sb.set("profile", "geodetic-2d")
+
+    try:
+        gml_el = _shapely_to_gml(_ams_geodetic_geom)
+        sb.append(gml_el)
+    except Exception as exc:
+        log.warning("AMS: could not serialize geodetic coverage to GML: %s", exc)
+        return None
+
+    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
+    return etree.tostring(mapping_el, encoding="unicode")
+
+
+# ---------------------------------------------------------------------------
 # LoST-Sync — GML → shapely helpers (inverse of _gml_polygon / _shapely_to_gml)
 # ---------------------------------------------------------------------------
 
@@ -1714,9 +1962,14 @@ def _sync_error_response(error_type: str, message: str) -> Response:
 
 
 async def _handle_push_mappings(root: etree._Element) -> Response:
-    """Handle an incoming <pushMappings> request per RFC 6739 §5.2."""
+    """Handle an incoming <pushMappings> request per RFC 6739 §5.2.
+
+    Cascades coverage changes upstream on modification per LVF spec §3.9.6.
+    """
     mapping_els = root.findall(f"{{{_NS_LOST}}}mapping")
     not_deleted: list[tuple[str, str]] = []
+    coverage_changed = False
+    last_source_id = ""
 
     for mapping_el in mapping_els:
         sb_el    = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
@@ -1725,6 +1978,7 @@ async def _handle_push_mappings(root: etree._Element) -> Response:
         parsed    = _parse_sync_mapping(mapping_el)
         source    = parsed["source"]
         source_id = parsed["source_id"]
+        last_source_id = source_id
 
         if is_delete:
             found = False
@@ -1732,6 +1986,7 @@ async def _handle_push_mappings(root: etree._Element) -> Response:
                 if entry.get("source") == source and entry.get("source_id") == source_id:
                     _child_coverage.pop(i)
                     found = True
+                    coverage_changed = True
                     log.info(
                         "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
                         source, source_id,
@@ -1744,9 +1999,25 @@ async def _handle_push_mappings(root: etree._Element) -> Response:
                 )
                 not_deleted.append((source, source_id))
         else:
-            _upsert_child_coverage(parsed)
+            if _upsert_child_coverage(parsed):
+                coverage_changed = True
 
     _save_child_coverage()
+
+    # Cascade coverage change upstream (fire-and-forget, non-blocking)
+    if coverage_changed:
+        if _root_ams and _root_ams_active:
+            log.info(
+                "Coverage propagation triggered by child push from %s, pushing upstream to %s",
+                last_source_id, _forest_guide_uri,
+            )
+            asyncio.create_task(_push_coverage_to_fg())
+        elif not _root_ams and _parent_uri and not _forest_guide_mode:
+            log.info(
+                "Coverage propagation triggered by child push from %s, pushing upstream to %s",
+                last_source_id, _get_parent_sync_uri(),
+            )
+            asyncio.create_task(_push_coverage_to_parent())
 
     if not_deleted:
         root_err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
@@ -1922,6 +2193,66 @@ async def _push_coverage_to_parent() -> None:
             )
 
 
+async def _push_coverage_to_fg() -> None:
+    """Push AMS-provisioned civic and geodetic coverage regions to the Forest Guide.
+
+    LVF spec §3.9.5.
+    """
+    if not _root_ams_active or not _forest_guide_uri:
+        return
+
+    with _reloading_lock:
+        if _reloading:
+            log.warning("AMS: skipping FG push — GIS reload in progress")
+            return
+
+    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    for label, mapping_getter, src_id in [
+        ("civic",    _build_ams_civic_mapping_xml,    sync_source_id_civic),
+        ("geodetic", _build_ams_geodetic_mapping_xml, sync_source_id_geodetic),
+    ]:
+        if not src_id:
+            continue
+
+        mapping_xml = mapping_getter()
+        if not mapping_xml:
+            log.warning("AMS: could not build %s coverage mapping for FG push (no data?)", label)
+            continue
+
+        push_root = etree.Element(f"{{{_NS_SYNC}}}pushMappings")
+        try:
+            push_root.append(etree.fromstring(mapping_xml))
+        except Exception as exc:
+            log.warning("AMS: could not parse %s mapping for FG push: %s", label, exc)
+            continue
+
+        push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        log.info("AMS: pushing %s coverage to Forest Guide %s", label, _forest_guide_uri)
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    _forest_guide_uri,
+                    content=push_body,
+                    headers={"Content-Type": "application/lostsync+xml"},
+                )
+            if resp.status_code == 200:
+                try:
+                    resp_root = etree.fromstring(resp.content)
+                    if resp_root.tag == f"{{{_NS_SYNC}}}pushMappingsResponse":
+                        log.info("AMS: successfully pushed %s coverage to Forest Guide %s", label, _forest_guide_uri)
+                    else:
+                        log.warning("AMS: unexpected response pushing %s to Forest Guide: %s", label, resp_root.tag)
+                except Exception:
+                    log.warning("AMS: Forest Guide returned unparseable XML when pushing %s", label)
+            else:
+                log.warning("AMS: push %s to Forest Guide %s returned HTTP %d", label, _forest_guide_uri, resp.status_code)
+        except Exception as exc:
+            log.warning("AMS: failed to push %s coverage to Forest Guide %s: %s", label, _forest_guide_uri, exc)
+
+
 async def _pull_from_child(child_sync_url: str) -> None:
     """Send a getMappingsRequest to a child LVF /sync endpoint and store received mappings."""
     with _reloading_lock:
@@ -1986,14 +2317,18 @@ async def _pull_from_child(child_sync_url: str) -> None:
 
 
 async def _startup_sync() -> None:
-    """Background task: push coverage to parent and pull from children after startup."""
+    """Background task: push coverage to parent/FG and pull from children after startup."""
     await asyncio.sleep(1)  # allow the server to fully start before making outbound calls
 
-    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-
-    if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri and not _forest_guide_mode:
-        await _push_coverage_to_parent()
+    if _root_ams:
+        # Root AMS: push provisioned coverage to Forest Guide; never push programmatic to parent
+        if _root_ams_active:
+            await _push_coverage_to_fg()
+    else:
+        sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+        sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+        if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri and not _forest_guide_mode:
+            await _push_coverage_to_parent()
 
     for child_url in _sync_children:
         await _pull_from_child(child_url)
@@ -2001,16 +2336,30 @@ async def _startup_sync() -> None:
 
 def _maybe_schedule_repush() -> None:
     """
-    Schedule re-push of coverage regions to parent after a GIS hot reload.
+    Schedule re-push of coverage regions after a GIS hot reload.
     Called from the GPKG watcher thread, so uses run_coroutine_threadsafe.
+    Root AMS nodes push provisioned coverage to the Forest Guide;
+    regular nodes push programmatic coverage to the parent LVF.
     """
-    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-    if not (sync_source_id_civic or sync_source_id_geodetic) or not _parent_uri or _forest_guide_mode:
-        return
     loop = _event_loop
     if loop is None or not loop.is_running():
         log.warning("LoST-Sync: no running event loop — cannot schedule re-push after reload")
+        return
+
+    if _root_ams:
+        # Root AMS: push provisioned coverage to FG; never push programmatic to parent
+        if _root_ams_active:
+            try:
+                asyncio.run_coroutine_threadsafe(_push_coverage_to_fg(), loop)
+                log.info("AMS: scheduled FG re-push after GIS reload")
+            except Exception as exc:
+                log.warning("AMS: could not schedule FG re-push: %s", exc)
+        return
+
+    # Regular mode: push programmatic coverage to parent
+    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
+    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+    if not (sync_source_id_civic or sync_source_id_geodetic) or not _parent_uri or _forest_guide_mode:
         return
     try:
         asyncio.run_coroutine_threadsafe(_push_coverage_to_parent(), loop)
@@ -2119,7 +2468,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     # KNOWN LIMITATION: civic/geodetic coverage regions are derived at load time against
     # the real datetime.now(). Out-of-coverage redirect decisions for future asOf queries
     # may not reflect future-staged records — acceptable per the draft's own caveats about
-    # future query stability (draft-ietf-ecrit-lost-planned-changes §4).
+    # future query stability (draft-ietf-ecrit-lost-planned-changes).
     now = datetime.datetime.now(datetime.timezone.utc)
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
@@ -2233,6 +2582,11 @@ async def _lifespan(app: FastAPI):
                 "Routing-only mode: neither LVF_PARENT_URI nor LVF_SYNC_CHILDREN is configured "
                 "— this node cannot answer or route requests"
             )
+
+    if _root_ams:
+        _load_ams_provisioning()
+    elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
+        log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
 
     _load_child_coverage()
     asyncio.create_task(_startup_sync())
@@ -2503,7 +2857,7 @@ async def validate(request: Request) -> Response:
     # KNOWN LIMITATION: civic/geodetic coverage regions are derived at load time against
     # the real datetime.now(). Out-of-coverage redirect decisions for future asOf queries
     # may not reflect future-staged records — acceptable per the draft's own caveats about
-    # future query stability (draft-ietf-ecrit-lost-planned-changes §4).
+    # future query stability (draft-ietf-ecrit-lost-planned-changes).
     now = datetime.datetime.now(datetime.timezone.utc)
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:

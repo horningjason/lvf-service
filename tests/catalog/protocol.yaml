@@ -29,9 +29,9 @@
   expected:
     response_type: badRequest
   notes: >
-    Closes the gap identified in §10: without Pre-Gate-0 schema validation a misplaced
-    namespace element would silently pass through or produce a misleading gate failure.
-  spec_ref: "Pre-Gate-0, §10"
+    Without Pre-Gate-0 schema validation a misplaced namespace element would silently
+    pass through or produce a misleading gate failure.
+  spec_ref: "Pre-Gate-0"
   status: has_test
 
 - id: PROTO-REQ-NOVALIDATE-001
@@ -88,5 +88,5 @@
     year from 2026-05-15). The asOf rejection is a deliberate scope limitation,
     not a schema enforcement; the element is schema-valid but rejected before
     any gate logic runs.
-  spec_ref: "Pre-Gate-0, §10"
+  spec_ref: "Pre-Gate-0"
   status: has_test

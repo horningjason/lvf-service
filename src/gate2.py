@@ -150,7 +150,7 @@ def _field_outcome(
     Categorise one field comparison.
 
     "match"    — GIS has a value that matches submitted (case-insensitive), or
-                 both are absent/empty (§2.5.7 — empty submitted matches null GIS).
+                 both are absent/empty (empty submitted matches null GIS).
     "null"     — GIS field is absent, submitted is non-empty, and null_unchecked
                  is True; the LVF cannot verify the submitted value against GIS.
     "mismatch" — GIS has a value that does not match submitted, or GIS is absent

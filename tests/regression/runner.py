@@ -55,6 +55,12 @@ def _parse_outcome(xml_bytes: bytes) -> dict:
             return {"outcome": "locationValidationUnavailable"}
         return {"outcome": "findServiceResponse_unknown"}
 
+    if root.tag == f"{{{_NS_LOST}}}redirect":
+        return {
+            "outcome": "redirect",
+            "target":  root.get("target", ""),
+        }
+
     if root.tag == f"{{{_NS_LOST}}}errors":
         for child in root:
             local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
@@ -72,6 +78,13 @@ def _diff(actual: dict, golden: dict) -> list[str]:
             f"outcome: got '{actual.get('outcome')}', expected '{golden.get('outcome')}'"
         )
         return diffs  # sub-fields are meaningless when the outcome type differs
+
+    if actual.get("outcome") == "redirect":
+        if actual.get("target") != golden.get("target"):
+            diffs.append(
+                f"redirect target: got '{actual.get('target')}', expected '{golden.get('target')}'"
+            )
+        return diffs
 
     if actual.get("valid") != golden.get("valid"):
         diffs.append(f"valid: got {actual.get('valid')}, expected {golden.get('valid')}")

@@ -1,13 +1,13 @@
 # LVF — Location Validation Function
 
-This repository contains a reference implementation of the NG9-1-1 Location Validation Function (LVF) 
-as specified in `LVF_Algorithm_Specification_v49.docx`. Validates civic PIDF-LO addresses against provisioned
+This repository contains an open reference implementation of the NG9-1-1 Location Validation Function (LVF) 
+as specified in `LVF_Algorithm_Specification_v52.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222). The implementation can be configured to run as a child, parent, 
 root AMS or forest guide.  When operating in forest guide mode, the service is only configured to support
 queries relevant to LVF and location validation.
 
-> **Note:** This is intended as a reference implementation intended for 911 Authorities, GIS staff, LVF vendors
-> and LIS vendors evaluating LVF conformance. It is not intended for production or and is not production-hardened.
+> **Note:** This is intended as an open reference implementation for 911 Authorities, GIS staff, LVF vendors
+> and LIS vendors evaluating LVF conformance. It is not intended for production, nor is it production-hardened.
 
 ---
 
@@ -27,7 +27,9 @@ cp .env.example .env
 
 #3. Configure docker-compose.yml (optional)
 nano docker-compose.yml
-# Edit docker-compose.yml as needed - if running multiple instances on different ports
+# Edit docker-compose.yml as needed - defaults work if only evaluating data within
+# the child_lvf_data.gpkg.  Additional configuration necessary if running multiple
+# instances of the LVF in order to simulate a comprehensive LoST architecture.
 
 # 4. Build and start
 docker compose up -d
@@ -123,8 +125,32 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SYNC_CHILDREN` | No | — | Comma-separated child LVF `/sync` URLs to pull coverage from on startup. Makes this node a LoST-Sync parent |
 | `LVF_SYNC_SOURCE_ID_CIVIC` | No | — | Stable UUID for this node's civic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
 | `LVF_SYNC_SOURCE_ID_GEODETIC` | No | — | Stable UUID for this node's geodetic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
+| `LVF_ROOT_AMS` | No | `false` | When `true`, activates Root AMS mode. Suppresses programmatic GIS-derived push to `LVF_PARENT_URI` and instead pushes operator-declared coverage from provisioning files to `LVF_FOREST_GUIDE_URI`. Out-of-coverage redirect/recursion via `LVF_PARENT_URI` is unaffected. |
+| `LVF_FOREST_GUIDE_URI` | No | — | Full `/sync` URL of the Forest Guide. Only used when `LVF_ROOT_AMS=true`. Example: `http://host.docker.internal:8002/sync` |
+| `LVF_FOREST_GUIDE_MODE` | No | `false` | When `true`, this node operates as a Forest Guide: GIS validation is skipped, all requests are redirected to the matching child LVF, and `LVF_PARENT_URI` is ignored |
 
 † Required when `LVF_GPKG_PATH` points to an existing file; not needed in routing-only mode.
+
+---
+
+## Deployment Topologies
+
+The service supports four operating modes, set by environment variables:
+
+| Mode | Key variables | Behavior |
+|---|---|---|
+| **Child LVF** | `LVF_GPKG_PATH`, `LVF_PARENT_URI`, `LVF_SYNC_SOURCE_ID_CIVIC/GEODETIC` | Validates addresses against local GIS data. Pushes coverage to parent on startup and GIS reload. Out-of-coverage queries redirect to parent. |
+| **Parent / Intermediate LVF** | `LVF_GPKG_PATH`, `LVF_PARENT_URI`, `LVF_SYNC_CHILDREN` | Validates locally and routes to children for addresses in their coverage. Aggregates child coverage upstream. |
+| **Root AMS** | `LVF_GPKG_PATH`, `LVF_PARENT_URI` (for routing), `LVF_ROOT_AMS=true`, `LVF_FOREST_GUIDE_URI` | Validates locally. Pushes **operator-declared** civic/geodetic coverage from `ams_civic_coverage.json` and `ams_geodetic_coverage.geojson` to the Forest Guide instead of GIS-derived tuples. Out-of-coverage queries still escalate to `LVF_PARENT_URI`. Coverage changes cascade to the FG automatically. |
+| **Forest Guide** | `LVF_FOREST_GUIDE_MODE=true`, `LVF_SYNC_CHILDREN` | No GIS validation. Routes all requests to the matching child LVF via the child coverage store. |
+
+### Root AMS Provisioning Files
+
+Root AMS nodes require two files in the same directory as the GeoPackage:
+
+- **`ams_civic_coverage.json`** — JSON array of `{country, A1, A2, A3, A4, A5}` tuples declaring the node's jurisdictional civic coverage. `country` is required; absent fields act as wildcards.
+- **`ams_geodetic_coverage.geojson`** — GeoJSON `Polygon` or `MultiPolygon` declaring the geodetic boundary. For `MultiPolygon`, the largest polygon by area is used.
+
 
 ---
 
@@ -172,8 +198,11 @@ src/                    Application source
   models.py             Data models: SSAPRecord, RCLRecord, FilterState, etc.
   utils.py              Shared utilities
 schemas/                XSD files for XML schema validation
-data/                   GeoPackage data files
-  child_lvf_data.gpkg   Sample data — Burleigh, McLean, Mercer, Oliver counties.
+data/                   GeoPackage data files and runtime state
+  child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Oliver counties
+  lvf_child_coverage.json     Child coverage store (written at runtime; do not edit manually)
+  ams_civic_coverage.json     Root AMS civic coverage declaration (operator-provisioned)
+  ams_geodetic_coverage.geojson  Root AMS geodetic boundary declaration (operator-provisioned)
 tests/                  Test XML inputs and regression infrastructure
   regression/
     golden/             Expected output files (committed)

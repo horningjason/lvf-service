@@ -3,6 +3,10 @@
 A2=Morton County, A3=Bismarck. Morton County exists in GIS but Bismarck is in Burleigh
 County, not Morton County. Both SSAP and RCL fail at ca:A3 — no records in either layer
 match A2=Morton County and A3=Bismarck. Result: invalid at ca:A3.
+
+REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent LVF
+instance provisioned with Morton County GIS data. This test will fail with a
+serverTimeout or serverError outcome if the parent is unreachable.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true" recursive="true">
   <location id="L1" profile="civic">
