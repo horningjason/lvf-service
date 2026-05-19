@@ -148,7 +148,7 @@ The service supports four operating modes, set by environment variables:
 Root AMS nodes require two files in the same directory as the GeoPackage:
 
 - **`ams_civic_coverage.json`** — JSON array of `{country, A1, A2, A3, A4, A5}` tuples declaring the node's jurisdictional civic coverage. `country` is required; absent fields act as wildcards.
-- **`ams_geodetic_coverage.geojson`** — GeoJSON `Polygon` or `MultiPolygon` declaring the geodetic boundary. For `MultiPolygon`, the largest polygon by area is used.
+- **`ams_geodetic_coverage.geojson`** — GeoJSON `Polygon` or `MultiPolygon` declaring the geodetic boundary.
 
 
 ---
