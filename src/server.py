@@ -646,16 +646,14 @@ def _derive_civic_coverage() -> None:
                 continue
             suffix = "_l" if side == "L" else "_r"
 
-            def _up(v): return v.upper() if v else None
-
-            country = _up(getattr(record, f"country{suffix}"))
-            a1      = _up(getattr(record, f"a1{suffix}"))
-            a2      = _up(getattr(record, f"a2{suffix}"))
+            country = getattr(record, f"country{suffix}") or None
+            a1      = getattr(record, f"a1{suffix}") or None
+            a2      = getattr(record, f"a2{suffix}") or None
             if not all([country, a1, a2]):
                 continue
-            a3 = _up(getattr(record, f"a3{suffix}"))
-            a4 = _up(getattr(record, f"a4{suffix}"))
-            a5 = _up(getattr(record, f"a5{suffix}"))
+            a3 = getattr(record, f"a3{suffix}") or None
+            a4 = getattr(record, f"a4{suffix}") or None
+            a5 = getattr(record, f"a5{suffix}") or None
 
             key = (country, a1, a2, a3, a4, a5, containing.display_name, containing.service_urn)
             if key not in dedup:
