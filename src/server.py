@@ -2532,12 +2532,13 @@ async def _lifespan(app: FastAPI):
                 "— this node cannot answer or route requests"
             )
 
+    _load_child_coverage()
+
     if _root_ams:
         _load_ams_provisioning()
     elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
         log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
 
-    _load_child_coverage()
     asyncio.create_task(_startup_sync())
     yield
 
