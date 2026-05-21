@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 — recursive="true", out-of-coverage at ca:country → request forwarded
+through the full LoST tree to the Forest Guide, which returns <notFound>.
+
+REQUIRES RUNNING PARENT LVF AND FOREST GUIDE: LVF_PARENT_URI must point to a
+reachable parent LVF, which must in turn be configured with LVF_PARENT_URI
+pointing to a reachable Forest Guide. This test will fail with a serverTimeout
+or serverError outcome if either the parent or the Forest Guide is unreachable.
+The golden file reflects the live Forest Guide response and will not match if
+the upstream tree is unavailable.
+
+country=CA does not match any provisioned GIS record on this node (all records
+have country=US). Gate 2 fires stop-on-first-invalid at ca:country. The civic
+coverage lookup for CA/ND/Burleigh County finds no match — this LVF has no
+coverage for country=CA. Because recursive="true" and a parent is configured,
+the child forwards the request to the parent LVF.
+
+The parent LVF similarly holds no coverage for country=CA and forwards the
+request to the Forest Guide. The Forest Guide holds no registered coverage
+region matching country=CA and returns <notFound>.
+
+The full chain traversed: child LVF → parent LVF → Forest Guide.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true" recursive="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US">
+      <country>CA</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>State</RD>
+      <STS>Street</STS>
+      <HNO>3401</HNO>
+      <PC>58503</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

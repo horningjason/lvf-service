@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <findServiceResponse xmlns="urn:ietf:params:xml:ns:lost1" xmlns:ca="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xmlns:cae="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext" xmlns:cdx1="urn:nena:xml:ns:pidf:nenaCivicAddr" xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
-  <mapping expires="2198-12-31 00:00:00+00:00" lastUpdated="2025-04-17 00:00:00+00:00" source="lvf.ndaco.org" sourceId="{5D31178D-7195-48C8-936D-F1E5F2512815}">
+  <mapping expires="2198-12-31 00:00:00+00:00" lastUpdated="2025-04-17 00:00:00+00:00" source="child.lvf.ndaco.org" sourceId="{5D31178D-7195-48C8-936D-F1E5F2512815}">
     <displayName xml:lang="en">CENTRAL DAKOTA COMMUNICATIONS CENTER</displayName>
     <service>urn:service:sos</service>
     <uri>sip:sos@test.burleigh.nd.us</uri>
@@ -27,6 +27,6 @@
     </rli:completeLocation>
   </locationValidation>
   <path>
-    <via source="lvf.ndaco.org"/>
+    <via source="child.lvf.ndaco.org"/>
   </path>
 </findServiceResponse>

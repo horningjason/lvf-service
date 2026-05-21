@@ -1,0 +1,4 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<errors xmlns="urn:ietf:params:xml:ns:lost1" source="fg.lvf.ndaco.org">
+  <notFound xml:lang="en">No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address.</notFound>
+</errors>
