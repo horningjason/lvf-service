@@ -1,4 +1,4 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<errors xmlns="urn:ietf:params:xml:ns:lost1" source="lvf.ndaco.org">
-  <badRequest xml:lang="en">Malformed XML: Premature end of data in tag findService line 13, line 25, column 1 (&lt;string&gt;, line 25)</badRequest>
+<errors xmlns="urn:ietf:params:xml:ns:lost1" source="child.lvf.ndaco.org">
+  <badRequest message="Malformed XML: Premature end of data in tag findService line 13, line 25, column 1 (&lt;string&gt;, line 25)" xml:lang="en"/>
 </errors>

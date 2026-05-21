@@ -31,7 +31,7 @@ class CivicAddress(BaseModel):
     never passed to the progressive filter.
 
     Retired elements (A6, LMK, LMKP, POBOX, ADDCODE, RDSEC, RDBR, RDSUBBR,
-    UNIT, NAM) are excluded per NENA-STA-004.2-2024 §1.5.
+    UNIT, NAM) are excluded per NENA-STA-004.2-2024 §1.4.
     """
 
     # Place name elements (hierarchy positions 1–6)
@@ -141,7 +141,7 @@ ELEMENT_HIERARCHY: tuple[ElementInfo, ...] = (
     # Postal
     ElementInfo("pcn",           "ca:PCN",           null_unchecked=True),
     ElementInfo("pc",            "ca:PC",            null_unchecked=True),
-    ElementInfo("pce",           "cae:PCE",           rcl_unchecked=True),
+    ElementInfo("pce",           "cdx2:PCE",           rcl_unchecked=True),
     # Always-unchecked (outside the 33-position filter sequence)
     ElementInfo("dt",            "cdx2:DT",           always_unchecked=True),
     ElementInfo("hnc",           "cdx2:HNC",          always_unchecked=True),
@@ -161,7 +161,7 @@ class ValidationRequest(BaseModel):
     A LoST findService request as received by the LVF.
 
     service_urn maps to the <service> element in the LoST request.
-    Expected to be urn:service:sos or urn:service:test.sos per NENA-STA-010 §3.4.
+    Expected to be urn:service:sos or urn:service:test.sos per NENA-STA-010 §3.2.
     validate_location mirrors the validateLocation attribute on <findService>.
     """
     service_urn:       str
@@ -179,7 +179,7 @@ class SSAPRecord(BaseModel):
 
     Field names match STA-006.3 standardized names exactly. The LVF must
     reference only these standardized names — no field-name mapping or
-    configuration is permitted (STA-006.3 §3.4).
+    configuration is permitted (STA-006.3 §3.2).
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

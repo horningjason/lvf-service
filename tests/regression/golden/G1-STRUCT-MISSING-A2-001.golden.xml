@@ -1,4 +1,4 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<errors xmlns="urn:ietf:params:xml:ns:lost1" source="lvf.ndaco.org">
-  <locationInvalid xml:lang="en">Required element ca:A2 is absent</locationInvalid>
+<errors xmlns="urn:ietf:params:xml:ns:lost1" source="child.lvf.ndaco.org">
+  <locationInvalid message="Required element ca:A2 is absent" xml:lang="en"/>
 </errors>

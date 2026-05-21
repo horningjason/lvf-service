@@ -907,9 +907,9 @@ def _serialize_redirect(resp) -> etree._Element:
     root = etree.Element(f"{{{_NS_LOST}}}redirect", nsmap={None: _NS_LOST})
     root.set("target", resp.target)
     root.set("source", resp.source)
-    msg = etree.SubElement(root, f"{{{_NS_LOST}}}message")
-    msg.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-    msg.text = resp.message
+    if resp.message:
+        root.set("message", resp.message)
+        root.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
     return root
 
 
@@ -917,15 +917,18 @@ def _serialize_errors(resp) -> etree._Element:
     """Build an <errors> element for notFound, locationInvalid, serviceNotImplemented."""
     root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
     root.set("source", _server_uri)
-    err  = etree.SubElement(root, f"{{{_NS_LOST}}}{resp.type}")
-    err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-    err.text = {
-        "badRequest":             getattr(resp, "message", None) or "Request does not conform to the LoST findService schema",
-        "forbidden":              "This server is provisioned as a Location Validation Function (LVF). Only requests with validateLocation='true' are accepted.",
-        "notFound":               getattr(resp, "message", None) or "No matching address record found",
-        "locationInvalid":        getattr(resp, "message", None) or "Required element missing or empty",
-        "serviceNotImplemented":  "Requested service URN has no provisioned boundary",
-    }.get(resp.type, resp.type)
+    err = etree.SubElement(root, f"{{{_NS_LOST}}}{resp.type}")
+    # RFC 5222 §13 / draft-17 §6: message is an attribute on basicException elements
+    message = {
+        "notFound":              getattr(resp, "message", None) or "No matching address record found",
+        "badRequest":            getattr(resp, "message", None) or "Request does not conform to the LoST findService schema",
+        "forbidden":             "This server is provisioned as a Location Validation Function (LVF). Only requests with validateLocation='true' are accepted.",
+        "locationInvalid":       getattr(resp, "message", None) or "Required element missing or empty",
+        "serviceNotImplemented": "Requested service URN has no provisioned boundary",
+    }.get(resp.type, "")
+    if message:
+        err.set("message", message)
+        err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
     return root
 
 
@@ -1667,7 +1670,7 @@ def _load_ams_provisioning() -> bool:
     Load and validate AMS provisioning files; inject entries into the child coverage store.
     Returns True if all conditions are met and root AMS mode is fully activated.
 
-    LVF spec §3.9.3 (civic provisioning file), §3.9.4 (geodetic provisioning file).
+    LVF spec §3.9.2 (provisioning files), §3.9.3 (activation conditions), §3.9.4 (startup/reload behavior).
     """
     global _root_ams_active
 
@@ -1910,7 +1913,7 @@ def _sync_error_response(error_type: str, message: str) -> Response:
 async def _handle_push_mappings(root: etree._Element) -> Response:
     """Handle an incoming <pushMappings> request per RFC 6739 §5.2.
 
-    Cascades coverage changes upstream on modification per LVF spec §3.9.6.
+    Cascades coverage changes upstream on modification per LVF spec §3.7.5.
     """
     mapping_els = root.findall(f"{{{_NS_LOST}}}mapping")
     not_deleted: list[tuple[str, str]] = []
@@ -2142,7 +2145,7 @@ async def _push_coverage_to_parent() -> None:
 async def _push_coverage_to_fg() -> None:
     """Push AMS-provisioned civic and geodetic coverage regions to the Forest Guide.
 
-    LVF spec §3.9.5.
+    LVF spec §3.9.4.
     """
     if not _root_ams_active or not _forest_guide_uri:
         return

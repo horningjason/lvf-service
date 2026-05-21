@@ -185,7 +185,7 @@ def assemble(
     All element lists in LocationValidation are sorted to hierarchical order.
     """
     if result.outcome == "not_found":
-        return NotFoundResponse()
+        return NotFoundResponse(message="No matching records found for the submitted address.")
 
     location_validation = _build_location_validation(result.state)
 
@@ -241,8 +241,10 @@ def assemble(
     if not mappings:
         # Point-in-polygon found no containing boundary: this indicates a data
         # integrity failure between the coverage region and service boundary
-        # data. Return notFound rather than a validation result.
-        return NotFoundResponse()
+        # data. Return locationValidationUnavailable rather than a validation result.
+        return LocationValidationUnavailableResponse(
+            message="A matching GIS record was found for the submitted address but no containing service boundary could be identified."
+        )
 
     complete_data = None
     if return_additional_location not in ("none", "similar"):

@@ -3,7 +3,7 @@
 ## Before You Start
 
 This service is a normative implementation of the LVF algorithm as specified in
-`LVF_Algorithm_Specification_v53.docx`. Every gate decision, element ordering, and fallthrough
+`LVF_Algorithm_Specification_v62.docx`. Every gate decision, element ordering, and fallthrough
 rule traces back to that document. **Read the relevant spec sections before changing any gate
 or algorithm logic.** Changes that contradict the spec will be rejected regardless of test
 coverage.
@@ -24,7 +24,7 @@ python -m tests.regression.runner --test G2-SSAP-VALID-002
 
 **Adding a new test:**
 
-1. Add a `tests/requests/<TEST-ID>.xml` file following the naming convention in `CLAUDE.md`.
+1. Add a `tests/requests/<TEST-ID>.xml` file following the naming convention in `VENDOR_INTEGRATION.md`.
 2. Verify the expected behavior manually against the spec.
 3. Seed the golden file: `python -m tests.regression.seed --force <TEST-ID>`
 4. Commit both the request XML and the golden file together.

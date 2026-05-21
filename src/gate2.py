@@ -422,14 +422,14 @@ def run(
         ssap_state, ssap_candidates = _filter_ssap(address, active_ssap)
         if ssap_state.terminal:
             pass  # discard SSAP result, fall through to RCL regardless
-        if len(ssap_candidates) == 1:
+        elif len(ssap_candidates) == 1:
             return Gate2Result(
                 state=ssap_state,
                 outcome="match",
                 layer="SSAP",
                 record=ssap_candidates[0],
             )
-        # terminal — discarded, fall through to RCL. 2+ means ambiguous.
+        # terminal or 2+ candidates — fall through to RCL.
 
     # Step 2: RCL
     if active_rcl:

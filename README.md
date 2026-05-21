@@ -1,13 +1,15 @@
 # LVF — Location Validation Function
 
 This repository contains an open reference implementation of the NG9-1-1 Location Validation Function (LVF) 
-as specified in `LVF_Algorithm_Specification_v53.docx`. Validates civic PIDF-LO addresses against provisioned
+as specified in `LVF_Algorithm_Specification_v62.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222). The implementation can be configured to run as a child, parent, 
 root AMS or forest guide.  When operating in forest guide mode, the service is only configured to support
 queries relevant to LVF and location validation.
 
-> **Note:** This is intended as an open reference implementation for 911 Authorities, GIS staff, LVF vendors
-> and LIS vendors evaluating LVF conformance. It is not intended for production, nor is it production-hardened.
+> **Note:** The repository was developed principally to define the process by which an LVF evaluates an input 
+> PIDF-LO against authoritative mapping data provided by a 911 authority.  It has grown from that original focus 
+> to address the full lifecycle of a validateLocation request in an NG9-1-1 deployment, including tree topology,
+> coverage region derivation, and response assembly. It is not intended for production, nor is it production-hardened
 
 ---
 

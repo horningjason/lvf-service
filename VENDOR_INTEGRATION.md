@@ -1,8 +1,8 @@
 # LVF Vendor Integration Guide
 
 This document is written for companies building Location Validation Function (LVF) implementations
-who want to evaluate conformance against this reference, understand the algorithm's expected
-behavior, or use the test suite to identify divergence between implementations.
+who want to evaluate their own LVF behavior against this reference, understand the algorithm's 
+expected behavior, or use the test suite to identify divergence between implementations.
 
 ---
 
@@ -15,14 +15,14 @@ requests under FCC Report and Order 24-78, and a longer-term problem for any 911
 might switch LVF providers and find that validation results change.
 
 This repository is an attempt to close that gap. The algorithm is specified in detail in
-`LVF_Algorithm_Specification_v53.docx`, and this codebase is a normative implementation of that
+`LVF_Algorithm_Specification_v62.docx`, and this codebase is a normative implementation of that
 specification. Where the code and the spec conflict, the spec governs.
 
 ---
 
 ## 2. The Algorithm Specification
 
-`LVF_Algorithm_Specification_v53.docx` (in this repository) is the authoritative description of
+`LVF_Algorithm_Specification_v62.docx` (in this repository) is the authoritative description of
 the algorithm. It defines:
 
 - The three-gate structure (Pre-Gate-0 → Gate 0 → Gate 1 → Gate 2)
@@ -32,9 +32,9 @@ the algorithm. It defines:
 - Out-of-coverage admin-level redirect behavior
 - Response assembly and mapping element selection
 
-Vendors building conformant LVF implementations should treat this document as the primary
-reference, not this codebase. The codebase exists to make the specification executable and
-testable.
+Vendors evaluating their LVF implementations against this implementation should treat this 
+document as the primary reference, not this codebase. The codebase exists to make the 
+specification executable and testable.
 
 ---
 
@@ -160,8 +160,45 @@ The sample GeoPackage at `data/child_lvf_data.gpkg` (Burleigh, McLean, Mercer, a
 counties, ND) is the dataset against which all golden files are produced. To run the suite
 meaningfully against your implementation, your system must load the same GeoPackage.
 
-Test IDs follow a structured naming convention (`{GATE}-{LAYER}-{CATEGORY}-{SEQ}`) described in
-`CLAUDE.md`. The gate prefix tells you what behavior each test exercises before opening the files.
+## Test Case Naming Convention
+
+Test IDs follow the pattern: `{GATE}-{LAYER}-{CATEGORY}-{SEQ}`
+
+### Gate prefixes
+
+| Prefix | Meaning |
+|--------|---------|
+| `PROTO` | Protocol / pre-gate checks (malformed XML, missing elements, validateLocation) |
+| `G0` | Gate 0 — Service URN and boundary check |
+| `G1` | Gate 1 — Structural conformance (minimum required elements) |
+| `G2` | Gate 2 — Progressive filter (GIS evaluation) |
+| `TEMP` | Temporal filtering (Effective/Expire date handling) |
+| `RESP` | Response assembly (mapping element, revalidateAfter, defaultMapping) |
+| `EXT` | Extensions (completeLocation, always-unchecked elements, etc.) |
+
+### Layer segment (G2 only)
+
+| Segment | Meaning |
+|---------|---------|
+| `SSAP` | Test exercises the SiteStructureAddressPoint layer |
+| `RCL` | Test exercises the RoadCenterLine layer |
+| `FALL` | Test exercises SSAP-to-RCL fallthrough boundary behavior |
+| `NF` | notFound result |
+
+For non-G2 gates the layer segment describes the condition, not a GIS layer
+(e.g. `G0-URN-...`, `G1-STRUCT-...`, `PROTO-REQ-...`).
+
+### Category segment
+
+Free-form but should be descriptive enough to understand the condition without
+opening the file. Examples: `VALID`, `INVALID-A2`, `MISSING-HNO`, `EMPTY-COUNTRY`,
+`RCL-ONLY-RD`, `PARITY`, `FUTURE-EFF`, `EXPIRED`, `VALIDFLAG`.
+
+### Sequence
+
+Zero-padded three-digit integer (`001`, `002`, ...). Variants of the same condition
+get sequential numbers — e.g. `G2-FALL-RCL-ONLY-RD-001` and `G2-FALL-RCL-ONLY-RD-002`
+are the same scenario with different submitted elements (one with PCN, one with PC).
 
 ---
 
@@ -180,7 +217,7 @@ section of the README for request/response examples.
 
 ## 7. Limitations of This Implementation
 
-This is an open reference implementation intended for conformance evaluation and interoperability
+This is an open reference implementation intended for vendor evaluation and interoperability
 testing. It is **not production-hardened**:
 
 - No authentication or access control on any endpoint

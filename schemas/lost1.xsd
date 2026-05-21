@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   LoST findService request schema — lost1: namespace (RFC 5222, updated per
-  draft-ietf-ecrit-lost-planned-changes-15 §6).
+  draft-ietf-ecrit-lost-planned-changes-17 §6).
 
   Imports civicAddr.xsd, civicAddr-ext.xsd, and nenaCivicAddr2.xsd so that
   lxml resolves cross-namespace element references when validating civic address
