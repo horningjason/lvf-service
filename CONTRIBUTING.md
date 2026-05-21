@@ -3,7 +3,7 @@
 ## Before You Start
 
 This service is a normative implementation of the LVF algorithm as specified in
-`LVF_Algorithm_Specification_v62.docx`. Every gate decision, element ordering, and fallthrough
+`LVF_Algorithm_Specification_v65.docx`. Every gate decision, element ordering, and fallthrough
 rule traces back to that document. **Read the relevant spec sections before changing any gate
 or algorithm logic.** Changes that contradict the spec will be rejected regardless of test
 coverage.

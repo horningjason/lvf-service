@@ -23,7 +23,7 @@
     Request using the alias URN urn:emergency:service:sos.psap configured via
     LVF_SOS_ALIAS_URNS. Gate 0 accepts the alias as equivalent to urn:service:sos.
     The response mapping echoes the alias URN in <service> rather than the provisioned
-    URN, per §4.3.
+    URN, per §4.2.
   preconditions:
     - urn:service:sos boundary provisioned
     - LVF_SOS_ALIAS_URNS=urn:emergency:service:sos.psap in environment
@@ -36,5 +36,5 @@
     The echoed URN in the mapping <service> element is urn:emergency:service:sos.psap,
     not urn:service:sos. The runner does not currently compare the mapping URN, so
     this is only verifiable by inspecting the golden file directly.
-  spec_ref: "§4.3, §4 (Gate 0)"
+  spec_ref: "§4.2, §4 (Gate 0)"
   status: has_test

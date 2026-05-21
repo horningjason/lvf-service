@@ -15,14 +15,14 @@ requests under FCC Report and Order 24-78, and a longer-term problem for any 911
 might switch LVF providers and find that validation results change.
 
 This repository is an attempt to close that gap. The algorithm is specified in detail in
-`LVF_Algorithm_Specification_v62.docx`, and this codebase is a normative implementation of that
+`LVF_Algorithm_Specification_v65.docx`, and this codebase is a normative implementation of that
 specification. Where the code and the spec conflict, the spec governs.
 
 ---
 
 ## 2. The Algorithm Specification
 
-`LVF_Algorithm_Specification_v62.docx` (in this repository) is the authoritative description of
+`LVF_Algorithm_Specification_v65.docx` (in this repository) is the authoritative description of
 the algorithm. It defines:
 
 - The three-gate structure (Pre-Gate-0 → Gate 0 → Gate 1 → Gate 2)
@@ -108,11 +108,11 @@ additional submitted elements are evaluated in hierarchical order (§3 of the sp
 | Element returned | Meaning | RFC 5222 reference |
 |---|---|---|
 | `<findServiceResponse>` with `<locationValidation>` | Gate 2 completed; contains `<valid>`, `<invalid>`, and/or `<unchecked>` | §8.4.2 |
-| `<errors><notFound>` | No single matching GIS record found | §8.5 |
-| `<errors><locationInvalid>` | Gate 1 failure — required element missing or empty | §8.5 |
-| `<errors><serviceNotImplemented>` | Gate 0 failure — no provisioned boundary for the URN | §8.5 |
-| `<errors><badRequest>` | Pre-Gate-0 failure — request does not conform to schema | §8.5 |
-| `<redirect>` | Out-of-coverage admin-level failure with a configured parent | §8.6 |
+| `<errors><notFound>` | No single matching GIS record found | §13.1 |
+| `<errors><locationInvalid>` | Gate 1 failure — required element missing or empty | §13.1 |
+| `<errors><serviceNotImplemented>` | Gate 0 failure — no provisioned boundary for the URN | §13.1 |
+| `<errors><badRequest>` | Pre-Gate-0 failure — request does not conform to schema | §13.1 |
+| `<redirect>` | Out-of-coverage admin-level failure with a configured parent | §13.3 |
 | `<findServiceResponse>` with `<warnings><locationValidationUnavailable>` | `validateLocation` was not `"true"` | §13.2 |
 
 All responses are HTTP 200. Error conditions are expressed in the XML body, not HTTP status codes,

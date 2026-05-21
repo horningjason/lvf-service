@@ -450,7 +450,7 @@ class NotFoundResponse(BaseModel):
 
 
 class RedirectResponse(BaseModel):
-    """Gate 2 out-of-coverage at admin level — redirect to a parent LVF (RFC 5222 §8.6)."""
+    """Gate 2 out-of-coverage at admin level — redirect to a parent LVF (RFC 5222 §13.3)."""
     type: Literal["redirect"] = "redirect"
     target: str
     source: str

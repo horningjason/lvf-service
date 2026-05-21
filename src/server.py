@@ -429,13 +429,14 @@ def _load_gis_data(gpkg_path: str) -> None:
 
     pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
 
+    gpkg_mtime = os.path.getmtime(gpkg_path)
+
     if os.path.exists(pickle_path):
-        gpkg_mtime = os.path.getmtime(gpkg_path)
-        if os.path.getmtime(pickle_path) >= gpkg_mtime:
-            try:
+        try:
+            with open(pickle_path, "rb") as f:
+                data = pickle.load(f)
+            if data.get("gpkg_mtime") == gpkg_mtime:
                 log.info("Cache hit — loading GIS data from pickle: %s", pickle_path)
-                with open(pickle_path, "rb") as f:
-                    data = pickle.load(f)
                 _ssap              = data["ssap"]
                 _rcl               = data["rcl"]
                 _boundaries        = data["boundaries"]
@@ -449,13 +450,13 @@ def _load_gis_data(gpkg_path: str) -> None:
                     len(_civic_coverage), len(_geodetic_coverage),
                 )
                 return
-            except Exception as exc:
-                log.warning(
-                    "Pickle load failed (%s) — falling back to GPKG and rebuilding cache",
-                    exc,
-                )
-        else:
-            log.info("Cache miss — GPKG is newer than pickle, rebuilding: %s", pickle_path)
+            else:
+                log.info("Cache miss — GPKG mtime changed, rebuilding: %s", pickle_path)
+        except Exception as exc:
+            log.warning(
+                "Pickle load failed (%s) — falling back to GPKG and rebuilding cache",
+                exc,
+            )
     else:
         log.info("Cache miss — no pickle found, building for the first time: %s", pickle_path)
 
@@ -506,7 +507,7 @@ def _load_gis_data(gpkg_path: str) -> None:
                     "boundaries":        _boundaries,
                     "civic_coverage":    _civic_coverage,
                     "geodetic_coverage": _geodetic_coverage,
-                    "gpkg_mtime":        os.path.getmtime(gpkg_path),
+                    "gpkg_mtime":        gpkg_mtime,
                 },
                 f,
             )
@@ -903,7 +904,7 @@ def _serialize_find_service_response(
 
 
 def _serialize_redirect(resp) -> etree._Element:
-    """Build a <redirect> element per RFC 5222 §8.6."""
+    """Build a <redirect> element per RFC 5222 §13.3."""
     root = etree.Element(f"{{{_NS_LOST}}}redirect", nsmap={None: _NS_LOST})
     root.set("target", resp.target)
     root.set("source", resp.source)
