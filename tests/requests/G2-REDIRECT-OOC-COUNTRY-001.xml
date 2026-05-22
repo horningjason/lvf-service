@@ -2,6 +2,9 @@
 <!--
 Gate 2 — admin-level failure at ca:country outside civic coverage → <redirect>.
 
+REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent
+LVF instance.
+
 Country code CA (Canada) has no provisioned boundary and no civic coverage
 region entry in this LVF deployment. The progressive filter fails at ca:country.
 The civic coverage lookup for the submitted admin tuple also yields no match —

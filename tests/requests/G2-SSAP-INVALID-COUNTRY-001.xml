@@ -2,6 +2,9 @@
 <!--
 Gate 2 — admin-level failure at ca:country outside civic coverage → <redirect>.
 
+REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent
+LVF instance provisioned with Cass County GIS data.
+
 Country code CA has no provisioned boundary and no civic coverage region entry.
 The progressive filter fails at ca:country (no GIS records match CA). Because the
 failure is at an admin element outside coverage and LVF_PARENT_URI is configured,

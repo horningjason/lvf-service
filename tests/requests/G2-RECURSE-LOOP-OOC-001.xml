@@ -9,6 +9,9 @@ the <path> element, indicating this request has already passed through this serv
 
 The LVF detects its own URI in <path> before making any outbound HTTP call and
 returns <errors><loop> per RFC 5222 §13.1. No upstream request is attempted.
+
+REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent LVF
+instance provisioned with Cass County GIS data.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true" recursive="true">
   <location id="L1" profile="civic">
