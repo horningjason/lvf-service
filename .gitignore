@@ -41,3 +41,7 @@ htmlcov/
 CLAUDE.md
 **/__pycache__/
 *.pyc
+
+# References
+references/**/*.pdf
+references/**/*.txt

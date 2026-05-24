@@ -190,15 +190,28 @@ See `tests/regression/README.md` for full details on seeding golden files.
 ## Project Structure
 
 ```
-src/                    Application source
-  server.py             FastAPI entry point, startup, /validate endpoint
-  gate0.py              Gate 0 — service URN / boundary check
-  gate1.py              Gate 1 — structural conformance check
-  gate2.py              Gate 2 — progressive filter (SSAP then RCL)
-  response_assembly.py  <mapping> selection and response XML construction
-  models.py             Data models: SSAPRecord, RCLRecord, FilterState, etc.
-  utils.py              Shared utilities
-schemas/                XSD files for XML schema validation
+src/                        Application source
+  server.py                 FastAPI thin router — app, lifespan, HTTP endpoints
+  utils.py                  Shared utilities
+  ntp.py                    NTP client stub (falls back to system clock)
+  lost/                     LoST protocol handlers (RFC 5222)
+    find_service.py         Core LVF logic: GIS loading, gate orchestration,
+                            XML helpers, LoST-Sync, handle_find_service()
+    list_services.py        listServices response builder (stub)
+    list_services_by_location.py  listServicesByLocation stub (notFound)
+    get_service_boundary.py getServiceBoundary stub (notFound)
+  validation/               Three-gate algorithm
+    gate0.py                Gate 0 — service URN / boundary check
+    gate1.py                Gate 1 — structural conformance check
+    gate2.py                Gate 2 — progressive filter (SSAP then RCL)
+    response_assembly.py    <mapping> selection and response XML construction
+    models.py               Data models: SSAPRecord, RCLRecord, FilterState, etc.
+  logging_events/           Structured log event types
+    log_events.py           LostQueryLogEvent, LostResponseLogEvent dataclasses
+    logger.py               emit_log_event() helper
+  notifications/            Service/element state change notifications (stubs)
+  discrepancy/              Discrepancy report generation (stub)
+schemas/                    XSD files for XML schema validation
 data/                   GeoPackage data files and runtime state
   child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Oliver counties
   lvf_child_coverage.json     Child coverage store (written at runtime; do not edit manually)
