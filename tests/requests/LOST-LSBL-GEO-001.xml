@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+listServicesByLocation with a geodetic-2d point at the centroid of the Central Dakota
+Communications Center boundary (Burleigh County, ND). No <service> filter.
+Expected: all provisioned URNs including sos alias URNs.
+-->
+<listServicesByLocation xmlns="urn:ietf:params:xml:ns:lost1" recursive="false">
+  <location id="loc1" profile="geodetic-2d">
+    <Point xmlns="http://www.opengis.net/gml" srsName="urn:ogc:def:crs:EPSG::4326">
+      <pos>46.828121 -100.883898</pos>
+    </Point>
+  </location>
+</listServicesByLocation>

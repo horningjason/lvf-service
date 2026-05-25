@@ -120,6 +120,11 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
 | `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI in `<path>` and `<errors source>` |
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
+| `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3.1 §4.12.3.1). A WARNING is logged at startup if unset |
+| `LVF_LOGGING_SERVICE_URI` | No | — | URI of an i3 Logging Service to POST LogEvents to. When unset, events are emitted to Python standard logging only |
+| `LVF_NTP_SERVER` | No | — | Hostname of the NTP server. When unset, NTP is disabled and the system clock is used. When set, time-sensitive fields use NTP; query failures log a WARNING and fall back to the system clock |
+| `LVF_NTP_VERSION` | No | `3` | NTP protocol version (only used when `LVF_NTP_SERVER` is set) |
+| `LVF_NTP_TIMEOUT` | No | `5.0` | NTP query timeout in seconds (only used when `LVF_NTP_SERVER` is set) |
 | `LVF_SOS_ALIAS_URNS` | No | — | Comma-separated URN aliases for `urn:service:sos` |
 | `LVF_PARENT_URI` | No | — | DNS name of a parent LoST server. When set, out-of-coverage admin-level queries return `<redirect>` instead of `<notFound>` |
 | `LVF_GPKG_POLL_INTERVAL_SECONDS` | No | `60` | How often (seconds) to check for GeoPackage updates. Set to `0` to disable |
@@ -179,6 +184,7 @@ See `tests/regression/README.md` for full details on seeding golden files.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/validate` | Submit a civic address for LVF validation (`Content-Type: application/xml`) |
+| `POST` | `/lost` | LoST protocol endpoint (RFC 5222) — `listServices`, `listServicesByLocation`, `getServiceBoundary` (`Content-Type: application/lost+xml`) |
 | `POST` | `/sync` | LoST-Sync (RFC 6739) — accepts `pushMappings` and `getMappingsRequest` (`Content-Type: application/lostsync+xml`) |
 | `GET` | `/health` | GIS layer record counts |
 | `GET` | `/coverage/geodetic` | GeoJSON of the unioned service boundary coverage polygon |
@@ -193,12 +199,12 @@ See `tests/regression/README.md` for full details on seeding golden files.
 src/                        Application source
   server.py                 FastAPI thin router — app, lifespan, HTTP endpoints
   utils.py                  Shared utilities
-  ntp.py                    NTP client stub (falls back to system clock)
+  ntp.py                    NTP client — syncs time via ntplib, falls back to system clock
   lost/                     LoST protocol handlers (RFC 5222)
     find_service.py         Core LVF logic: GIS loading, gate orchestration,
                             XML helpers, LoST-Sync, handle_find_service()
-    list_services.py        listServices response builder (stub)
-    list_services_by_location.py  listServicesByLocation stub (notFound)
+    list_services.py        listServices — returns provisioned URNs, optional child-filter
+    list_services_by_location.py  listServicesByLocation — geodetic-2d and civic profiles
     get_service_boundary.py getServiceBoundary stub (notFound)
   validation/               Three-gate algorithm
     gate0.py                Gate 0 — service URN / boundary check

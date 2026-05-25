@@ -93,7 +93,7 @@ Polygon layer. One polygon per PSAP service area.
 
 ## 4. Protocol — Request and Response
 
-### Request
+### POST /validate — LVF validation
 
 The `/validate` endpoint accepts `POST` with `Content-Type: application/xml`.
 
@@ -143,6 +143,54 @@ These are the points where vendor implementations most commonly diverge:
   `<unchecked>` (the LVF cannot verify what it doesn't have). Other fields treat null GIS as
   an empty string, which only matches an empty submitted value.
 
+### POST /lost — LoST protocol queries
+
+The `/lost` endpoint accepts `POST` with `Content-Type: application/lost+xml` and handles
+`listServices` and `listServicesByLocation` per RFC 5222 §10–11.
+
+**listServices** — returns the space-separated set of provisioned service URNs. An optional
+`<service>` child filters the response to immediate dot-separated children of that URN.
+
+```xml
+<listServices xmlns="urn:ietf:params:xml:ns:lost1"/>
+```
+
+```xml
+<!-- with filter -->
+<listServices xmlns="urn:ietf:params:xml:ns:lost1">
+  <service>urn:service:sos</service>
+</listServices>
+```
+
+**listServicesByLocation** — returns the URNs whose provisioned boundaries contain the given
+location. Supports `profile="geodetic-2d"` (GML Point, lat lon order in `<pos>`) and
+`profile="civic"` (PIDF-LO `<civicAddress>`, country/A1/A2 minimum). A3–A5 are optional;
+absent fields match any value including null.
+
+```xml
+<listServicesByLocation xmlns="urn:ietf:params:xml:ns:lost1" recursive="false">
+  <location id="loc1" profile="geodetic-2d">
+    <Point xmlns="http://www.opengis.net/gml" srsName="urn:ogc:def:crs:EPSG::4326">
+      <pos>46.828121 -100.883898</pos>
+    </Point>
+  </location>
+</listServicesByLocation>
+```
+
+```xml
+<listServicesByLocation xmlns="urn:ietf:params:xml:ns:lost1" recursive="false">
+  <location id="loc1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country><A1>ND</A1><A2>Burleigh County</A2>
+    </civicAddress>
+  </location>
+</listServicesByLocation>
+```
+
+When `recursive="false"` and the location is outside this node's coverage, the server returns
+`<redirect>` to the parent (if configured) rather than an empty list. When `recursive="true"`,
+the request is forwarded to the parent and the parent's response is returned directly.
+
 ---
 
 ## 5. Using the Test Suite for Conformance Testing
@@ -151,10 +199,12 @@ The regression suite in `tests/regression/` defines the reference behavior. Each
 of files: a `tests/requests/<TEST-ID>.xml` request and a `tests/regression/golden/<TEST-ID>.golden.xml`
 expected response.
 
-The test runner currently calls `handle_find_service()` directly (no HTTP). To use it against
-your own LVF implementation, you would need to adapt `tests/regression/runner.py` to POST the
-request XML to your endpoint and compare the response. The structure of the runner is
-straightforward — the comparison logic is a normalized XML diff.
+The test runner dispatches directly to the appropriate handler based on the root element
+(`handle_find_service()` for `findService`, `list_services.handle()` for `listServices`,
+`list_services_by_location.handle()` for `listServicesByLocation`) — no HTTP server is required.
+To use it against your own implementation, adapt `tests/regression/runner.py` to POST each
+request to your endpoint instead. The comparison logic is a normalized field-by-field XML diff,
+not a string comparison.
 
 The sample GeoPackage at `data/child_lvf_data.gpkg` (Burleigh, McLean, Mercer, and Oliver
 counties, ND) is the dataset against which all golden files are produced. To run the suite
@@ -175,6 +225,7 @@ Test IDs follow the pattern: `{GATE}-{LAYER}-{CATEGORY}-{SEQ}`
 | `TEMP` | Temporal filtering (Effective/Expire date handling) |
 | `RESP` | Response assembly (mapping element, revalidateAfter, defaultMapping) |
 | `EXT` | Extensions (completeLocation, always-unchecked elements, etc.) |
+| `LOST` | LoST protocol requests on `/lost` — `listServices`, `listServicesByLocation` |
 
 ### Layer segment (G2 only)
 

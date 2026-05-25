@@ -1,13 +1,18 @@
 """
 LVF regression test runner.
 
-Discovers all *.xml files in tests/requests/, submits each through handle_find_service(),
-and compares the result against the corresponding golden file in golden/.
+Discovers all *.xml files in tests/requests/, submits each through the appropriate
+handler based on the root element, and compares the result against the corresponding
+golden file in golden/.
+
+Supported root elements:
+  - findService              → handle_find_service()
+  - listServices             → list_services.handle()
+  - listServicesByLocation   → list_services_by_location.handle()  (async)
 
 Comparison is semantic (parsed XML), not a string diff. Checked fields:
-  - Outcome type (locationValidation / notFound / locationInvalid / serviceNotImplemented)
-  - valid, invalid, unchecked element lists (order-independent for valid/unchecked)
-  - mapping sourceId (only when present in the golden file)
+  - findService: outcome type, valid/invalid/unchecked element lists, mapping sourceId
+  - listServices/listServicesByLocation: sorted serviceList URNs, locationUsed id
 
 Usage:
     python -m tests.regression.runner                           # run all tests
@@ -15,6 +20,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import re
 import sys
 from pathlib import Path
@@ -22,6 +28,7 @@ from pathlib import Path
 from lxml import etree
 
 from src.server import handle_find_service, initialize
+from src.lost import list_services, list_services_by_location
 
 TESTS_DIR = Path(__file__).parent.parent / "requests"
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -30,6 +37,20 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 _TEST_ID_RE = re.compile(r'^[A-Z0-9]+(?:-[A-Z0-9]+)+-\d{3}$')
 
 _NS_LOST = "urn:ietf:params:xml:ns:lost1"
+
+
+def _dispatch(xml_bytes: bytes) -> bytes:
+    """Route to the correct handler based on the root element."""
+    try:
+        root = etree.fromstring(xml_bytes)
+    except etree.XMLSyntaxError:
+        return handle_find_service(xml_bytes)
+    tag = root.tag
+    if tag == f"{{{_NS_LOST}}}listServices":
+        return list_services.handle(xml_bytes)
+    if tag == f"{{{_NS_LOST}}}listServicesByLocation":
+        return asyncio.run(list_services_by_location.handle(xml_bytes))
+    return handle_find_service(xml_bytes)
 
 
 def _parse_outcome(xml_bytes: bytes) -> dict:
@@ -61,6 +82,21 @@ def _parse_outcome(xml_bytes: bytes) -> dict:
             "target":  root.get("target", ""),
         }
 
+    if root.tag == f"{{{_NS_LOST}}}listServicesResponse":
+        sl = root.find(f"{{{_NS_LOST}}}serviceList")
+        urns = sorted((sl.text or "").split()) if sl is not None else []
+        return {"outcome": "listServicesResponse", "service_list": urns}
+
+    if root.tag == f"{{{_NS_LOST}}}listServicesByLocationResponse":
+        sl = root.find(f"{{{_NS_LOST}}}serviceList")
+        urns = sorted((sl.text or "").split()) if sl is not None else []
+        lu = root.find(f"{{{_NS_LOST}}}locationUsed")
+        return {
+            "outcome": "listServicesByLocationResponse",
+            "service_list": urns,
+            "location_used": lu.get("id") if lu is not None else None,
+        }
+
     if root.tag == f"{{{_NS_LOST}}}errors":
         for child in root:
             local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
@@ -84,6 +120,18 @@ def _diff(actual: dict, golden: dict) -> list[str]:
             diffs.append(
                 f"redirect target: got '{actual.get('target')}', expected '{golden.get('target')}'"
             )
+        return diffs
+
+    if actual.get("outcome") in ("listServicesResponse", "listServicesByLocationResponse"):
+        if actual.get("service_list") != golden.get("service_list"):
+            diffs.append(
+                f"service_list: got {actual.get('service_list')}, expected {golden.get('service_list')}"
+            )
+        if actual.get("outcome") == "listServicesByLocationResponse":
+            if actual.get("location_used") != golden.get("location_used"):
+                diffs.append(
+                    f"location_used: got '{actual.get('location_used')}', expected '{golden.get('location_used')}'"
+                )
         return diffs
 
     if actual.get("valid") != golden.get("valid"):
@@ -131,7 +179,7 @@ def run_tests(test_names: list[str] | None = None) -> int:
             continue
 
         try:
-            actual_bytes = handle_find_service(xml_path.read_bytes())
+            actual_bytes = _dispatch(xml_path.read_bytes())
         except Exception as exc:
             print(f"ERROR {name}: handle_find_service raised: {exc}")
             errors += 1

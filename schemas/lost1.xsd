@@ -1,23 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  LoST findService request schema — lost1: namespace (RFC 5222, updated per
-  draft-ietf-ecrit-lost-planned-changes-17 §6).
+  LoST schema — lost1: namespace, based on
+  draft-ietf-ecrit-lost-planned-changes-17 §6.
 
-  Imports civicAddr.xsd, civicAddr-ext.xsd, and nenaCivicAddr2.xsd so that
-  lxml resolves cross-namespace element references when validating civic address
-  content inside <location>.
+  Imports civicAddr.xsd, civicAddr-ext.xsd, nenaCivicAddr2.xsd, and
+  nenaCivicAddr.xsd so that lxml resolves cross-namespace element references
+  when validating civic address content inside <location>.
 
-  The <findService> content model uses xs:choice minOccurs="0" maxOccurs="unbounded"
-  to accept <location>, <service>, and extension elements (e.g. planned:asOf) in
-  any order.  Structural requirements (exactly one service URN, location required
-  for validateLocation="true") are enforced by Gate 1, not the schema.
-
-  The <location> content model uses xs:any namespace="##any" processContents="lax"
-  so that ca:civicAddress is routed to civicAddr.xsd for strict namespace checking,
-  while preserving the extensibility point for geodetic and other profiles.
+  Deviations from the draft:
+  - findService uses xs:choice (not xs:sequence) to accept <location>,
+    <service>, <path>, and extension elements in any order.  Gate 1
+    enforces structural requirements; the schema only needs to accept
+    well-formed requests.
+  - location content uses processContents="lax" so that ca:civicAddress
+    is validated against civicAddr.xsd when present while remaining open
+    to geodetic and other profiles.
 -->
 <xs:schema
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:lost="urn:ietf:params:xml:ns:lost1"
     targetNamespace="urn:ietf:params:xml:ns:lost1"
     elementFormDefault="qualified">
 
@@ -29,46 +30,90 @@
              schemaLocation="nenaCivicAddr2.xsd"/>
   <xs:import namespace="urn:nena:xml:ns:pidf:nenaCivicAddr"
              schemaLocation="nenaCivicAddr.xsd"/>
+  <xs:import namespace="urn:emergency:xml:ns:lostExt:Ids"
+             schemaLocation="lostExt-Ids.xsd"/>
 
+  <!-- ── Shared named types ─────────────────────────────────────────── -->
+
+  <!--
+    LocationType: used in findService and listServicesByLocation.
+    Content is open (lax) so ca:civicAddress is validated against
+    civicAddr.xsd when present, while GML and other profiles are accepted.
+  -->
+  <xs:complexType name="LocationType">
+    <xs:sequence>
+      <xs:any namespace="##any" processContents="lax"
+              minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="id"      type="xs:token" use="required"/>
+    <xs:attribute name="profile" type="xs:token"/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+
+  <!-- PathType: <path> element shared across requests and responses. -->
+  <xs:complexType name="PathType">
+    <xs:sequence>
+      <xs:element name="via" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="source" type="xs:token" use="required"/>
+          <xs:anyAttribute namespace="##other" processContents="lax"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+    <xs:anyAttribute namespace="##other" processContents="lax"/>
+  </xs:complexType>
+
+  <!-- MappingType: <mapping> element in findService/sync responses. -->
+  <xs:complexType name="MappingType">
+    <xs:sequence>
+      <xs:element name="displayName" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:simpleContent>
+            <xs:extension base="xs:string">
+              <xs:anyAttribute namespace="##any" processContents="lax"/>
+            </xs:extension>
+          </xs:simpleContent>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="service" type="xs:anyURI" minOccurs="0"/>
+      <xs:element name="serviceBoundary" minOccurs="0">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:any namespace="##any" processContents="lax"
+                    minOccurs="0" maxOccurs="unbounded"/>
+          </xs:sequence>
+          <xs:attribute name="profile" type="xs:token"/>
+          <xs:anyAttribute namespace="##other" processContents="lax"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="uri" type="xs:anyURI" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="serviceNumber" type="xs:token" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:any namespace="##other" processContents="lax"
+              minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="expires"     type="xs:token" use="required"/>
+    <xs:attribute name="lastUpdated" type="xs:token" use="required"/>
+    <xs:attribute name="source"      type="xs:token" use="required"/>
+    <xs:attribute name="sourceId"    type="xs:token" use="required"/>
+    <xs:anyAttribute namespace="##other" processContents="lax"/>
+  </xs:complexType>
+
+  <!-- ── Request elements ───────────────────────────────────────────── -->
+
+  <!--
+    findService: xs:choice accepts <location>, <service>, <path>, and
+    extension elements in any order.  This matches the current behaviour
+    and avoids xs:sequence ordering constraints that could conflict with
+    Gate 1 structural checks.
+  -->
   <xs:element name="findService">
     <xs:complexType>
       <xs:choice minOccurs="0" maxOccurs="unbounded">
-
-        <xs:element name="location">
-          <xs:complexType>
-            <xs:sequence>
-              <!-- lax: validates ca:civicAddress against civicAddr.xsd when present -->
-              <xs:any namespace="##any" processContents="lax"
-                      minOccurs="0" maxOccurs="unbounded"/>
-            </xs:sequence>
-            <xs:attribute name="id"      type="xs:token" use="required"/>
-            <xs:attribute name="profile" type="xs:token"/>
-            <xs:anyAttribute namespace="##any" processContents="lax"/>
-          </xs:complexType>
-        </xs:element>
-
-        <xs:element name="service" type="xs:anyURI"/>
-
-        <!-- <path> is added by intermediate recursive servers before forwarding (RFC 5222 §10) -->
-        <xs:element name="path">
-          <xs:complexType>
-            <xs:sequence>
-              <xs:element name="via" maxOccurs="unbounded">
-                <xs:complexType>
-                  <xs:attribute name="source" type="xs:token" use="required"/>
-                  <xs:anyAttribute namespace="##other" processContents="lax"/>
-                </xs:complexType>
-              </xs:element>
-            </xs:sequence>
-            <xs:anyAttribute namespace="##other" processContents="lax"/>
-          </xs:complexType>
-        </xs:element>
-
-        <!-- Extension elements from other namespaces (e.g. planned:asOf, rli:*) -->
+        <xs:element name="location" type="lost:LocationType"/>
+        <xs:element name="service"  type="xs:anyURI"/>
+        <xs:element name="path"     type="lost:PathType"/>
         <xs:any namespace="##other" processContents="lax"/>
-
       </xs:choice>
-
       <xs:attribute name="validateLocation" type="xs:string"/>
       <xs:attribute name="recursive"        type="xs:boolean"/>
       <xs:attribute name="serviceBoundary">
@@ -79,7 +124,156 @@
           </xs:restriction>
         </xs:simpleType>
       </xs:attribute>
-      <!-- Extension attributes from other namespaces (e.g. rli:returnAdditionalLocation) -->
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- listServices: optional <service> child URN filter. -->
+  <xs:element name="listServices">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="service" type="xs:anyURI" minOccurs="0"/>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="recursive" type="xs:boolean"/>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!--
+    listServicesByLocation: one or more location elements (xs:sequence),
+    then an optional <service> child-filter.
+  -->
+  <xs:element name="listServicesByLocation">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="location" type="lost:LocationType"
+                    minOccurs="1" maxOccurs="unbounded"/>
+        <xs:element name="service" type="xs:anyURI" minOccurs="0"/>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="recursive" type="xs:boolean"/>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- getServiceBoundary: key attribute required (RFC 5222 §9). -->
+  <xs:element name="getServiceBoundary">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="key"       type="xs:token" use="required"/>
+      <xs:attribute name="recursive" type="xs:boolean"/>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ── Response elements ──────────────────────────────────────────── -->
+
+  <xs:element name="findServiceResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="mapping" type="lost:MappingType"
+                    minOccurs="0" maxOccurs="unbounded"/>
+        <xs:element name="locationValidation" minOccurs="0">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="valid"     type="xs:string" minOccurs="0"/>
+              <xs:element name="invalid"   type="xs:string" minOccurs="0"/>
+              <xs:element name="unchecked" type="xs:string" minOccurs="0"/>
+              <xs:any namespace="##other" processContents="lax"
+                      minOccurs="0" maxOccurs="unbounded"/>
+            </xs:sequence>
+            <xs:anyAttribute namespace="##other" processContents="lax"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="path" type="lost:PathType" minOccurs="0"/>
+        <xs:element name="warnings" minOccurs="0">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:any namespace="##any" processContents="lax"
+                      minOccurs="0" maxOccurs="unbounded"/>
+            </xs:sequence>
+            <xs:attribute name="source" type="xs:token"/>
+            <xs:anyAttribute namespace="##other" processContents="lax"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="listServicesResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="serviceList" type="xs:string"/>
+        <xs:element name="path"        type="lost:PathType" minOccurs="0"/>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="listServicesByLocationResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="serviceList" type="xs:string"/>
+        <xs:element name="path"        type="lost:PathType" minOccurs="0"/>
+        <xs:element name="locationUsed" minOccurs="0">
+          <xs:complexType>
+            <xs:attribute name="id" type="xs:token" use="required"/>
+            <xs:anyAttribute namespace="##other" processContents="lax"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="getServiceBoundaryResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="mapping" type="lost:MappingType"
+                    minOccurs="0" maxOccurs="unbounded"/>
+        <xs:element name="path"    type="lost:PathType" minOccurs="0"/>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ── Error and redirect elements ───────────────────────────────── -->
+
+  <xs:element name="errors">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##any" processContents="lax"
+                minOccurs="1" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="source" type="xs:token" use="required"/>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="redirect">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##other" processContents="lax"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="target"  type="xs:token" use="required"/>
+      <xs:attribute name="source"  type="xs:token" use="required"/>
+      <xs:attribute name="message" type="xs:string"/>
       <xs:anyAttribute namespace="##other" processContents="lax"/>
     </xs:complexType>
   </xs:element>

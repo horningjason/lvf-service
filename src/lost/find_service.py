@@ -16,7 +16,7 @@ import pickle
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -36,6 +36,9 @@ from fastapi import Response
 from lxml import etree
 import httpx
 
+from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
+from src.logging_events.log_events import generate_query_id
+from src.ntp import NTPClient
 from src.validation import gate0, gate1, gate2, response_assembly
 from src.utils import _is_temporally_active
 from src.validation.models import (
@@ -62,6 +65,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _NS_LOST    = "urn:ietf:params:xml:ns:lost1"
+_NS_EXT_IDS = "urn:emergency:xml:ns:lostExt:Ids"
 _NS_CA      = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
 _NS_CAE     = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
 _NS_CDX1    = "urn:nena:xml:ns:pidf:nenaCivicAddr"
@@ -70,6 +74,11 @@ _NS_RLI     = "urn:ietf:params:xml:ns:lost-rli1"
 _NS_PLANNED = "urn:ietf:params:xml:ns:lostPlannedChange1"
 _NS_SYNC    = "urn:ietf:params:xml:ns:lostsync1"
 _NS_GML     = "http://www.opengis.net/gml"
+
+class RequestContext(NamedTuple):
+    call_id: Optional[str]
+    incident_tracking_id: Optional[str]
+
 
 _RESPONSE_NSMAP: dict = {
     None:   _NS_LOST,
@@ -173,6 +182,8 @@ _schema: Optional[etree.XMLSchema] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 _child_coverage: list[dict] = []
+
+_ntp_client: Optional[NTPClient] = None
 
 
 def _load_schema() -> Optional[etree.XMLSchema]:
@@ -394,7 +405,7 @@ def _load_gis_data(gpkg_path: str) -> None:
                 _boundaries        = data["boundaries"]
                 _civic_coverage    = data["civic_coverage"]
                 _geodetic_coverage = data["geodetic_coverage"]
-                _gis_last_loaded   = datetime.datetime.now(datetime.timezone.utc)
+                _gis_last_loaded   = _ntp_client.get_current_time()
                 log.info(
                     "Loaded from pickle: %d SSAP, %d RCL, %d boundaries, "
                     "%d civic coverage entries, %d geodetic URN(s)",
@@ -447,7 +458,7 @@ def _load_gis_data(gpkg_path: str) -> None:
 
     _derive_geodetic_coverage()
     _derive_civic_coverage()
-    _gis_last_loaded = datetime.datetime.now(datetime.timezone.utc)
+    _gis_last_loaded = _ntp_client.get_current_time()
 
     try:
         with open(pickle_path, "wb") as f:
@@ -505,7 +516,21 @@ def _watch_gpkg(gpkg_path: str) -> None:
 
 def initialize(gpkg_path: str | None = None) -> None:
     """Load GIS data for use by handle_find_service(). Call once before the first request."""
-    global _schema, _routing_only
+    global _schema, _routing_only, _ntp_client
+    _ntp_client = NTPClient()
+    if _ntp_client.server is not None:
+        log.info(
+            "NTP client configured: server=%s version=%d timeout=%.1fs",
+            _ntp_client.server, _ntp_client.version, _ntp_client.timeout,
+        )
+        _t = _ntp_client.get_current_time()
+        if _ntp_client.is_synchronized:
+            log.info("NTP synchronized: current time %s", _t.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        else:
+            log.warning("NTP sync failed — falling back to system clock for time-sensitive fields")
+    else:
+        log.info("NTP not configured (LVF_NTP_SERVER unset) — using system clock")
+
     _schema = _load_schema()
     if _schema is None:
         log.warning("Operating without XML schema validation")
@@ -564,7 +589,7 @@ def _derive_geodetic_coverage() -> None:
 def _derive_civic_coverage() -> None:
     global _civic_coverage
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _ntp_client.get_current_time()
     active_rcl = [r for r in _rcl if _is_temporally_active(r.effective, r.expire, now)]
     active_boundaries = [b for b in _boundaries if _is_temporally_active(b.effective, b.expires, now)]
 
@@ -665,6 +690,13 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
     except etree.XMLSyntaxError as exc:
         raise ValueError(f"Malformed XML: {exc}") from exc
 
+    if root.tag != f"{{{_NS_LOST}}}findService":
+        local = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+        raise ValueError(
+            f"Expected findService; received {local!r} — "
+            "use POST /lost for listServices and listServicesByLocation"
+        )
+
     service_el = root.find(f"{{{_NS_LOST}}}service")
     if service_el is None:
         raise ValueError("Missing 'service' element in findService request")
@@ -725,6 +757,18 @@ def _parse_recursive(body: bytes) -> bool:
         return False
 
 
+def _extract_call_incident_ids(root: etree._Element) -> tuple[Optional[str], Optional[str]]:
+    """
+    Extract callId and incidentTrackingId from an <emergencyCallIncidentId>
+    extension element in any LoST request (namespace urn:emergency:xml:ns:lostExt:Ids).
+    Returns (call_id, incident_tracking_id) — either or both may be None if absent.
+    """
+    el = root.find(f".//{{{_NS_EXT_IDS}}}emergencyCallIncidentId")
+    if el is None:
+        return None, None
+    return el.get("callId") or None, el.get("incidentTrackingId") or None
+
+
 # ---------------------------------------------------------------------------
 # XML serialization
 # ---------------------------------------------------------------------------
@@ -733,7 +777,7 @@ def _mapping_element(parent: etree._Element, mapping, force_no_cache: bool = Fal
     m = etree.SubElement(parent, f"{{{_NS_LOST}}}mapping")
     m.set("expires",     "NO-CACHE" if force_no_cache else (mapping.expires or "NO-EXPIRATION"))
     m.set("lastUpdated", mapping.last_updated or
-          datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+          _ntp_client.get_current_time().strftime("%Y-%m-%dT%H:%M:%SZ"))
     m.set("source",   mapping.source or _server_uri)
     m.set("sourceId", mapping.source_id or "unknown")
 
@@ -2123,33 +2167,125 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     Returns <badRequest> bytes for malformed or structurally incomplete XML.
     Call initialize() once before using this.
     """
+    query_id = generate_query_id()
+    timestamp = _ntp_client.get_current_time()
+    call_id: Optional[str] = None
+    incident_tracking_id: Optional[str] = None
+
+    def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
+        emit_log_event(make_response_event(
+            timestamp=_ntp_client.get_current_time(),
+            response_id=query_id,
+            direction="outgoing",
+            response_adapter=result.decode("utf-8", errors="replace"),
+            response_status=response_status,
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        return result
+
+    def _recurse_outgoing(request_body: bytes) -> bytes:
+        out_qid = generate_query_id()
+        emit_log_event(make_query_event(
+            timestamp=_ntp_client.get_current_time(),
+            query_id=out_qid,
+            direction="outgoing",
+            query_adapter=request_body.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        result = _do_recurse_sync(request_body)
+        emit_log_event(make_response_event(
+            timestamp=_ntp_client.get_current_time(),
+            response_id=out_qid,
+            direction="incoming",
+            response_adapter=result.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        return result
+
+    def _recurse_to_uri_outgoing(request_body: bytes, uri: str) -> bytes:
+        out_qid = generate_query_id()
+        emit_log_event(make_query_event(
+            timestamp=_ntp_client.get_current_time(),
+            query_id=out_qid,
+            direction="outgoing",
+            query_adapter=request_body.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        result = _do_recurse_to_uri_sync(request_body, uri)
+        emit_log_event(make_response_event(
+            timestamp=_ntp_client.get_current_time(),
+            response_id=out_qid,
+            direction="incoming",
+            response_adapter=result.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        return result
+
     with _reloading_lock:
         if _reloading:
-            return _to_xml_response(
+            return _respond(_to_xml_response(
                 LocationValidationUnavailableResponse(
                     message="LVF is reloading GIS data — service will resume automatically"
                 ),
                 status=200,
-            ).body
+            ).body)
 
     schema_error = _validate_schema(xml_bytes)
     if schema_error is not None:
-        return _to_xml_response(BadRequestResponse(message=schema_error), status=200).body
+        emit_log_event(make_query_event(
+            timestamp=timestamp,
+            query_id=query_id,
+            direction="incoming",
+            malformed_query=xml_bytes.decode("utf-8", errors="replace")[:2048],
+        ))
+        return _respond(
+            _to_xml_response(BadRequestResponse(message=schema_error), status=200).body,
+            response_status="400",
+        )
 
     try:
         req, as_of_raw = _parse_request(xml_bytes)
     except ValueError as exc:
-        return _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body
+        emit_log_event(make_query_event(
+            timestamp=timestamp,
+            query_id=query_id,
+            direction="incoming",
+            malformed_query=xml_bytes.decode("utf-8", errors="replace")[:2048],
+        ))
+        return _respond(
+            _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body,
+            response_status="400",
+        )
 
     recursive = _parse_recursive(xml_bytes)
 
+    _req_root = etree.fromstring(xml_bytes)
+    call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
+    ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
+    if call_id or incident_tracking_id:
+        log.debug("LoST request: callId=%s incidentTrackingId=%s", call_id, incident_tracking_id)
+
+    emit_log_event(make_query_event(
+        timestamp=timestamp,
+        query_id=query_id,
+        direction="incoming",
+        query_adapter=xml_bytes.decode("utf-8", errors="replace"),
+        call_id=call_id,
+        incident_id=incident_tracking_id,
+    ))
+
     if req.validate_location != "true":
-        return _to_xml_response(ForbiddenResponse(), status=200).body
+        return _respond(_to_xml_response(ForbiddenResponse(), status=200).body)
 
     if _forest_guide_mode:
         effective_urn, _ = _resolve_service_urn(req.service_urn)
         if effective_urn.lower() != "urn:service:sos":
-            return _to_xml_response(ServiceNotImplementedResponse(), status=200).body
+            return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200).body)
         child_match = _lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
@@ -2157,18 +2293,18 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         if child_match:
             child_uri = child_match.get("child_uri", "")
             if child_uri:
-                return _to_xml_response(
+                return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
-                ).body
+                ).body)
             log.warning(
                 "Forest Guide: child coverage match found but child_uri is empty "
                 "(source=%s) — returning notFound",
                 child_match.get("source", ""),
             )
-        return _to_xml_response(
+        return _respond(_to_xml_response(
             NotFoundResponse(message="No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address."),
             status=200,
-        ).body
+        ).body)
 
     if _child_coverage and _routing_only:
         child_match = _lookup_child_coverage(
@@ -2179,10 +2315,10 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             child_uri = child_match.get("child_uri", "")
             if child_uri:
                 if recursive:
-                    return _do_recurse_to_uri_sync(xml_bytes, child_uri)
-                return _to_xml_response(
+                    return _respond(_recurse_to_uri_outgoing(xml_bytes, child_uri))
+                return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
-                ).body
+                ).body)
             log.warning(
                 "LoST-Sync: child coverage match found but child_uri is empty "
                 "(source=%s) — falling through to local processing",
@@ -2192,20 +2328,20 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if _routing_only:
         if _parent_uri:
             if recursive:
-                return _do_recurse_sync(xml_bytes)
-            return _to_xml_response(
+                return _respond(_recurse_outgoing(xml_bytes))
+            return _respond(_to_xml_response(
                 RedirectResponse(target=_parent_uri, source=_server_uri), status=200
-            ).body
-        return _to_xml_response(
+            ).body)
+        return _respond(_to_xml_response(
             LocationValidationUnavailableResponse(
                 message="This node has no GIS data and no configured parent for this location"
             ),
             status=200,
-        ).body
+        ).body)
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _ntp_client.get_current_time()
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
         now = as_of_raw
@@ -2213,11 +2349,11 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     g0 = gate0.check(effective_urn, _boundaries, now)
     if g0 is not None:
-        return _to_xml_response(g0, status=200).body
+        return _respond(_to_xml_response(g0, status=200).body)
 
     g1 = gate1.check(req.civic_address)
     if g1 is not None:
-        return _to_xml_response(g1, status=200).body
+        return _respond(_to_xml_response(g1, status=200).body)
 
     matched_boundaries = [
         b for b in _boundaries
@@ -2230,8 +2366,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
         if recursive and isinstance(ooc, RedirectResponse):
-            return _do_recurse_sync(xml_bytes)
-        return _to_xml_response(ooc, status=200).body
+            return _respond(_recurse_outgoing(xml_bytes))
+        return _respond(_to_xml_response(ooc, status=200).body)
 
     final = response_assembly.assemble(
         g2,
@@ -2247,42 +2383,138 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    return _to_xml_response(final, status=200, as_of_used=as_of_used).body
+    return _respond(_to_xml_response(final, status=200, as_of_used=as_of_used).body)
 
 
 # ---------------------------------------------------------------------------
 # Async entry point (for HTTP /validate endpoint)
 # ---------------------------------------------------------------------------
 
-async def handle_find_service_async(xml_bytes: bytes) -> bytes:
+async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     """Async variant of handle_find_service — uses async HTTP for recursion calls."""
+    query_id = generate_query_id()
+    timestamp = _ntp_client.get_current_time()
+    call_id: Optional[str] = None
+    incident_tracking_id: Optional[str] = None
+
+    def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
+        emit_log_event(make_response_event(
+            timestamp=_ntp_client.get_current_time(),
+            response_id=query_id,
+            direction="outgoing",
+            response_adapter=result.decode("utf-8", errors="replace"),
+            response_status=response_status,
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+            ip_address_port=client_addr,
+        ))
+        return result
+
+    async def _recurse_out(request_body: bytes) -> bytes:
+        out_qid = generate_query_id()
+        emit_log_event(make_query_event(
+            timestamp=_ntp_client.get_current_time(),
+            query_id=out_qid,
+            direction="outgoing",
+            query_adapter=request_body.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        result = await _do_recurse_async(request_body)
+        emit_log_event(make_response_event(
+            timestamp=_ntp_client.get_current_time(),
+            response_id=out_qid,
+            direction="incoming",
+            response_adapter=result.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        return result
+
+    async def _recurse_to_uri_out(request_body: bytes, uri: str) -> bytes:
+        out_qid = generate_query_id()
+        emit_log_event(make_query_event(
+            timestamp=_ntp_client.get_current_time(),
+            query_id=out_qid,
+            direction="outgoing",
+            query_adapter=request_body.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        result = await _do_recurse_to_uri_async(request_body, uri)
+        emit_log_event(make_response_event(
+            timestamp=_ntp_client.get_current_time(),
+            response_id=out_qid,
+            direction="incoming",
+            response_adapter=result.decode("utf-8", errors="replace"),
+            call_id=call_id,
+            incident_id=incident_tracking_id,
+        ))
+        return result
+
     with _reloading_lock:
         if _reloading:
-            return _to_xml_response(
+            return _respond(_to_xml_response(
                 LocationValidationUnavailableResponse(
                     message="LVF is busy loading newer GIS data — service will resume automatically"
                 ),
                 status=200,
-            ).body
+            ).body)
 
     schema_error = _validate_schema(xml_bytes)
     if schema_error is not None:
-        return _to_xml_response(BadRequestResponse(message=schema_error), status=200).body
+        emit_log_event(make_query_event(
+            timestamp=timestamp,
+            query_id=query_id,
+            direction="incoming",
+            malformed_query=xml_bytes.decode("utf-8", errors="replace")[:2048],
+            ip_address_port=client_addr,
+        ))
+        return _respond(
+            _to_xml_response(BadRequestResponse(message=schema_error), status=200).body,
+            response_status="400",
+        )
 
     try:
         req, as_of_raw = _parse_request(xml_bytes)
     except ValueError as exc:
-        return _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body
+        emit_log_event(make_query_event(
+            timestamp=timestamp,
+            query_id=query_id,
+            direction="incoming",
+            malformed_query=xml_bytes.decode("utf-8", errors="replace")[:2048],
+            ip_address_port=client_addr,
+        ))
+        return _respond(
+            _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body,
+            response_status="400",
+        )
 
     recursive = _parse_recursive(xml_bytes)
 
+    _req_root = etree.fromstring(xml_bytes)
+    call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
+    ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
+    if call_id or incident_tracking_id:
+        log.debug("LoST request: callId=%s incidentTrackingId=%s", call_id, incident_tracking_id)
+
+    emit_log_event(make_query_event(
+        timestamp=timestamp,
+        query_id=query_id,
+        direction="incoming",
+        query_adapter=xml_bytes.decode("utf-8", errors="replace"),
+        call_id=call_id,
+        incident_id=incident_tracking_id,
+        ip_address_port=client_addr,
+    ))
+
     if req.validate_location != "true":
-        return _to_xml_response(ForbiddenResponse(), status=200).body
+        return _respond(_to_xml_response(ForbiddenResponse(), status=200).body)
 
     if _forest_guide_mode:
         effective_urn, _ = _resolve_service_urn(req.service_urn)
         if effective_urn.lower() != "urn:service:sos":
-            return _to_xml_response(ServiceNotImplementedResponse(), status=200).body
+            return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200).body)
         child_match = _lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
@@ -2290,18 +2522,18 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
         if child_match:
             child_uri = child_match.get("child_uri", "")
             if child_uri:
-                return _to_xml_response(
+                return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
-                ).body
+                ).body)
             log.warning(
                 "Forest Guide: child coverage match found but child_uri is empty "
                 "(source=%s) — returning notFound",
                 child_match.get("source", ""),
             )
-        return _to_xml_response(
+        return _respond(_to_xml_response(
             NotFoundResponse(message="No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address."),
             status=200,
-        ).body
+        ).body)
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
@@ -2314,10 +2546,10 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
             child_uri = child_match.get("child_uri", "")
             if child_uri:
                 if recursive:
-                    return await _do_recurse_to_uri_async(xml_bytes, child_uri)
-                return _to_xml_response(
+                    return _respond(await _recurse_to_uri_out(xml_bytes, child_uri))
+                return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
-                ).body
+                ).body)
             log.warning(
                 "LoST-Sync: child coverage match found but child_uri is empty "
                 "(source=%s) — falling through to local processing",
@@ -2327,18 +2559,18 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
     if _routing_only:
         if _parent_uri:
             if recursive:
-                return await _do_recurse_async(xml_bytes)
-            return _to_xml_response(
+                return _respond(await _recurse_out(xml_bytes))
+            return _respond(_to_xml_response(
                 RedirectResponse(target=_parent_uri, source=_server_uri), status=200
-            ).body
-        return _to_xml_response(
+            ).body)
+        return _respond(_to_xml_response(
             LocationValidationUnavailableResponse(
                 message="This node has no GIS data and no configured parent for this location"
             ),
             status=200,
-        ).body
+        ).body)
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _ntp_client.get_current_time()
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
         now = as_of_raw
@@ -2346,11 +2578,11 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
 
     g0 = gate0.check(effective_urn, _boundaries, now)
     if g0 is not None:
-        return _to_xml_response(g0, status=200).body
+        return _respond(_to_xml_response(g0, status=200).body)
 
     g1 = gate1.check(req.civic_address)
     if g1 is not None:
-        return _to_xml_response(g1, status=200).body
+        return _respond(_to_xml_response(g1, status=200).body)
 
     matched_boundaries = [
         b for b in _boundaries
@@ -2363,8 +2595,8 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
         if recursive and isinstance(ooc, RedirectResponse):
-            return await _do_recurse_async(xml_bytes)
-        return _to_xml_response(ooc, status=200).body
+            return _respond(await _recurse_out(xml_bytes))
+        return _respond(_to_xml_response(ooc, status=200).body)
 
     final = response_assembly.assemble(
         g2,
@@ -2380,7 +2612,7 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    return _to_xml_response(final, status=200, as_of_used=as_of_used).body
+    return _respond(_to_xml_response(final, status=200, as_of_used=as_of_used).body)
 
 
 # ---------------------------------------------------------------------------
@@ -2389,7 +2621,21 @@ async def handle_find_service_async(xml_bytes: bytes) -> bytes:
 
 async def lifespan_startup() -> None:
     """Run startup tasks — call from the FastAPI lifespan context manager."""
-    global _schema, _routing_only, _event_loop
+    global _schema, _routing_only, _event_loop, _ntp_client
+    _ntp_client = NTPClient()
+    if _ntp_client.server is not None:
+        log.info(
+            "NTP client configured: server=%s version=%d timeout=%.1fs",
+            _ntp_client.server, _ntp_client.version, _ntp_client.timeout,
+        )
+        _t = _ntp_client.get_current_time()
+        if _ntp_client.is_synchronized:
+            log.info("NTP synchronized: current time %s", _t.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        else:
+            log.warning("NTP sync failed — falling back to system clock for time-sensitive fields")
+    else:
+        log.info("NTP not configured (LVF_NTP_SERVER unset) — using system clock")
+
     _schema = _load_schema()
     if _schema is None:
         log.warning("Operating without XML schema validation")

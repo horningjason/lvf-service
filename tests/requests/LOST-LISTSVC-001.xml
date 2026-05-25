@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+listServices with no <service> filter.
+Expected: all provisioned service URNs including sos alias URNs.
+-->
+<listServices xmlns="urn:ietf:params:xml:ns:lost1"/>

@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request, Response
 from lxml import etree
 
 import src.lost.find_service as _fs
-from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri  # noqa: F401 — re-exported for tests
+from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
 from src.lost import list_services, list_services_by_location, get_service_boundary
 from src.validation.models import CivicCoverageEntry
 
@@ -175,13 +175,17 @@ async def validate(request: Request) -> Response:
     findServiceResponse or <errors> element.
     """
     body = await request.body()
-    result = await _fs.handle_find_service_async(body)
+    client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
+    result = await _fs.handle_find_service_async(body, client_addr=client_addr)
     return Response(content=result, status_code=200, media_type="application/xml")
 
 
 @app.post("/lost")
 async def lost_endpoint(request: Request) -> Response:
-    """LoST protocol endpoint for listServices, listServicesByLocation, getServiceBoundary."""
+    """
+    LoST protocol endpoint (RFC 5222) — listServices, listServicesByLocation,
+    getServiceBoundary.  Content-Type: application/lost+xml.
+    """
     body = await request.body()
     try:
         root = etree.fromstring(body)
@@ -194,14 +198,27 @@ async def lost_endpoint(request: Request) -> Response:
         return Response(
             content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
             status_code=200,
-            media_type="application/xml",
+            media_type="application/lost+xml",
         )
 
+    schema_error = _validate_schema(body)
+    if schema_error:
+        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+        err.set("source", _fs._server_uri)
+        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+        br.set("message", schema_error)
+        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+        return Response(
+            content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+            status_code=200,
+            media_type="application/lost+xml",
+        )
+
+    client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
     if root.tag == f"{{{_NS_LOST}}}listServices":
-        service_urns = list({b.service_urn for b in _fs._boundaries})
-        result = list_services.build_response(service_urns, _fs._server_uri)
+        result = list_services.handle(body, client_addr=client_addr)
     elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
-        result = list_services_by_location.build_response(_fs._server_uri)
+        result = await list_services_by_location.handle(body, client_addr=client_addr)
     elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
         result = get_service_boundary.build_response(_fs._server_uri)
     else:
@@ -212,4 +229,4 @@ async def lost_endpoint(request: Request) -> Response:
         br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
         result = etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 
-    return Response(content=result, status_code=200, media_type="application/xml")
+    return Response(content=result, status_code=200, media_type="application/lost+xml")

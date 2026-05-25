@@ -11,13 +11,33 @@ Usage:
 """
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
+from lxml import etree
+
 from src.server import handle_find_service, initialize
+from src.lost import list_services, list_services_by_location
 
 TESTS_DIR = Path(__file__).parent.parent / "requests"
 GOLDEN_DIR = Path(__file__).parent / "golden"
+
+_NS_LOST = "urn:ietf:params:xml:ns:lost1"
+
+
+def _dispatch(xml_bytes: bytes) -> bytes:
+    """Route to the correct handler based on the root element."""
+    try:
+        root = etree.fromstring(xml_bytes)
+    except etree.XMLSyntaxError:
+        return handle_find_service(xml_bytes)
+    tag = root.tag
+    if tag == f"{{{_NS_LOST}}}listServices":
+        return list_services.handle(xml_bytes)
+    if tag == f"{{{_NS_LOST}}}listServicesByLocation":
+        return asyncio.run(list_services_by_location.handle(xml_bytes))
+    return handle_find_service(xml_bytes)
 
 
 def seed(names: list[str] | None, force: bool) -> int:
@@ -42,7 +62,7 @@ def seed(names: list[str] | None, force: bool) -> int:
             print(f"SKIP  {name}  (already seeded — use --force to overwrite)")
             skipped += 1
             continue
-        response_bytes = handle_find_service(xml_path.read_bytes())
+        response_bytes = _dispatch(xml_path.read_bytes())
         golden_path.write_bytes(response_bytes)
         action = "OVERWROTE" if golden_path.exists() and force else "WROTE"
         print(f"{action}  {name}  ->  {golden_path.name}")

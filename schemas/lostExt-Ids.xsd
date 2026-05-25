@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           elementFormDefault="qualified"
+           targetNamespace="urn:emergency:xml:ns:lostExt:Ids"
+           xmlns:ns1="urn:emergency:xml:ns:lostExt:Ids">
+  <xs:element name="emergencyCallIncidentId">
+    <xs:complexType>
+      <xs:attribute name="callId" use="required" type="xs:token"/>
+      <xs:attribute name="incidentTrackingId" use="required" type="xs:token"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

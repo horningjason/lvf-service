@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+listServicesByLocation with a civic location for Burleigh County, ND.
+No <service> filter; A3-A5 absent (wildcard match).
+Expected: all provisioned URNs including sos alias URNs.
+-->
+<listServicesByLocation xmlns="urn:ietf:params:xml:ns:lost1" recursive="false">
+  <location id="loc1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+    </civicAddress>
+  </location>
+</listServicesByLocation>

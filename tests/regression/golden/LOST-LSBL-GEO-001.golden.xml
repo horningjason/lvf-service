@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<listServicesByLocationResponse xmlns="urn:ietf:params:xml:ns:lost1">
+  <serviceList>urn:emergency:service:sos.psap urn:service:sos urn:service:test.sos</serviceList>
+  <path>
+    <via source="child.lvf.ndaco.org"/>
+  </path>
+  <locationUsed id="loc1"/>
+</listServicesByLocationResponse>
