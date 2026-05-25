@@ -91,7 +91,8 @@ uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 
 The repository includes `data/child_lvf_data.gpkg` — a sample GeoPackage provisioned for
 Burleigh County, McLean County, Mercer County and Oliver County, ND. This is sufficient to 
-run the service and evaluate LVF behavior out of the box.
+run the service and evaluate LVF behavior out of the box.  The provided GeoPackage follows
+NENA's GeoPackage v3.0 template verbatim.
 
 The server requires a GeoPackage containing three layer types:
 
