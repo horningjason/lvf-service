@@ -18,6 +18,8 @@ from lxml import etree
 import src.lost.find_service as _fs
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
 from src.lost import list_services, list_services_by_location, get_service_boundary
+from src.notifications import element_state as _element_state
+from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry
 
 _NS_LOST = _fs._NS_LOST
@@ -40,6 +42,8 @@ async def health():
         "rcl_records": len(_fs._rcl),
         "boundaries": len(_fs._boundaries),
         "civic_coverage_entries": len(_fs._civic_coverage),
+        "element_state": _element_state.get_state().value,
+        "service_state": _service_state.get_state().value,
     }
 
 

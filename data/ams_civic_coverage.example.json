@@ -1,0 +1,37 @@
+[
+  {
+    "source": "root-ams.lvf.example.com",
+    "source_id": "{11111111-1111-1111-1111-111111111111}",
+    "last_updated": "2026-01-01T00:00:00Z",
+    "expires": "NO-EXPIRATION",
+    "service": "urn:service:sos",
+    "profile": "civic",
+    "child_uri": "http://root-ams.lvf.example.com/validate",
+    "civic_tuples": [
+      {
+        "country": "US",
+        "a1": "ND",
+        "a2": "Burleigh County",
+        "lost_server": "http://root-ams.lvf.example.com/validate"
+      },
+      {
+        "country": "US",
+        "a1": "ND",
+        "a2": "McLean County",
+        "lost_server": "http://root-ams.lvf.example.com/validate"
+      },
+      {
+        "country": "US",
+        "a1": "ND",
+        "a2": "Mercer County",
+        "lost_server": "http://root-ams.lvf.example.com/validate"
+      },
+      {
+        "country": "US",
+        "a1": "ND",
+        "a2": "Oliver County",
+        "lost_server": "http://root-ams.lvf.example.com/validate"
+      }
+    ]
+  }
+]

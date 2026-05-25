@@ -112,28 +112,41 @@ Copy `.env.example` to `.env` and configure:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
+| **Server Identity** | | | |
+| `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI in `<path>` and `<errors source>` |
+| `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3.1 §4.12.3.1). A WARNING is logged at startup if unset |
+| `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
+| `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
+| **GIS Data** | | | |
 | `LVF_GPKG_PATH` | No† | — | Path to the GeoPackage file. Absent or missing file → routing-only mode (no GIS lookup; requests are routed via child coverage store or `LVF_PARENT_URI`) |
 | `LVF_DEFAULT_MAPPING_SOURCE_ID` | No† | — | UUID used as `sourceId` on the synthetic default mapping. Recommended: `{00000000-0000-0000-0000-000000000000}`. Required when a GPKG is present; not needed in routing-only mode |
 | `LVF_SSAP_LAYER` | No | `SiteStructureAddressPoint` | GeoPackage layer name for SSAP |
 | `LVF_RCL_LAYER` | No | `RoadCenterLine` | GeoPackage layer name for RCL |
 | `LVF_BOUNDARY_LAYERS` | No | `PsapPolygon` | Comma-separated boundary layer name(s) |
-| `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
-| `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI in `<path>` and `<errors source>` |
-| `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
-| `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3.1 §4.12.3.1). A WARNING is logged at startup if unset |
-| `LVF_LOGGING_SERVICE_URI` | No | — | URI of an i3 Logging Service to POST LogEvents to. When unset, events are emitted to Python standard logging only |
-| `LVF_NTP_SERVER` | No | — | Hostname of the NTP server. When unset, NTP is disabled and the system clock is used. When set, time-sensitive fields use NTP; query failures log a WARNING and fall back to the system clock |
-| `LVF_NTP_VERSION` | No | `3` | NTP protocol version (only used when `LVF_NTP_SERVER` is set) |
-| `LVF_NTP_TIMEOUT` | No | `5.0` | NTP query timeout in seconds (only used when `LVF_NTP_SERVER` is set) |
-| `LVF_SOS_ALIAS_URNS` | No | — | Comma-separated URN aliases for `urn:service:sos` |
-| `LVF_PARENT_URI` | No | — | DNS name of a parent LoST server. When set, out-of-coverage admin-level queries return `<redirect>` instead of `<notFound>` |
 | `LVF_GPKG_POLL_INTERVAL_SECONDS` | No | `60` | How often (seconds) to check for GeoPackage updates. Set to `0` to disable |
+| **LoST Service** | | | |
+| `LVF_SOS_ALIAS_URNS` | No | — | Comma-separated URN aliases for `urn:service:sos` |
+| **Tree Topology & LoST-Sync** | | | |
+| `LVF_PARENT_URI` | No | — | DNS name of a parent LoST server. When set, out-of-coverage admin-level queries return `<redirect>` instead of `<notFound>` |
 | `LVF_SYNC_CHILDREN` | No | — | Comma-separated child LVF `/sync` URLs to pull coverage from on startup. Makes this node a LoST-Sync parent |
 | `LVF_SYNC_SOURCE_ID_CIVIC` | No | — | Stable UUID for this node's civic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
 | `LVF_SYNC_SOURCE_ID_GEODETIC` | No | — | Stable UUID for this node's geodetic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
-| `LVF_ROOT_AMS` | No | `false` | When `true`, activates Root AMS mode. Suppresses programmatic GIS-derived push to `LVF_PARENT_URI` and instead pushes operator-declared coverage from provisioning files to `LVF_FOREST_GUIDE_URI`. Out-of-coverage redirect/recursion via `LVF_PARENT_URI` is unaffected. |
+| **Root AMS Mode** | | | |
+| `LVF_ROOT_AMS` | No | `false` | When `true`, activates Root AMS mode. Suppresses programmatic GIS-derived push to `LVF_PARENT_URI` and instead pushes operator-declared coverage from provisioning files to `LVF_FOREST_GUIDE_URI`. Out-of-coverage redirect/recursion via `LVF_PARENT_URI` is unaffected |
 | `LVF_FOREST_GUIDE_URI` | No | — | Full `/sync` URL of the Forest Guide. Only used when `LVF_ROOT_AMS=true`. Example: `http://host.docker.internal:8002/sync` |
+| **Forest Guide Mode** | | | |
 | `LVF_FOREST_GUIDE_MODE` | No | `false` | When `true`, this node operates as a Forest Guide: GIS validation is skipped, all requests are redirected to the matching child LVF, and `LVF_PARENT_URI` is ignored |
+| **NTP** | | | |
+| `LVF_NTP_SERVER` | No | — | Hostname of the NTP server. When unset, NTP is disabled and the system clock is used. When set, time-sensitive fields use NTP; query failures log a WARNING and fall back to the system clock |
+| `LVF_NTP_VERSION` | No | `3` | NTP protocol version (only used when `LVF_NTP_SERVER` is set) |
+| `LVF_NTP_TIMEOUT` | No | `5.0` | NTP query timeout in seconds (only used when `LVF_NTP_SERVER` is set) |
+| **i3 Logging** | | | |
+| `LVF_LOGGING_SERVICE_URI` | No | — | URI of an i3 Logging Service to POST LogEvents to. When unset, events are emitted to Python standard logging only |
+| **Discrepancy Reporting** | | | |
+| `LVF_DR_ENDPOINT` | No | — | HTTP endpoint to POST Discrepancy Reports to (responding agency's `/Reports` service). When unset, DRs are logged locally only (NENA-STA-010.3.1 §3.7.1) |
+| `LVF_DR_RESOLUTION_URI` | No | — | URI this LVF exposes for receiving DR resolution callbacks. Used as `resolutionUri` in the DR body. Required for conformant submission |
+| `LVF_DR_CONTACT_NAME` | No | `LVF Administrator` | Contact name in the DR jCard (`reportingContactJcard`). A WARNING is logged at startup if unset |
+| `LVF_DR_CONTACT_EMAIL` | No | — | Contact email in the DR jCard. A WARNING is logged at startup if unset |
 
 † Required when `LVF_GPKG_PATH` points to an existing file; not needed in routing-only mode.
 
@@ -147,15 +160,53 @@ The service supports four operating modes, set by environment variables:
 |---|---|---|
 | **Child LVF** | `LVF_GPKG_PATH`, `LVF_PARENT_URI`, `LVF_SYNC_SOURCE_ID_CIVIC/GEODETIC` | Validates addresses against local GIS data. Pushes coverage to parent on startup and GIS reload. Out-of-coverage queries redirect to parent. |
 | **Parent / Intermediate LVF** | `LVF_GPKG_PATH`, `LVF_PARENT_URI`, `LVF_SYNC_CHILDREN` | Validates locally and routes to children for addresses in their coverage. Aggregates child coverage upstream. |
-| **Root AMS** | `LVF_GPKG_PATH`, `LVF_PARENT_URI` (for routing), `LVF_ROOT_AMS=true`, `LVF_FOREST_GUIDE_URI` | Validates locally. Pushes **operator-declared** civic/geodetic coverage from `ams_civic_coverage.json` and `ams_geodetic_coverage.geojson` to the Forest Guide instead of GIS-derived tuples. Out-of-coverage queries still escalate to `LVF_PARENT_URI`. Coverage changes cascade to the FG automatically. |
+| **Root AMS** | `LVF_GPKG_PATH`, `LVF_PARENT_URI` (for routing), `LVF_ROOT_AMS=true`, `LVF_FOREST_GUIDE_URI` | Validates locally. Pushes **operator-declared** civic/geodetic coverage from `ams_civic_coverage.json` and `ams_geodetic_coverage.json` to the Forest Guide instead of GIS-derived tuples. Out-of-coverage queries still escalate to `LVF_PARENT_URI`. Coverage changes cascade to the FG automatically. |
 | **Forest Guide** | `LVF_FOREST_GUIDE_MODE=true`, `LVF_SYNC_CHILDREN` | No GIS validation. Routes all requests to the matching child LVF via the child coverage store. |
 
 ### Root AMS Provisioning Files
 
-Root AMS nodes require two files in the same directory as the GeoPackage:
+Root AMS nodes require two files in the same directory as the GeoPackage. Annotated templates are provided in `data/ams_civic_coverage.example.json` and `data/ams_geodetic_coverage.example.json` — copy and rename them to activate.
 
-- **`ams_civic_coverage.json`** — JSON array of `{country, A1, A2, A3, A4, A5}` tuples declaring the node's jurisdictional civic coverage. `country` is required; absent fields act as wildcards.
-- **`ams_geodetic_coverage.geojson`** — GeoJSON `Polygon` or `MultiPolygon` declaring the geodetic boundary.
+**`ams_civic_coverage.json`** — JSON array of coverage mapping entries. Each entry declares one set of civic tuples this node is authoritative for:
+
+```json
+[
+  {
+    "source": "root-ams.lvf.example.com",
+    "source_id": "{11111111-1111-1111-1111-111111111111}",
+    "last_updated": "2026-01-01T00:00:00Z",
+    "expires": "NO-EXPIRATION",
+    "service": "urn:service:sos",
+    "profile": "civic",
+    "child_uri": "http://root-ams.lvf.example.com/validate",
+    "civic_tuples": [
+      { "country": "US", "a1": "ND", "a2": "Burleigh County", "lost_server": "http://root-ams.lvf.example.com/validate" },
+      { "country": "US", "a1": "ND", "a2": "McLean County",   "lost_server": "http://root-ams.lvf.example.com/validate" }
+    ]
+  }
+]
+```
+
+`source_id` must match `LVF_SYNC_SOURCE_ID_CIVIC`. `child_uri` and `lost_server` should be this node's own `/validate` URL (the Forest Guide will redirect queries here). `a3`, `a4`, `a5` are optional in each tuple.
+
+**`ams_geodetic_coverage.json`** — JSON array with a single entry containing a WKT polygon of the node's geodetic boundary:
+
+```json
+[
+  {
+    "source": "root-ams.lvf.example.com",
+    "source_id": "{22222222-2222-2222-2222-222222222222}",
+    "last_updated": "2026-01-01T00:00:00Z",
+    "expires": "NO-EXPIRATION",
+    "service": "urn:service:sos",
+    "profile": "geodetic-2d",
+    "child_uri": "http://root-ams.lvf.example.com/validate",
+    "geodetic_geom_wkt": "POLYGON ((-102.5 46.4, -100.0 46.4, -100.0 48.6, -102.5 48.6, -102.5 46.4))"
+  }
+]
+```
+
+`source_id` must match `LVF_SYNC_SOURCE_ID_GEODETIC`. Coordinates are `(longitude latitude)`. The WKT polygon is converted to GML when pushed to the Forest Guide — it is never stored as-is on the wire.
 
 
 ---
@@ -186,7 +237,7 @@ See `tests/regression/README.md` for full details on seeding golden files.
 | `POST` | `/validate` | Submit a civic address for LVF validation (`Content-Type: application/xml`) |
 | `POST` | `/lost` | LoST protocol endpoint (RFC 5222) — `listServices`, `listServicesByLocation`, `getServiceBoundary` (`Content-Type: application/lost+xml`) |
 | `POST` | `/sync` | LoST-Sync (RFC 6739) — accepts `pushMappings` and `getMappingsRequest` (`Content-Type: application/lostsync+xml`) |
-| `GET` | `/health` | GIS layer record counts |
+| `GET` | `/health` | GIS layer record counts, element state, and service state |
 | `GET` | `/coverage/geodetic` | GeoJSON of the unioned service boundary coverage polygon |
 | `GET` | `/coverage/civic` | Civic coverage lookup table |
 | `GET` | `/coverage/civic/explain` | Diagnose RCL segment coverage for a given admin hierarchy |
@@ -215,14 +266,14 @@ src/                        Application source
   logging_events/           Structured log event types
     log_events.py           LostQueryLogEvent, LostResponseLogEvent dataclasses
     logger.py               emit_log_event() helper
-  notifications/            Service/element state change notifications (stubs)
-  discrepancy/              Discrepancy report generation (stub)
+  notifications/            ElementState and ServiceState change notifiers (NENA-STA-010.3.1 §10.12–13)
+  discrepancy/              Discrepancy report generation and submission (NENA-STA-010.3.1 §3.7)
 schemas/                    XSD files for XML schema validation
 data/                   GeoPackage data files and runtime state
   child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Oliver counties
   lvf_child_coverage.json     Child coverage store (written at runtime; do not edit manually)
   ams_civic_coverage.json     Root AMS civic coverage declaration (operator-provisioned)
-  ams_geodetic_coverage.geojson  Root AMS geodetic boundary declaration (operator-provisioned)
+  ams_geodetic_coverage.json     Root AMS geodetic boundary declaration (operator-provisioned)
 tests/                  Test XML inputs and regression infrastructure
   regression/
     golden/             Expected output files (committed)

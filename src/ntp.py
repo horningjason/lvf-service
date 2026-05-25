@@ -80,8 +80,15 @@ class NTPClient:
             client = ntplib.NTPClient()
             resp = client.request(self._server, version=self._version, timeout=self._timeout)
             t = datetime.datetime.fromtimestamp(resp.tx_time, tz=datetime.timezone.utc)
+            was_degraded = not self._is_synchronized and self._last_sync_time is not None
             self._last_sync_time = t
             self._is_synchronized = True
+            if was_degraded:
+                try:
+                    from src.notifications.element_state import notify_restored
+                    notify_restored()
+                except (ImportError, AttributeError):
+                    pass
             return t
         except Exception as exc:
             log.warning(

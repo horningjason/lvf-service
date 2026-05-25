@@ -1,4 +1,4 @@
-"""Emit structured LVF log events to Python's standard logging."""
+"""Emit structured LVF log events to Python's standard logging and optionally to an i3 Logging Service."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import logging
 import os
 
+import httpx
 from dotenv import load_dotenv
 
 from src.logging_events.log_events import LostQueryLogEvent, LostResponseLogEvent
@@ -16,8 +17,9 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-_agency_id  = os.getenv("LVF_AGENCY_ID", "")
-_server_uri = os.getenv("LVF_SERVER_URI", "lostserver.example.com")
+_agency_id           = os.getenv("LVF_AGENCY_ID", "")
+_server_uri          = os.getenv("LVF_SERVER_URI", "lostserver.example.com")
+_logging_service_uri = os.getenv("LVF_LOGGING_SERVICE_URI", "")
 
 if not _agency_id:
     log.warning(
@@ -43,7 +45,18 @@ def _serialize(obj):
 
 def emit_log_event(event: LostQueryLogEvent | LostResponseLogEvent) -> None:
     camel = _to_camel_dict(dataclasses.asdict(event))
-    log.info("log_event %s", json.dumps(camel, default=_serialize))
+    body  = json.dumps(camel, default=_serialize)
+    log.info("log_event %s", body)
+    if _logging_service_uri:
+        try:
+            httpx.post(
+                _logging_service_uri,
+                content=body.encode(),
+                headers={"Content-Type": "application/json"},
+                timeout=5.0,
+            )
+        except Exception as exc:
+            log.warning("Failed to POST log event to %s: %s", _logging_service_uri, exc)
 
 
 def make_query_event(**kwargs) -> LostQueryLogEvent:

@@ -1,0 +1,12 @@
+[
+  {
+    "source": "root-ams.lvf.example.com",
+    "source_id": "{22222222-2222-2222-2222-222222222222}",
+    "last_updated": "2026-01-01T00:00:00Z",
+    "expires": "NO-EXPIRATION",
+    "service": "urn:service:sos",
+    "profile": "geodetic-2d",
+    "child_uri": "http://root-ams.lvf.example.com/validate",
+    "geodetic_geom_wkt": "POLYGON ((-102.5 46.4, -100.0 46.4, -100.0 48.6, -102.5 48.6, -102.5 46.4))"
+  }
+]

@@ -39,6 +39,14 @@ import httpx
 from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
 from src.logging_events.log_events import generate_query_id
 from src.ntp import NTPClient
+from src.notifications import element_state as _element_state
+from src.notifications import service_state as _service_state
+from src.notifications.element_state import ElementState
+from src.notifications.service_state import ServiceState
+from src.discrepancy.discrepancy_report import (
+    file_gis_dr, file_lost_dr,
+    GISProblem, LoSTProblem, LoSTQuery, ProblemSeverity,
+)
 from src.validation import gate0, gate1, gate2, response_assembly
 from src.utils import _is_temporally_active
 from src.validation.models import (
@@ -505,13 +513,27 @@ def _watch_gpkg(gpkg_path: str) -> None:
                 with _reloading_lock:
                     _reloading = False
                 log.info("GIS data reload complete — resuming normal service")
+                _element_state._notifier.set_state(ElementState.Normal, "GIS reload succeeded")
+                _service_state._notifier.set_state(ServiceState.Normal, "GIS reload succeeded")
                 if _root_ams:
                     _load_ams_provisioning()
                 _maybe_schedule_repush()
-            except Exception:
+            except Exception as exc:
                 log.error(
                     "GIS data reload failed — service remains unavailable", exc_info=True
                 )
+                _element_state._notifier.set_state(
+                    ElementState.ServiceDisruption, "GIS reload failed"
+                )
+                if _event_loop is not None and _event_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        file_gis_dr(
+                            problem=GISProblem.GeneralProvisioning,
+                            severity=ProblemSeverity.Severe,
+                            detail=str(exc),
+                        ),
+                        _event_loop,
+                    )
 
 
 def initialize(gpkg_path: str | None = None) -> None:
@@ -1158,8 +1180,24 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
                 etree.fromstring(result)
                 return result
             except Exception:
-                return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
-        return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
+                err = _make_errors_xml("serverError", "Target LVF returned unparseable XML")
+                asyncio.create_task(file_lost_dr(
+                    query=LoSTQuery.findService,
+                    request_xml=request_body.decode("utf-8", errors="replace"),
+                    response_xml=resp.content.decode("utf-8", errors="replace"),
+                    problem=LoSTProblem.OtherLoST,
+                    severity=ProblemSeverity.Moderate,
+                ))
+                return err
+        err = _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
+        asyncio.create_task(file_lost_dr(
+            query=LoSTQuery.findService,
+            request_xml=request_body.decode("utf-8", errors="replace"),
+            response_xml=f"HTTP {resp.status_code}",
+            problem=LoSTProblem.OtherLoST,
+            severity=ProblemSeverity.Moderate,
+        ))
+        return err
     except httpx.TimeoutException:
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
@@ -2612,7 +2650,15 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    return _respond(_to_xml_response(final, status=200, as_of_used=as_of_used).body)
+    response_bytes = _to_xml_response(final, status=200, as_of_used=as_of_used).body
+    if final.type == "notFound":
+        asyncio.create_task(file_lost_dr(
+            query=LoSTQuery.findService,
+            request_xml=xml_bytes.decode("utf-8", errors="replace"),
+            response_xml=response_bytes.decode("utf-8", errors="replace"),
+            problem=LoSTProblem.BelievedValid,
+        ))
+    return _respond(response_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -2675,6 +2721,8 @@ async def lifespan_startup() -> None:
             )
         _load_gis_data(gpkg_path)
         _routing_only = False
+        _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
+        _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")
         poll_interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
         if poll_interval > 0:
             threading.Thread(
@@ -2683,6 +2731,10 @@ async def lifespan_startup() -> None:
             log.info("GPKG watcher started (poll interval: %ds)", poll_interval)
     else:
         _routing_only = True
+        _element_state._notifier.set_state(
+            ElementState.ServiceDisruption,
+            "GIS data unavailable, operating in routing-only mode",
+        )
         if gpkg_path:
             log.info(
                 "Routing-only mode: LVF_GPKG_PATH is set but file not found at %s",
