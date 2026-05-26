@@ -104,7 +104,7 @@ with `validateLocation="true"` and `profile="civic"`. The service URN must be `u
 (or a configured alias).
 
 The minimum civic address for Gate 1 to pass is: `country`, `A1`, `A2`, `RD`, `HNO`. Any
-additional submitted elements are evaluated in hierarchical order (§3 of the spec).
+additional submitted elements are evaluated in hierarchical order (§7 of the spec).
 
 ### Responses
 
