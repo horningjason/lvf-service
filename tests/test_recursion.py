@@ -11,7 +11,7 @@ Run with:
 Prerequisites:
     - LVF_PARENT_URI set to the base URL of a running parent LVF instance
       (e.g. LVF_PARENT_URI=http://192.168.1.69:8001 in .env)
-    - The parent LVF must be provisioned and accepting requests at /validate
+    - The parent LVF must be provisioned and accepting requests at /lost
     - The test addresses (Cass County, ND) must be outside THIS LVF's coverage
       region so that the OOC redirect/recurse path is exercised
     - The provisioned address tests (G2-RECURSE-KNOWN-*) require the parent to
@@ -106,7 +106,7 @@ def _assert_parent_reachable(root: etree._Element) -> None:
     err_types = [child.tag.split("}")[-1] for child in root]
     if any(t in ("serverError", "serverTimeout") for t in err_types):
         pytest.fail(
-            f"Parent LVF at {_parent_uri.rstrip('/')}/validate was unreachable "
+            f"Parent LVF at {_parent_uri.rstrip('/')}/lost was unreachable "
             f"(got {err_types}). Ensure the parent is running and LVF_PARENT_URI is correct."
         )
 
@@ -115,7 +115,7 @@ def test_recursive_call_returns_lost_response():
     """
     Outbound recursive call to the parent completes and returns parseable LoST XML.
 
-    Requires: parent LVF running at LVF_PARENT_URI/validate.
+    Requires: parent LVF running at LVF_PARENT_URI/lost.
     """
     result = handle_find_service(_OOC_RECURSIVE)
     root = etree.fromstring(result)
@@ -129,7 +129,7 @@ def test_recursive_response_prepends_our_via():
     When the parent returns a findServiceResponse, our server's <via> appears
     first in the response <path>.
 
-    Requires: parent LVF running at LVF_PARENT_URI/validate AND the parent
+    Requires: parent LVF running at LVF_PARENT_URI/lost AND the parent
     returns a findServiceResponse (i.e. it has data for the submitted address
     or produces a notFound/locationValidation outcome rather than a redirect).
     """

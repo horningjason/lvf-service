@@ -8,6 +8,7 @@ re-exports the symbols that test harnesses import directly.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -28,7 +29,24 @@ _NS_LOST = _fs._NS_LOST
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await _fs.lifespan_startup()
+    _maybe_start_sip()
     yield
+
+
+def _maybe_start_sip() -> None:
+    sip_port_raw = os.environ.get("LVF_SIP_PORT", "5060").strip()
+    try:
+        sip_port = int(sip_port_raw)
+    except ValueError:
+        sip_port = 5060
+    if sip_port == 0:
+        return
+    sip_host = os.environ.get("LVF_SIP_HOST", "0.0.0.0").strip()
+    from src.notifications.sip_notifier import SIPNotifier
+    notifier = SIPNotifier(host=sip_host, port=sip_port)
+    # Keep a reference so the notifier is not garbage-collected
+    app.state.sip_notifier = notifier
+    asyncio.ensure_future(notifier.start())
 
 
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
@@ -172,23 +190,12 @@ async def sync_endpoint(request: Request) -> Response:
     return await _fs.handle_sync(body, request.client)
 
 
-@app.post("/validate")
-async def validate(request: Request) -> Response:
-    """
-    Accept a LoST findService request (RFC 5222) as XML and return a
-    findServiceResponse or <errors> element.
-    """
-    body = await request.body()
-    client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
-    result = await _fs.handle_find_service_async(body, client_addr=client_addr)
-    return Response(content=result, status_code=200, media_type="application/xml")
-
-
 @app.post("/lost")
 async def lost_endpoint(request: Request) -> Response:
     """
-    LoST protocol endpoint (RFC 5222) — listServices, listServicesByLocation,
-    getServiceBoundary.  Content-Type: application/lost+xml.
+    LoST protocol endpoint (RFC 5222) — findService, listServices,
+    listServicesByLocation, getServiceBoundary.
+    Content-Type: application/lost+xml.
     """
     body = await request.body()
     try:
@@ -219,7 +226,9 @@ async def lost_endpoint(request: Request) -> Response:
         )
 
     client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
-    if root.tag == f"{{{_NS_LOST}}}listServices":
+    if root.tag == f"{{{_NS_LOST}}}findService":
+        result = await _fs.handle_find_service_async(body, client_addr=client_addr)
+    elif root.tag == f"{{{_NS_LOST}}}listServices":
         result = list_services.handle(body, client_addr=client_addr)
     elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
         result = await list_services_by_location.handle(body, client_addr=client_addr)

@@ -15,14 +15,14 @@ requests under FCC Report and Order 24-78, and a longer-term problem for any 911
 might switch LVF providers and find that validation results change.
 
 This repository is an attempt to close that gap. The algorithm is specified in detail in
-`LVF_Algorithm_Specification_v65.docx`, and this codebase is a normative implementation of that
+`LVF_Algorithm_Specification_v67.docx`, and this codebase is a normative implementation of that
 specification. Where the code and the spec conflict, the spec governs.
 
 ---
 
 ## 2. The Algorithm Specification
 
-`LVF_Algorithm_Specification_v65.docx` (in this repository) is the authoritative description of
+`LVF_Algorithm_Specification_v67.docx` (in this repository) is the authoritative description of
 the algorithm. It defines:
 
 - The three-gate structure (Pre-Gate-0 → Gate 0 → Gate 1 → Gate 2)
@@ -93,12 +93,15 @@ Polygon layer. One polygon per PSAP service area.
 
 ## 4. Protocol — Request and Response
 
-### POST /validate — LVF validation
+### POST /lost — LoST protocol endpoint
 
-The `/validate` endpoint accepts `POST` with `Content-Type: application/xml`.
+The `/lost` endpoint accepts `POST` with `Content-Type: application/lost+xml` and handles all
+RFC 5222 request types: `findService`, `listServices`, `listServicesByLocation`, and
+`getServiceBoundary`.
 
-The body must be a valid RFC 5222 `<findService>` element with `validateLocation="true"` and
-`profile="civic"`. The service URN must be `urn:service:sos` (or a configured alias).
+**`findService` (LVF validation)** — The body must be a valid RFC 5222 `<findService>` element
+with `validateLocation="true"` and `profile="civic"`. The service URN must be `urn:service:sos`
+(or a configured alias).
 
 The minimum civic address for Gate 1 to pass is: `country`, `A1`, `A2`, `RD`, `HNO`. Any
 additional submitted elements are evaluated in hierarchical order (§3 of the spec).
@@ -143,12 +146,7 @@ These are the points where vendor implementations most commonly diverge:
   `<unchecked>` (the LVF cannot verify what it doesn't have). Other fields treat null GIS as
   an empty string, which only matches an empty submitted value.
 
-### POST /lost — LoST protocol queries
-
-The `/lost` endpoint accepts `POST` with `Content-Type: application/lost+xml` and handles
-`listServices` and `listServicesByLocation` per RFC 5222 §10–11.
-
-**listServices** — returns the space-separated set of provisioned service URNs. An optional
+**`listServices`** — returns the space-separated set of provisioned service URNs. An optional
 `<service>` child filters the response to immediate dot-separated children of that URN.
 
 ```xml
@@ -225,7 +223,7 @@ Test IDs follow the pattern: `{GATE}-{LAYER}-{CATEGORY}-{SEQ}`
 | `TEMP` | Temporal filtering (Effective/Expire date handling) |
 | `RESP` | Response assembly (mapping element, revalidateAfter, defaultMapping) |
 | `EXT` | Extensions (completeLocation, always-unchecked elements, etc.) |
-| `LOST` | LoST protocol requests on `/lost` — `listServices`, `listServicesByLocation` |
+| `LOST` | LoST protocol requests on `/lost` — `listServices`, `listServicesByLocation` (note: `findService` validation tests use `G0`–`G2`, `PROTO`, etc.) |
 
 ### Layer segment (G2 only)
 
@@ -271,7 +269,7 @@ section of the README for request/response examples.
 This is an open reference implementation intended for vendor evaluation and interoperability
 testing. It is **not production-hardened**:
 
-- No authentication or access control on any endpoint
+- No authentication or access control on the `/lost` endpoint
 - No rate limiting
 - Single-process; not designed for horizontal scaling
 - The GeoPackage pickle cache is not secured against tampering

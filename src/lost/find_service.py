@@ -1131,11 +1131,11 @@ def _make_errors_xml(error_type: str, message: str = "") -> bytes:
 
 
 def _do_recurse_sync(request_body: bytes) -> bytes:
-    return _do_recurse_to_uri_sync(request_body, _parent_uri.rstrip("/") + "/validate")
+    return _do_recurse_to_uri_sync(request_body, _parent_uri.rstrip("/") + "/lost")
 
 
 async def _do_recurse_async(request_body: bytes) -> bytes:
-    return await _do_recurse_to_uri_async(request_body, _parent_uri.rstrip("/") + "/validate")
+    return await _do_recurse_to_uri_async(request_body, _parent_uri.rstrip("/") + "/lost")
 
 
 def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
@@ -1718,9 +1718,9 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
         child_uri = child_uri_hint
     else:
         if source and "://" not in source:
-            child_uri = f"http://{source}/validate"
+            child_uri = f"http://{source}/lost"
         elif source:
-            child_uri = source.rstrip("/") + "/validate"
+            child_uri = source.rstrip("/") + "/lost"
         else:
             child_uri = ""
 
@@ -1953,8 +1953,8 @@ def _get_parent_sync_uri() -> str:
     if not _parent_uri:
         return ""
     base = _parent_uri.rstrip("/")
-    if base.endswith("/validate"):
-        base = base[: -len("/validate")]
+    if base.endswith("/validate") or base.endswith("/lost"):
+        base = base.rsplit("/", 1)[0]
     return base + "/sync"
 
 
@@ -2097,7 +2097,7 @@ async def _pull_from_child(child_sync_url: str) -> None:
             return
 
     base = child_sync_url.rstrip("/")
-    child_validate_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/validate"
+    child_lost_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/lost"
 
     get_body = etree.tostring(
         etree.Element(f"{{{_NS_SYNC}}}getMappingsRequest"),
@@ -2137,7 +2137,7 @@ async def _pull_from_child(child_sync_url: str) -> None:
 
         count = 0
         for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping"):
-            parsed = _parse_sync_mapping(mapping_el, child_uri_hint=child_validate_url)
+            parsed = _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
             _upsert_child_coverage(parsed)
             count += 1
 
@@ -2201,7 +2201,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     """
     Process a raw LoST findService XML request and return raw XML response bytes.
 
-    Mirrors the /validate endpoint without requiring an HTTP request object.
+    Mirrors the /lost endpoint without requiring an HTTP request object.
     Returns <badRequest> bytes for malformed or structurally incomplete XML.
     Call initialize() once before using this.
     """
@@ -2425,7 +2425,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Async entry point (for HTTP /validate endpoint)
+# Async entry point (for HTTP /lost endpoint)
 # ---------------------------------------------------------------------------
 
 async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:

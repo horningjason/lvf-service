@@ -310,11 +310,13 @@ def _apply_service_filter(urns: list[str], parent: Optional[str]) -> list[str]:
     )
 
 
-def _child_lost_uri(child_validate_uri: str) -> str:
-    """Convert a child /validate URI to its /lost URI."""
-    base = child_validate_uri.rstrip("/")
-    if base.endswith("/validate"):
-        base = base[: -len("/validate")]
+def _child_lost_uri(child_uri: str) -> str:
+    """Return the child's /lost endpoint, normalising legacy /validate URIs."""
+    base = child_uri.rstrip("/")
+    for suffix in ("/lost", "/validate"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
     return base + "/lost"
 
 
