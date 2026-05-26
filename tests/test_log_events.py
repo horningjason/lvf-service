@@ -117,6 +117,8 @@ def test_camel_case_keys_in_json(monkeypatch, caplog):
 def test_agency_id_warning_when_unset(monkeypatch, caplog):
     """A WARNING is logged at module load time when LVF_AGENCY_ID is not set."""
     monkeypatch.delenv("LVF_AGENCY_ID", raising=False)
+    # Suppress load_dotenv during reload so .env doesn't repopulate LVF_AGENCY_ID.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
     import src.logging_events.logger as logger_mod
     with caplog.at_level(logging.WARNING, logger="src.logging_events.logger"):
         reloaded = importlib.reload(logger_mod)
