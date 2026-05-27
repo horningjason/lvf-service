@@ -4,7 +4,7 @@
     <displayName xml:lang="en">STATE EMERGENCY COMMUNICATIONS CENTER</displayName>
     <service>urn:service:sos</service>
     <uri>sip:sos@test.des.nd.gov</uri>
-    <serviceNumber>701-873-1119</serviceNumber>
+    <serviceNumber>911</serviceNumber>
   </mapping>
   <locationValidation>
     <valid>ca:country ca:A1 ca:A2</valid>

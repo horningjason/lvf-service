@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-Protocol — <asOf> with a future datetime is rejected with <badRequest>.
+Protocol — <asOf> with a datetime beyond all provisioned service boundary
+expiration dates causes a <serviceNotImplemented> response.
 
-This variant confirms that asOf rejection is unconditional — the server rejects
-the request before any gate logic regardless of whether the datetime is past,
-present, or future. A future asOf would theoretically request data as of a point
-when future-effective records are active; silently returning current data would
-be misleading. Both past and future asOf values must be rejected identically.
+This request submits a future <asOf> of 2199-05-15T00:00:00Z. The provisioned
+service boundary for this address expires 2198-12-31. When the LVF applies the
+<asOf> timestamp as the temporal reference for boundary selection, no valid
+(non-expired) boundary exists as of that date, producing <serviceNotImplemented>.
 
-This request includes <planned:asOf>2027-05-15T00:00:00Z</planned:asOf>
-(one year from 2026-05-15, the date this test was written).
-The expected outcome is a <badRequest> error response.
+This confirms that temporal filtering applies to service boundaries during <asOf>
+processing — the LVF does not silently fall back to the current boundary when
+the requested future time falls outside its validity window.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1"
              xmlns:planned="urn:ietf:params:xml:ns:lostPlannedChange1"
@@ -27,5 +27,5 @@ The expected outcome is a <badRequest> error response.
     </civicAddress>
   </location>
   <service>urn:service:sos</service>
-  <planned:asOf>2027-05-15T00:00:00Z</planned:asOf>
+  <planned:asOf>2199-05-15T00:00:00Z</planned:asOf>
 </findService>

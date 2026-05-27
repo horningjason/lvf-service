@@ -1,0 +1,55 @@
+---
+# LoST protocol operation tests: listServices and listServicesByLocation.
+# These requests do not use validateLocation and are not subject to any gate logic.
+# They query the service registry directly and return all provisioned service URNs.
+# The service list in all goldens reflects the alias URNs configured in .env at the
+# time the golden was seeded (LVF_SOS_ALIAS_URNS). Reseed if alias URNs change.
+
+- id: LOST-LISTSVC-001
+  description: >
+    listServices request with no <service> filter. Returns all provisioned service
+    URNs on this LVF instance, including urn:service:sos and any configured alias
+    URNs from LVF_SOS_ALIAS_URNS.
+  preconditions:
+    - urn:service:sos provisioned
+    - LVF_SOS_ALIAS_URNS includes urn:emergency:service:sos.psap and urn:service:test.sos
+  input_file: requests/LOST-LISTSVC-001.xml
+  expected:
+    response_type: listServicesResponse
+  spec_ref: "RFC 5222 §10"
+  status: has_test
+
+- id: LOST-LSBL-CIV-001
+  description: >
+    listServicesByLocation with a civic location for Burleigh County, ND (A3–A5
+    absent, acting as wildcards). Returns all provisioned service URNs whose civic
+    coverage region matches the submitted admin elements.
+  preconditions:
+    - Civic coverage region provisioned for US/ND/Burleigh County
+    - LVF_SOS_ALIAS_URNS includes urn:emergency:service:sos.psap and urn:service:test.sos
+  input_file: requests/LOST-LSBL-CIV-001.xml
+  expected:
+    response_type: listServicesByLocationResponse
+  notes: >
+    Uses recursive="false". A3–A5 absent from the civic address acts as a wildcard
+    per the civic coverage matching rules.
+  spec_ref: "RFC 5222 §11"
+  status: has_test
+
+- id: LOST-LSBL-GEO-001
+  description: >
+    listServicesByLocation with a geodetic-2d point at the centroid of the Central
+    Dakota Communications Center boundary (46.828121, -100.883898). Returns all
+    provisioned service URNs whose service boundary polygon contains the submitted
+    point.
+  preconditions:
+    - PsapPolygon boundary provisioned covering (46.828121, -100.883898)
+    - LVF_SOS_ALIAS_URNS includes urn:emergency:service:sos.psap and urn:service:test.sos
+  input_file: requests/LOST-LSBL-GEO-001.xml
+  expected:
+    response_type: listServicesByLocationResponse
+  notes: >
+    Uses recursive="false". The coordinate pair is in (lat lon) order per GML
+    srsName="urn:ogc:def:crs:EPSG::4326".
+  spec_ref: "RFC 5222 §11"
+  status: has_test

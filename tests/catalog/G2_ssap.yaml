@@ -187,6 +187,28 @@
   spec_ref: "§6.1, §6 (Gate 2), §8.5"
   status: has_test
 
+- id: G2-SSAP-WHITESPACE-A2-001
+  description: >
+    A2 submitted with a trailing space ("Burleigh County "). All other elements are
+    a valid SSAP address (Capitol Way, Bismarck, HNO 1661). Verifies that submitted
+    element values are stripped of leading/trailing whitespace at parse time so that
+    extraneous whitespace does not cause a mismatch, redirect, or invalid result.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, Burleigh County, HNO 1661
+    - Coverage lookup for Burleigh County is provisioned
+  input_file: requests/G2-SSAP-WHITESPACE-A2-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO]
+  notes: >
+    Without whitespace normalization, "Burleigh County " would fail the coverage
+    lookup (case-insensitive but not whitespace-tolerant) and return a redirect or
+    would fail at ca:A2 in the progressive filter. The fix strips all submitted
+    element text values at XML parse time (before Gate 0, Gate 1, Gate 2, and
+    coverage lookup). Internal whitespace is not collapsed per §6.7.
+  spec_ref: "§6.7"
+  status: has_test
+
 - id: G2-SSAP-PCN-NULLGIS-001
   description: >
     Submitted PCN cannot be verified because the matched GIS record has a null

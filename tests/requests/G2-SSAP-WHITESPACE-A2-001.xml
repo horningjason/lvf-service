@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+A2 is submitted with a trailing space ("Burleigh County ") and STS is submitted with a
+leading space " Way". All other elements are a valid SSAP address (Capitol Way, Bismarck,
+HNO 1661). Verifies that submitted element values are stripped of leading/trailing 
+whitespace at parse time, so that "Burleigh County " is treated identically to 
+"Burleigh County" and the address resolves to a valid SSAP match rather than failing
+at ca:A2 or triggering a redirect.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County </A2>
+      <A3>Bismarck</A3>
+      <RD>Capitol</RD>
+      <STS> Way</STS>
+      <HNO>1661</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

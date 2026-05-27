@@ -94,7 +94,7 @@
     fails at RD and is discarded; RCL validates through RD and STP then fails at
     HNO because 3401 is below all segment ranges. This exercises the full SSAP →
     RCL fallthrough path for a road that exists only in RCL.
-  spec_ref: "§6.7"
+  spec_ref: "§6.1, §6 (Gate 2)"
   status: has_test
 
 - id: G2-FALL-RCL-ONLY-RD-002
@@ -111,5 +111,5 @@
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, cae:STP]
     invalid: [ca:HNO]
     unchecked: [ca:PC]
-  spec_ref: "§6.7"
+  spec_ref: "§6.1, §6 (Gate 2)"
   status: has_test

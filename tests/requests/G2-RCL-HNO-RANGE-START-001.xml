@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Gate 2 RCL — HNO exactly at the lower boundary of an RCL address range.
+
+State Street in Bismarck has an odd-side RCL segment (OBJECTID 146419) with
+address range FromAddr_R=3401 to ToAddr_R=3435. HNO=3401 is the exact lower
+boundary value. No SSAP record exists for State Street HNO 3401.
+
+This test verifies that the range check is boundary-inclusive (>=, not >).
+HNO=3401 must be accepted; HNO=3399 (2 below the lower boundary) must be
+rejected as invalid. The expected outcome is a locationValidation response
+with ca:HNO in <unchecked>.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>State</RD>
+      <STS>Street</STS>
+      <HNO>3401</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

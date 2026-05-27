@@ -2,22 +2,6 @@
 # Protocol-layer tests: schema validation (Pre-Gate-0) and LoST request structure checks.
 # These tests fire before any gate logic runs.
 
-- id: PROTO-REQ-SMOKE-001
-  description: >
-    Basic smoke test: a well-formed findService request with RD, STS, PC, and HNO
-    against State Street in Bismarck. Expected to match an RCL segment, returning a
-    locationValidation response with HNO unchecked (RCL rule per INF-027 §2.5.8).
-  preconditions:
-    - RCL segment exists for State Street, Bismarck, Burleigh County with PC 58503
-    - HNO 3401 falls within the RCL address range
-  input_file: requests/PROTO-REQ-SMOKE-001.xml
-  expected:
-    response_type: locationValidation
-    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PC]
-    unchecked: [ca:HNO]
-  spec_ref: "Pre-Gate-0, §2.5.8"
-  status: has_test
-
 - id: PROTO-REQ-BADNS-001
   description: >
     STP element submitted in the ca: namespace rather than the correct cae: namespace.

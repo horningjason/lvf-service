@@ -2,9 +2,6 @@
 <!--
 Gate 2 — admin-level failure at ca:A2 outside civic coverage → <redirect>.
 
-REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent
-LVF instance provisioned with Cass County GIS data.
-
 Cass County (seat: Fargo) is a real North Dakota county but is not provisioned
 in this GIS deployment. The progressive filter fails at ca:A2 (no GIS records
 match US / ND / Cass County). The civic coverage lookup for the submitted admin

@@ -126,10 +126,12 @@ class Gate2Result:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parity_ok(hno: int, parity: Optional[Literal["E", "O", "B"]]) -> bool:
+def _parity_ok(hno: int, parity: Optional[Literal["E", "O", "B", "Z"]]) -> bool:
     """Return True if hno satisfies the given parity constraint."""
     if parity is None or parity == "B":
         return True
+    if parity == "Z":
+        return False
     return (hno % 2 == 0) == (parity == "E")
 
 
@@ -316,13 +318,15 @@ def _filter_rcl(
                 pre_hno = list(candidates)
                 new: list[_RCLCandidate] = []
                 for record, _ in candidates:
-                    if (record.fromaddr_l is not None
+                    if (record.parity_l != "Z"
+                            and record.fromaddr_l is not None
                             and record.toaddr_l is not None
                             and record.fromaddr_l <= hno_int <= record.toaddr_l
                             and _parity_ok(hno_int, record.parity_l)
                             and record.valid_l != "N"):
                         new.append((record, "L"))
-                    if (record.fromaddr_r is not None
+                    if (record.parity_r != "Z"
+                            and record.fromaddr_r is not None
                             and record.toaddr_r is not None
                             and record.fromaddr_r <= hno_int <= record.toaddr_r
                             and _parity_ok(hno_int, record.parity_r)

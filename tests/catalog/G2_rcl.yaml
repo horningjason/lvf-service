@@ -19,7 +19,7 @@
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PCN]
     unchecked: [ca:HNO]
-  spec_ref: "§6 (Gate 2), §2.5.8"
+  spec_ref: "§6 (Gate 2), §6.6.2"
   status: has_test
 
 - id: G2-RCL-VALID-PC-001
@@ -35,7 +35,7 @@
     response_type: locationValidation
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:PC]
     unchecked: [ca:HNO]
-  spec_ref: "§6 (Gate 2), §2.5.8"
+  spec_ref: "§6 (Gate 2), §6.6.2"
   status: has_test
 
 - id: G2-RCL-VALID-UNITAMB-001
@@ -123,28 +123,55 @@
   spec_ref: "§6.6.2"
   status: has_test
 
-- id: G2-RCL-HNP-VALID-001
+- id: G2-RCL-HNO-RANGE-START-001
   description: >
-    HNP (house number prefix, e.g. a letter before the house number) submitted and
-    validated against the RCL HNP field. Confirms that HNP is treated as a regular
-    progressive-filter element on RCL, not unchecked.
+    HNO exactly at the lower boundary of an RCL address range. State Street in
+    Bismarck has an odd-side segment (RCL OBJECTID 146419) with FromAddr_R=3401
+    and ToAddr_R=3435. HNO=3401 is submitted — the exact lower boundary value.
+    No SSAP record exists for State Street HNO 3401. Verifies boundary-inclusive
+    range checking: an HNO equal to FromAddr must produce an RCL match (HNO unchecked),
+    not fall through to invalid. HNO=3399 (two below boundary) produces invalid.
   preconditions:
-    - RCL segment exists with a non-null HNP field (e.g. HNP="A")
-    - Submitted HNO is within the RCL range and submitted HNP matches the field
-    - No SSAP record for the same address
-  input_file: requests/G2-RCL-HNP-VALID-001.xml
+    - RCL segment (OBJECTID 146419) exists for State Street, Bismarck, Parity_R=O,
+      FromAddr_R=3401, ToAddr_R=3435
+    - No SSAP record for State Street, Bismarck, HNO 3401
+  input_file: requests/G2-RCL-HNO-RANGE-START-001.xml
   expected:
     response_type: locationValidation
-    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNP]
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS]
     unchecked: [ca:HNO]
   notes: >
-    HNP (house number prefix) is distinct from HNS (house number suffix). HNP is a
-    field in the RCL layer and can be validated; HNS is not carried by RCL and is
-    always unchecked. GIS inspection (2026-05-15) found that all AdNumPre_L and
-    AdNumPre_R values in RoadCenterLine are blank spaces — no non-null HNP data
-    exists in the template dataset. A synthetic fixture record would be required.
-  spec_ref: "§6 (Gate 2)"
-  status: no_test_data
+    Boundary inclusivity is easy to get wrong with > vs >= comparisons. This test
+    specifically targets the edge case where HNO equals the exact FromAddr_R value.
+    Confirmed: HNO=3401 returns unchecked (in range); HNO=3399 returns invalid (out of range).
+    Companion to G2-RCL-HNO-RANGE-END-001 which tests the <= check at ToAddr_R.
+  spec_ref: "§6.6.2"
+  status: has_test
+
+- id: G2-RCL-INVALID-STS-001
+  description: >
+    Civic address for 3401 State Street, Bismarck with an incorrect street suffix
+    (STS=Avenue). State Street has no SSAP records, so SSAP fails before evaluating
+    STS. The RCL layer passes country, A1, A2, A3, and RD (all matching GIS), then
+    fails at ca:STS because the RCL segment has STS=Street. Stop-on-first-invalid
+    fires; ca:HNO and ca:HNS are flushed to <unchecked>.
+  preconditions:
+    - No SSAP records for State Street, Bismarck
+    - RCL segments exist for State Street, Bismarck with STS=Street
+  input_file: requests/G2-RCL-INVALID-STS-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD]
+    invalid: [ca:STS]
+    unchecked: [ca:HNO, ca:HNS]
+  notes: >
+    HNS is flushed to <unchecked> because the stop-on-first-invalid rule places all
+    submitted elements below the invalid element into <unchecked>. HNS comes after
+    HNO in the element hierarchy and was submitted, so both appear in <unchecked>.
+    Companion to G2-SSAP-INVALID-PRD-001 which tests a similar stop-on-first-invalid
+    scenario on the SSAP layer.
+  spec_ref: "§6 (Gate 2), §6.7"
+  status: has_test
 
 - id: G2-RCL-PCN-NULLGIS-001
   description: >
