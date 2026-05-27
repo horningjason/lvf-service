@@ -274,8 +274,8 @@ class RCLRecord(BaseModel):
     toaddr_l:   Optional[int] = None
     fromaddr_r: Optional[int] = None
     toaddr_r:   Optional[int] = None
-    parity_l:   Optional[Literal["E", "O", "B"]] = None
-    parity_r:   Optional[Literal["E", "O", "B"]] = None
+    parity_l:   Optional[Literal["E", "O", "B", "Z"]] = None
+    parity_r:   Optional[Literal["E", "O", "B", "Z"]] = None
     valid_l:    Optional[Literal["Y", "N"]] = None
     valid_r:    Optional[Literal["Y", "N"]] = None
     adnumpre_l: Optional[str] = None    # cae:HNP side-specific field

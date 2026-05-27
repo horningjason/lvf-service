@@ -4,7 +4,7 @@
     <displayName xml:lang="en">RED RIVER REGIONAL DISPATCH CENTER</displayName>
     <service>urn:service:sos</service>
     <uri>sip:sos@test.cass.nd.us</uri>
-    <serviceNumber>701-873-1115</serviceNumber>
+    <serviceNumber>911</serviceNumber>
   </mapping>
   <locationValidation>
     <valid>ca:country ca:A1 ca:A2 ca:A3 ca:RD ca:STS ca:POD ca:HNO ca:PCN ca:PC</valid>

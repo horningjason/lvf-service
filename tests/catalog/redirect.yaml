@@ -1,0 +1,48 @@
+---
+# Redirect tests: out-of-coverage admin failures with LVF_PARENT_URI configured.
+# When a Gate 2 admin-level failure occurs and the failed element falls outside the
+# LVF's civic coverage region, the response is <redirect> to the parent LVF rather
+# than <locationValidation> with <invalid>. This applies when recursive is absent
+# or explicitly "false" — both cases return <redirect> without any outbound call.
+# See recursion.yaml for recursive="true" behavior.
+
+- id: G2-REDIRECT-OOC-COUNTRY-001
+  description: >
+    Admin failure at ca:country (country=CA, Canada) with no matching civic coverage
+    region. LVF_PARENT_URI is configured. The LVF returns <redirect> to the parent
+    rather than <locationValidation> with <invalid> at ca:country. No outbound HTTP
+    call is made — the redirect is assembled locally.
+  preconditions:
+    - LVF_PARENT_URI configured (http://192.168.1.69:8001)
+    - No GIS records for country=CA; no civic coverage region entry for CA
+  input_file: requests/G2-REDIRECT-OOC-COUNTRY-001.xml
+  expected:
+    response_type: redirect
+  notes: >
+    No parent LVF is required to be running for this test to pass — <redirect> is
+    returned without making any outbound connection.
+    Companion to G2-REDIRECT-OOC-A2-001 (same redirect behavior at the A2 level).
+    Companion to G2-RECURSE-FG-OOC-COUNTRY-001 which tests the same country=CA
+    failure with recursive="true" and a live upstream tree.
+  spec_ref: "RFC 5222 §5, §6.1"
+  status: has_test
+
+- id: G2-REDIRECT-OOC-A2-001
+  description: >
+    Admin failure at ca:A2 (A2=Cass County) with no matching civic coverage region.
+    LVF_PARENT_URI is configured. The LVF returns <redirect> to the parent rather
+    than <locationValidation> with <invalid> at ca:A2. No outbound HTTP call is made.
+  preconditions:
+    - LVF_PARENT_URI configured (http://192.168.1.69:8001)
+    - No GIS records for Cass County; no civic coverage region entry for Cass County
+  input_file: requests/G2-REDIRECT-OOC-A2-001.xml
+  expected:
+    response_type: redirect
+  notes: >
+    No parent LVF is required to be running for this test to pass.
+    Companion to G2-REDIRECT-OOC-COUNTRY-001 (same redirect behavior at country level).
+    Companion to G2-RECURSE-FALSE-OOC-001 (same address with recursive="false" — also
+    returns <redirect>) and G2-RECURSE-VALID-001 (same address with recursive="true"
+    which triggers actual forwarding to the parent).
+  spec_ref: "RFC 5222 §5, §6.1"
+  status: has_test

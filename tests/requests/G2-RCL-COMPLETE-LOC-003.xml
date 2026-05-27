@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+3401 State Street, Burleigh County, ND 58503 — A3 not submitted.
+SSAP has no records for State Street; the algorithm falls through to RCL, which
+matches the segment covering HNO 3401. PC=58503 is validated against the
+side-resolved PostCode field.
+
+Per INF-027 §2.5.8, HNO is always <unchecked> on an RCL match.
+
+A3 was not submitted so it does not appear in <valid> or <unchecked>. However
+the matched RCL segment carries A3=Bismarck and PCN=Bismarck on the determined
+side. <rli:completeLocation> adds both as fields present in GIS but absent from
+the submission. This verifies that side-resolved admin fields are included in
+completeLocation independent of whether they participated in the filter.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xml:lang="en-US">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <RD>State</RD>
+      <STS>Street</STS>
+      <HNO>3401</HNO>
+      <PC>58503</PC>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

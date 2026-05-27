@@ -344,8 +344,8 @@ def _row_to_rcl(row: pd.Series, fid: Optional[int] = None) -> RCLRecord:
         toaddr_l=_get_int(row, "ToAddr_L"),
         fromaddr_r=_get_int(row, "FromAddr_R"),
         toaddr_r=_get_int(row, "ToAddr_R"),
-        parity_l=parity_l if parity_l in ("E", "O", "B") else None,
-        parity_r=parity_r if parity_r in ("E", "O", "B") else None,
+        parity_l=parity_l if parity_l in ("E", "O", "B", "Z") else None,
+        parity_r=parity_r if parity_r in ("E", "O", "B", "Z") else None,
         valid_l=valid_l if valid_l in ("Y", "N") else None,
         valid_r=valid_r if valid_r in ("Y", "N") else None,
         adnumpre_l=_get(row, "AdNumPre_L"),
@@ -734,7 +734,7 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
     for child in civic_el:
         ca_field = _CLARK_TO_FIELD.get(child.tag)
         if ca_field is not None:
-            fields[ca_field] = child.text if child.text is not None else ""
+            fields[ca_field] = (child.text or "").strip()
 
     as_of: Optional[datetime.datetime] = None
     as_of_el = root.find(f"{{{_NS_PLANNED}}}asOf")
@@ -1003,19 +1003,16 @@ def _complete_location_rcl(parent: etree._Element, data) -> None:
     record = data.record
     side = data.side or "L"
     address = data.address
-    valid_set = set(data.valid_pidf_lo or [])
     suffix = "_l" if side == "L" else "_r"
     elements: list[tuple[str, str, str]] = []
 
     for elem in ELEMENT_HIERARCHY:
-        if elem.always_unchecked or elem.rcl_unchecked:
+        if elem.always_unchecked:
             continue
         clark = _pidf_lo_to_clark(elem.pidf_lo)
         field = elem.civic_address_field
 
         if field in _ADMIN_FIELDS:
-            if elem.pidf_lo not in valid_set:
-                continue
             val = getattr(record, f"{field}{suffix}", None)
         elif field == "hno":
             val = address.hno if address is not None else None
@@ -1024,7 +1021,7 @@ def _complete_location_rcl(parent: etree._Element, data) -> None:
         elif field in _RCL_SIDE_SPECIFIC_BASE:
             val = getattr(record, f"{_RCL_SIDE_SPECIFIC_BASE[field]}{suffix}", None)
         else:
-            continue
+            continue  # rcl_unchecked fields have no RCL record mapping
 
         if val is not None:
             elements.append((clark, field, str(val)))

@@ -1,0 +1,53 @@
+---
+# Case-sensitivity tests for Gate 2 GIS comparison and completeLocation suppression.
+# Gate 2 element comparisons are case-insensitive (INF-027 §2.5.3): a submitted value
+# matches its GIS counterpart regardless of casing differences.
+#
+# completeLocation suppression, however, is case-sensitive: completeLocation is omitted
+# only when every submitted value matches the canonical GIS value byte-for-byte. If any
+# submitted value differs in case from the GIS value, completeLocation is returned even
+# though all elements validated successfully — giving the client correctly-cased values.
+
+- id: G2-SSAP-CASING-EXACT-001
+  description: >
+    Capitol Way, Bismarck, HNO=1661 with all nine elements submitted using exact GIS
+    casing (e.g. A2="Burleigh County" matching the canonical GIS value). All elements
+    validate successfully. Every submitted value matches the canonical GIS value
+    case-sensitively, so completeLocation is suppressed.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO=1661
+    - Canonical GIS values: A2="Burleigh County", A3="Bismarck", PCN="Bismarck", PC="58501"
+  input_file: requests/G2-SSAP-CASING-EXACT-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO, ca:PCN, ca:PC]
+  notes: >
+    Companion to G2-SSAP-CASING-MISMATCH-001 which submits A2="Burleigh county"
+    (lowercase 'c') and confirms completeLocation is returned with canonical casing.
+    The suppression check is a post-match case-sensitive comparison distinct from
+    the case-insensitive Gate 2 filter comparison.
+  spec_ref: "§6 (Gate 2), draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: G2-SSAP-CASING-MISMATCH-001
+  description: >
+    Capitol Way, Bismarck, HNO=1661 with A2 submitted as "Burleigh county" (lowercase
+    'c'). Gate 2 comparison is case-insensitive so all nine elements validate
+    successfully. However, the submitted A2 does not byte-for-byte match the canonical
+    GIS value "Burleigh County", so completeLocation is returned with correctly-cased
+    values.
+  preconditions:
+    - SSAP record exists for Capitol Way, Bismarck, HNO=1661
+    - Canonical GIS value: A2="Burleigh County" (capital C)
+  input_file: requests/G2-SSAP-CASING-MISMATCH-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:HNO, ca:PCN, ca:PC]
+  notes: >
+    completeLocation is returned because "Burleigh county" ≠ "Burleigh County"
+    case-sensitively. The client uses completeLocation to obtain the canonical casing
+    for display or storage. All other submitted values happen to match GIS casing exactly.
+    Companion to G2-SSAP-CASING-EXACT-001 which submits exact GIS casing and confirms
+    completeLocation is suppressed.
+  spec_ref: "§6 (Gate 2), draft-ietf-ecrit-similar-location-19"
+  status: has_test

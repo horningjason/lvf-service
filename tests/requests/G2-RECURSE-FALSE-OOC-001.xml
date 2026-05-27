@@ -13,8 +13,6 @@ Companion to G2-REDIRECT-OOC-A2-001, which tests the same scenario with the
 recursive attribute absent. This test confirms that recursive="false" is correctly
 parsed and does not alter the redirect path.
 
-REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent LVF
-instance provisioned with Cass County GIS data.
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true" recursive="false">
   <location id="L1" profile="civic">

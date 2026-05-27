@@ -84,7 +84,7 @@
     unchecked: [ca:HNO]
   notes: >
     Previously this test verified that RCL matches suppressed completeLocation.
-    As of v44, completeLocation is returned for RCL matches when the GIS record
+    completeLocation is returned for RCL matches when the GIS record
     contains non-null fields absent from the submission. The golden now includes
     <rli:completeLocation> with PCN and PC.
   spec_ref: "draft-ietf-ecrit-similar-location-19"
@@ -130,6 +130,34 @@
   notes: >
     Verifies the suppression rule: completeLocation is omitted when the submission
     already contains all non-null GIS fields. No rli: namespace or elements in response.
+  spec_ref: "draft-ietf-ecrit-similar-location-19"
+  status: has_test
+
+- id: G2-RCL-COMPLETE-LOC-003
+  description: >
+    State Street, Burleigh County, HNO 3401 with PC=58503 submitted but A3 omitted.
+    No SSAP record exists for State Street; falls through to RCL. RCL matches the
+    segment covering HNO 3401. HNO is unchecked per §2.5.8. The matched RCL segment
+    carries A3=Bismarck and PCN=Bismarck on the determined side — both were absent
+    from the submission. completeLocation adds them, verifying that side-resolved
+    admin fields are included regardless of whether they participated in the filter.
+  preconditions:
+    - No SSAP record for State Street, Burleigh County, HNO 3401
+    - RCL segment exists for State Street, Bismarck, covering HNO 3401
+    - RCL segment has A3=Bismarck, PCN=Bismarck, and PC=58503 on the determined side
+  input_file: requests/G2-RCL-COMPLETE-LOC-003.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:RD, ca:STS, ca:PC]
+    unchecked: [ca:HNO]
+  notes: >
+    The submission omits A3, so A3 does not appear in <valid> or <unchecked>. However,
+    completeLocation includes A3=Bismarck because it is non-null on the matched GIS
+    segment. This confirms the fix to _complete_location_rcl that removed the valid_set
+    gate on admin fields — side-resolved admin fields now appear in completeLocation
+    unconditionally when non-null, independent of filter participation.
+    Companion tests: G2-RCL-COMPLETE-LOC-001 (submission omits POD and PC),
+    G2-RCL-COMPLETE-LOC-002 (all non-null fields submitted, suppression).
   spec_ref: "draft-ietf-ecrit-similar-location-19"
   status: has_test
 
