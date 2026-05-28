@@ -175,6 +175,19 @@ _root_ams:          bool = os.environ.get("LVF_ROOT_AMS", "").lower() == "true"
 _forest_guide_uri:  str  = os.environ.get("LVF_FOREST_GUIDE_URI", "")
 _root_ams_active:   bool = False
 
+if _forest_guide_uri and _root_ams:
+    if "://" in _forest_guide_uri:
+        log.warning(
+            "LVF_FOREST_GUIDE_URI=%r looks like a direct URL — U-NAPTR resolution skipped "
+            "(non-conformant per RFC 5222; acceptable for dev/testing only)",
+            _forest_guide_uri,
+        )
+    else:
+        log.info(
+            "LVF_FOREST_GUIDE_URI=%r is a DNS name — U-NAPTR resolution will be used on first use",
+            _forest_guide_uri,
+        )
+
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
 _parent_uri:        str = os.environ.get("LVF_PARENT_URI",          "")
@@ -2031,6 +2044,15 @@ def _get_parent_sync_uri() -> str:
     return base + "/sync"
 
 
+def _get_fg_sync_uri() -> str:
+    if not _forest_guide_uri:
+        return ""
+    base = _resolve_lost_url(_forest_guide_uri).rstrip("/")
+    if base.endswith("/sync") or base.endswith("/lost"):
+        base = base.rsplit("/", 1)[0]
+    return base + "/sync"
+
+
 async def _push_coverage_to_parent() -> bool:
     with _reloading_lock:
         if _reloading:
@@ -2119,6 +2141,8 @@ async def _push_coverage_to_fg() -> bool:
             log.warning("AMS: skipping FG push — GIS reload in progress")
             return False
 
+    fg_sync_uri = _get_fg_sync_uri()
+
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
 
@@ -2162,7 +2186,7 @@ async def _push_coverage_to_fg() -> bool:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
-                    _forest_guide_uri,
+                    fg_sync_uri,
                     content=push_body,
                     headers={"Content-Type": "application/lostsync+xml"},
                 )
@@ -2879,6 +2903,8 @@ async def lifespan_startup() -> None:
 
     if _parent_uri and "://" not in _parent_uri:
         _resolve_lost_url(_parent_uri)
+    if _forest_guide_uri and _root_ams and "://" not in _forest_guide_uri:
+        _resolve_lost_url(_forest_guide_uri)
 
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     gpkg_exists = gpkg_path and os.path.exists(gpkg_path)
