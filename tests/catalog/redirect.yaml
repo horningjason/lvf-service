@@ -13,7 +13,7 @@
     rather than <locationValidation> with <invalid> at ca:country. No outbound HTTP
     call is made — the redirect is assembled locally.
   preconditions:
-    - LVF_PARENT_URI configured (http://192.168.1.69:8001)
+    - LVF_PARENT_URI configured (lvf-parent.example.com)
     - No GIS records for country=CA; no civic coverage region entry for CA
   input_file: requests/G2-REDIRECT-OOC-COUNTRY-001.xml
   expected:
@@ -33,7 +33,7 @@
     LVF_PARENT_URI is configured. The LVF returns <redirect> to the parent rather
     than <locationValidation> with <invalid> at ca:A2. No outbound HTTP call is made.
   preconditions:
-    - LVF_PARENT_URI configured (http://192.168.1.69:8001)
+    - LVF_PARENT_URI configured (lvf-parent.example.com)
     - No GIS records for Cass County; no civic coverage region entry for Cass County
   input_file: requests/G2-REDIRECT-OOC-A2-001.xml
   expected:

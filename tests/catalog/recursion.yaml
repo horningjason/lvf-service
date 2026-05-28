@@ -5,7 +5,7 @@
 # The child prepends its own <via> to the response path and returns the parent's
 # response verbatim.
 #
-# Tests marked LIVE require a running parent LVF (LVF_PARENT_URI=http://192.168.1.69:8001)
+# Tests marked LIVE require a running parent LVF (LVF_PARENT_URI=lvf-parent.example.com)
 # provisioned with the relevant GIS data. Without the parent, these tests produce a
 # serverTimeout or serverError outcome and the golden comparison will fail.
 # Tests NOT marked LIVE are deterministic and pass without any parent connection.
@@ -32,12 +32,12 @@
 - id: G2-RECURSE-LOOP-OOC-001
   description: >
     Out-of-coverage at ca:A2 (Cass County) with recursive="true" and a loop detected.
-    The incoming request already carries this server's URI (child.lvf.ndaco.org) in its
+    The incoming request already carries this server's URI (lvf-child.example.com) in its
     <path> element. The LVF detects its own URI before making any outbound call and
     returns <errors><loop> per RFC 5222 §13.1.
   preconditions:
-    - LVF_SERVER_URI=child.lvf.ndaco.org
-    - Request includes <path><via source="child.lvf.ndaco.org"/>
+    - LVF_SERVER_URI=lvf-child.example.com
+    - Request includes <path><via source="lvf-child.example.com"/>
     - No GIS records or civic coverage for A2=Cass County
   input_file: requests/G2-RECURSE-LOOP-OOC-001.xml
   expected:
@@ -55,7 +55,7 @@
     the request to the parent which holds Cass County GIS data. The parent validates
     1522 8th Street North, Fargo (SSAP NGUID {D2E0AD84-A4B9-4282-A83A-ECA05AE12E6A})
     and returns a locationValidation with all submitted elements in <valid>. The child
-    prepends its own <via> (child.lvf.ndaco.org) and returns the parent's response.
+    prepends its own <via> (lvf-child.example.com) and returns the parent's response.
   preconditions:
     - LVF_PARENT_URI configured and parent LVF running
     - Parent provisioned with Cass County GIS data including the above SSAP record
@@ -65,7 +65,7 @@
     valid: [ca:country, ca:A1, ca:A2, ca:A3, ca:RD, ca:STS, ca:POD, ca:HNO]
   notes: >
     LIVE TEST — requires a running parent LVF. The golden captures the live parent
-    response including mapping source (parent.lvf.ndaco.org), RED RIVER REGIONAL
+    response including mapping source (lvf-parent.example.com), RED RIVER REGIONAL
     DISPATCH CENTER, and completeLocation with PCN=Fargo, PC=58102.
     Companion to G2-RECURSE-VALID-002 which adds PCN and PC to the submission.
   spec_ref: "RFC 5222 §5, §6 (Gate 2)"
@@ -121,14 +121,14 @@
     returns <notFound>. Full chain traversed: child → parent → Forest Guide.
   preconditions:
     - LVF_PARENT_URI configured and parent LVF running
-    - Parent LVF configured with a Forest Guide (fg.lvf.ndaco.org)
+    - Parent LVF configured with a Forest Guide (lvf-fg.example.com)
     - Forest Guide running with no coverage region matching country=CA
   input_file: requests/G2-RECURSE-FG-OOC-COUNTRY-001.xml
   expected:
     response_type: notFound
   notes: >
     LIVE TEST — requires a running parent LVF and Forest Guide. The <notFound> is
-    returned by the Forest Guide (source: fg.lvf.ndaco.org). Without both services
+    returned by the Forest Guide (source: lvf-fg.example.com). Without both services
     this test produces serverTimeout or serverError.
     Companion to G2-REDIRECT-OOC-COUNTRY-001 which tests the same country=CA failure
     without recursive="true" and returns <redirect> locally.
