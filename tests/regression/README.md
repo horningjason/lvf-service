@@ -13,16 +13,36 @@ as you would a signed test report: change them only with intent and a code revie
 
 ---
 
+## Golden files are environment-local
+
+Golden files are **not committed to the repository**. They are listed in `.gitignore`
+and must be seeded locally before the runner will pass. This is intentional:
+
+- A standalone LVF (no parent) produces different responses for out-of-coverage and
+  recursion tests than one connected to a live parent LVF. Committing goldens from one
+  environment would cause spurious failures in another.
+- Golden files are a local baseline, not a shared artifact. Treat them as build output.
+
+**First-time setup:** run `python -m tests.regression.seed` once after cloning to
+establish your local baseline. Do not commit the generated files.
+
+**After a deliberate behavior change:** run `python -m tests.regression.seed --force`
+(or `--force <name>`) only for the tests that are intentionally affected. Never
+force-reseed the entire suite as a way to silence failures — diagnose them first.
+
+---
+
 ## Directory layout
 
 ```
 tests/
   *.xml                         # Test inputs — one LoST findService request per file
   regression/
-    seed.py                     # One-time seeder (run once per new test, then commit)
+    seed.py                     # One-time seeder (run once per new test, do not commit output)
     runner.py                   # Regression runner (run any time)
     golden/
-      <name>.golden.xml         # Captured response for each test input
+      .gitkeep                  # Keeps the directory in the repo; golden files are gitignored
+      <name>.golden.xml         # Generated locally — not committed
 ```
 
 ---
@@ -61,11 +81,11 @@ This prevents accidental resets.
 
 ## Adding a new test
 
-1. Drop a new XML request file in `tests/` (e.g. `tests/validate_17.xml`).
-2. Seed just that file: `python -m tests.regression.seed --force validate_17`
-3. Inspect `tests/regression/golden/validate_17.golden.xml` and confirm the response
+1. Drop a new XML request file in `tests/requests/` (e.g. `tests/requests/G2-SSAP-NEW-001.xml`).
+2. Seed just that file: `python -m tests.regression.seed --force G2-SSAP-NEW-001`
+3. Inspect `tests/regression/golden/G2-SSAP-NEW-001.golden.xml` and confirm the response
    is what you expect.
-4. Commit both files together: the input XML and its golden file.
+4. Commit only the input XML. The golden file is environment-local and is gitignored.
 
 ---
 
@@ -88,5 +108,7 @@ ordering differences do not cause failures. The runner checks:
 If a deliberate algorithm or data change produces different correct responses:
 
 1. Review and approve the new behavior in code review.
-2. Run `python -m tests.regression.seed --force` to regenerate all golden files.
-3. Commit the updated golden files with a commit message that explains the behavioral change.
+2. Run `python -m tests.regression.seed --force` (or `--force <name>`) to regenerate
+   the affected golden files locally.
+3. Golden files are gitignored — nothing to commit. The behavioral change is captured
+   by the code diff alone.

@@ -1,4 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<errors xmlns="urn:ietf:params:xml:ns:lost1" source="child.lvf.ndaco.org">
-  <serviceNotImplemented message="Requested service URN has no provisioned boundary" xml:lang="en"/>
-</errors>

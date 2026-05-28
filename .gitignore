@@ -32,6 +32,8 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+tests/regression/golden/*
+!tests/regression/golden/.gitkeep
 
 # Archives
 *.zip
