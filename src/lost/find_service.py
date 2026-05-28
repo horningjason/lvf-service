@@ -26,7 +26,14 @@ _log_level = getattr(logging, _log_level_name, None)
 if not isinstance(_log_level, int):
     logging.warning("LVF_LOG_LEVEL=%r is not a valid level — defaulting to INFO", _log_level_name)
     _log_level = logging.INFO
-logging.getLogger("src").setLevel(_log_level)
+_src_logger = logging.getLogger("src")
+_src_logger.setLevel(_log_level)
+if not _src_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
+    _h.setLevel(_log_level)
+    _src_logger.addHandler(_h)
+    _src_logger.propagate = False  # uvicorn's handler lives on "uvicorn", not root — prevent double-logging
 
 import datetime
 import dns.resolver
@@ -2782,7 +2789,11 @@ async def lifespan_startup() -> None:
                 "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
                 "Recommended value: {00000000-0000-0000-0000-000000000000}"
             )
-        _load_gis_data(gpkg_path)
+        try:
+            _load_gis_data(gpkg_path)
+        except Exception as exc:
+            log.error("GIS data load failed from %s: %s", gpkg_path, exc, exc_info=True)
+            raise
         _routing_only = False
         _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
         _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")
