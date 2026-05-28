@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+ATTENTION: This test will return a notFound error when LVF_PARENT_URI is unset.
+
 Gate 2 — admin-level failure at ca:country outside civic coverage → <redirect>.
 
 Country code CA has no provisioned boundary and no civic coverage region entry.

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+ATTENTION: This test will return a notFound error when LVF_PARENT_URI is unset.
+
 Gate 2 — admin-level failure at ca:A2 outside civic coverage → <redirect>.
 
 Cass County (seat: Fargo) is a real North Dakota county but is not provisioned
