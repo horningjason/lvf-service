@@ -2744,6 +2744,11 @@ async def lifespan_startup() -> None:
                 "Routing-only mode: neither LVF_PARENT_URI nor LVF_SYNC_CHILDREN is configured "
                 "— this node cannot answer or route requests"
             )
+        elif not _root_ams and not _forest_guide_mode:
+            log.info(
+                "Routing-only mode: this node has no local GIS data and will forward all "
+                "requests upstream; verify LVF_GPKG_PATH if local validation was intended"
+            )
 
     _load_child_coverage()
 
