@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+ATTENTION: This test will return a notFound error when LVF_PARENT_URI is unset.
+
 Gate 2 — out-of-coverage admin failure with recursive="true" and loop detected → <errors><loop>.
 
 Cass County is outside this LVF's civic coverage region. Gate 2 fails at ca:A2.

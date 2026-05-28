@@ -1,11 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+ATTENTION: This test will return a notFound error when LVF_PARENT_URI is unset.
+
 Gate 2 — recursive="true" on provisioned Cass County SSAP record → findServiceResponse
 forwarded from parent LVF with this server's <via> prepended.
-
-REQUIRES A RUNNING PARENT LVF: LVF_PARENT_URI must point to a reachable parent
-LVF instance provisioned with Cass County GIS data. This test will fail with a
-serverTimeout or serverError outcome if the parent is unreachable.
 
 Address: 1522 8th Street North, Fargo, ND 58102
 Parent GIS record: NGUID {D2E0AD84-A4B9-4282-A83A-ECA05AE12E6A}

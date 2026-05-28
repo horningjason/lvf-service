@@ -26,9 +26,17 @@ _log_level = getattr(logging, _log_level_name, None)
 if not isinstance(_log_level, int):
     logging.warning("LVF_LOG_LEVEL=%r is not a valid level — defaulting to INFO", _log_level_name)
     _log_level = logging.INFO
-logging.getLogger("src").setLevel(_log_level)
+_src_logger = logging.getLogger("src")
+_src_logger.setLevel(_log_level)
+if not _src_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
+    _h.setLevel(_log_level)
+    _src_logger.addHandler(_h)
+    _src_logger.propagate = False  # uvicorn's handler lives on "uvicorn", not root — prevent double-logging
 
 import datetime
+import dns.resolver
 import geopandas as gpd
 import pandas as pd
 from shapely.ops import transform, unary_union
@@ -167,9 +175,36 @@ _root_ams:          bool = os.environ.get("LVF_ROOT_AMS", "").lower() == "true"
 _forest_guide_uri:  str  = os.environ.get("LVF_FOREST_GUIDE_URI", "")
 _root_ams_active:   bool = False
 
+if _forest_guide_uri and _root_ams:
+    if "://" in _forest_guide_uri:
+        log.warning(
+            "LVF_FOREST_GUIDE_URI=%r looks like a direct URL — U-NAPTR resolution skipped "
+            "(non-conformant per RFC 5222; acceptable for dev/testing only)",
+            _forest_guide_uri,
+        )
+    else:
+        log.info(
+            "LVF_FOREST_GUIDE_URI=%r is a DNS name — U-NAPTR resolution will be used on first use",
+            _forest_guide_uri,
+        )
+
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
 _parent_uri:        str = os.environ.get("LVF_PARENT_URI",          "")
+_resolved_urls: dict[str, str] = {}  # cache: input URI → resolved base URL
+
+if _parent_uri:
+    if "://" in _parent_uri:
+        log.warning(
+            "LVF_PARENT_URI=%r looks like a direct URL — U-NAPTR resolution skipped "
+            "(non-conformant per RFC 5222; acceptable for dev/testing only)",
+            _parent_uri,
+        )
+    else:
+        log.info(
+            "LVF_PARENT_URI=%r is a DNS name — U-NAPTR resolution will be used on first request",
+            _parent_uri,
+        )
 
 _sync_children: list[str] = [
     url.strip()
@@ -1127,12 +1162,55 @@ def _make_errors_xml(error_type: str, message: str = "") -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 
 
+def _resolve_lost_url(parent_uri: str) -> str:
+    """Return the HTTP base URL for parent_uri, resolving via U-NAPTR if needed.
+
+    Results are cached in _resolved_urls keyed by input, so each DNS lookup
+    happens at most once per process lifetime — including for multiple children.
+    """
+    if parent_uri in _resolved_urls:
+        return _resolved_urls[parent_uri]
+
+    if "://" in parent_uri:
+        _resolved_urls[parent_uri] = parent_uri.rstrip("/")
+        return _resolved_urls[parent_uri]
+
+    try:
+        answers = dns.resolver.resolve(parent_uri, "NAPTR")
+        candidates = []
+        for rr in answers:
+            flags   = rr.flags.decode()   if isinstance(rr.flags,   bytes) else rr.flags
+            service = rr.service.decode() if isinstance(rr.service, bytes) else rr.service
+            regexp  = rr.regexp.decode()  if isinstance(rr.regexp,  bytes) else rr.regexp
+            if service in ("LoST:https", "LoST:http") and flags.upper() == "U":
+                proto_rank = 0 if service == "LoST:https" else 1
+                candidates.append((rr.order, rr.preference, proto_rank, regexp))
+
+        if candidates:
+            candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+            _, _, _, regexp = candidates[0]
+            delim = regexp[0]
+            parts = regexp.split(delim)
+            if len(parts) >= 3 and parts[2]:
+                _resolved_urls[parent_uri] = parts[2].rstrip("/")
+                log.info("U-NAPTR resolved %s → %s", parent_uri, _resolved_urls[parent_uri])
+                return _resolved_urls[parent_uri]
+            log.warning("U-NAPTR record for %s has unparseable regexp %r — falling back to http://", parent_uri, regexp)
+        else:
+            log.warning("U-NAPTR lookup for %s returned no LoST records — falling back to http://", parent_uri)
+    except Exception as exc:
+        log.warning("U-NAPTR lookup failed for %s (%s) — falling back to http://", parent_uri, exc)
+
+    _resolved_urls[parent_uri] = f"http://{parent_uri}"
+    return _resolved_urls[parent_uri]
+
+
 def _do_recurse_sync(request_body: bytes) -> bytes:
-    return _do_recurse_to_uri_sync(request_body, _parent_uri.rstrip("/") + "/lost")
+    return _do_recurse_to_uri_sync(request_body, _resolve_lost_url(_parent_uri) + "/lost")
 
 
 async def _do_recurse_async(request_body: bytes) -> bytes:
-    return await _do_recurse_to_uri_async(request_body, _parent_uri.rstrip("/") + "/lost")
+    return await _do_recurse_to_uri_async(request_body, _resolve_lost_url(_parent_uri) + "/lost")
 
 
 def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
@@ -1609,7 +1687,18 @@ def _load_ams_provisioning() -> bool:
         return False
 
     for entry in civic_entries + geodetic_entries:
-        _upsert_child_coverage(entry)
+        source    = entry.get("source", "")
+        source_id = entry.get("source_id", "")
+        for i, existing in enumerate(_child_coverage):
+            if existing.get("source_id") == source_id:
+                log.info(
+                    "AMS: provisioning entry supersedes cached entry source=%s sourceId=%s",
+                    source, source_id,
+                )
+                _child_coverage[i] = entry
+                break
+        else:
+            _child_coverage.append(entry)
 
     _root_ams_active = True
     civic_tuple_count = sum(len(e.get("civic_tuples") or []) for e in civic_entries)
@@ -1875,21 +1964,25 @@ async def _handle_push_mappings(root: etree._Element) -> Response:
 async def _handle_get_mappings(root: etree._Element) -> Response:
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+    ams_source_ids = {s for s in (sync_source_id_civic, sync_source_id_geodetic) if s}
 
     exists_el = root.find(f"{{{_NS_SYNC}}}exists")
     mapping_xml_list: list[str] = []
 
     if exists_el is None:
-        if sync_source_id_civic:
-            civic_xml = _build_civic_coverage_mapping_xml()
-            if civic_xml:
-                mapping_xml_list.append(civic_xml)
-        if sync_source_id_geodetic:
-            geo_xml = _build_geodetic_coverage_mapping_xml()
-            if geo_xml:
-                mapping_xml_list.append(geo_xml)
+        if not _root_ams:
+            if sync_source_id_civic:
+                civic_xml = _build_civic_coverage_mapping_xml()
+                if civic_xml:
+                    mapping_xml_list.append(civic_xml)
+            if sync_source_id_geodetic:
+                geo_xml = _build_geodetic_coverage_mapping_xml()
+                if geo_xml:
+                    mapping_xml_list.append(geo_xml)
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
+            if _root_ams and entry.get("source_id") not in ams_source_ids:
+                continue
             xml = _child_entry_to_mapping_xml(entry)
             if xml:
                 mapping_xml_list.append(xml)
@@ -1903,22 +1996,25 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
 
         my_lu = _gis_last_updated_str()
 
-        if sync_source_id_civic:
-            fp_lu = fingerprints.get(sync_source_id_civic)
-            if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
-                civic_xml = _build_civic_coverage_mapping_xml()
-                if civic_xml:
-                    mapping_xml_list.append(civic_xml)
+        if not _root_ams:
+            if sync_source_id_civic:
+                fp_lu = fingerprints.get(sync_source_id_civic)
+                if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
+                    civic_xml = _build_civic_coverage_mapping_xml()
+                    if civic_xml:
+                        mapping_xml_list.append(civic_xml)
 
-        if sync_source_id_geodetic:
-            fp_lu = fingerprints.get(sync_source_id_geodetic)
-            if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
-                geo_xml = _build_geodetic_coverage_mapping_xml()
-                if geo_xml:
-                    mapping_xml_list.append(geo_xml)
+            if sync_source_id_geodetic:
+                fp_lu = fingerprints.get(sync_source_id_geodetic)
+                if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
+                    geo_xml = _build_geodetic_coverage_mapping_xml()
+                    if geo_xml:
+                        mapping_xml_list.append(geo_xml)
 
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
+            if _root_ams and entry.get("source_id") not in ams_source_ids:
+                continue
             fp_lu = fingerprints.get(entry.get("source_id", ""))
             entry_lu = entry.get("last_updated", "")
             if fp_lu is None or _compare_timestamps(entry_lu, fp_lu) > 0:
@@ -1949,24 +2045,36 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
 def _get_parent_sync_uri() -> str:
     if not _parent_uri:
         return ""
-    base = _parent_uri.rstrip("/")
+    base = _resolve_lost_url(_parent_uri).rstrip("/")
     if base.endswith("/validate") or base.endswith("/lost"):
         base = base.rsplit("/", 1)[0]
     return base + "/sync"
 
 
-async def _push_coverage_to_parent() -> None:
+def _get_fg_sync_uri() -> str:
+    if not _forest_guide_uri:
+        return ""
+    base = _resolve_lost_url(_forest_guide_uri).rstrip("/")
+    if base.endswith("/sync") or base.endswith("/lost"):
+        base = base.rsplit("/", 1)[0]
+    return base + "/sync"
+
+
+async def _push_coverage_to_parent() -> bool:
     with _reloading_lock:
         if _reloading:
             log.warning("LoST-Sync: skipping push — GIS reload in progress")
-            return
+            return False
 
     parent_sync_uri = _get_parent_sync_uri()
     if not parent_sync_uri:
-        return
+        return False
 
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    attempted = False
+    all_ok    = True
 
     for label, mapping_getter, src_id in [
         ("civic",    _build_civic_coverage_mapping_xml,    sync_source_id_civic),
@@ -1984,11 +2092,13 @@ async def _push_coverage_to_parent() -> None:
             push_root.append(etree.fromstring(mapping_xml))
         except Exception as exc:
             log.warning("LoST-Sync: could not parse %s mapping for push: %s", label, exc)
+            all_ok = False
             continue
 
         push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
         log.info("LoST-Sync: pushing %s coverage to parent %s", label, parent_sync_uri)
 
+        attempted = True
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
@@ -2009,31 +2119,42 @@ async def _push_coverage_to_parent() -> None:
                             "LoST-Sync: unexpected response pushing %s to parent: %s",
                             label, resp_root.tag,
                         )
+                        all_ok = False
                 except Exception:
                     log.warning("LoST-Sync: parent returned unparseable XML when pushing %s", label)
+                    all_ok = False
             else:
                 log.warning(
                     "LoST-Sync: push %s to parent %s returned HTTP %d",
                     label, parent_sync_uri, resp.status_code,
                 )
+                all_ok = False
         except Exception as exc:
             log.warning(
                 "LoST-Sync: failed to push %s coverage to parent %s: %s",
                 label, parent_sync_uri, exc,
             )
+            all_ok = False
+
+    return attempted and all_ok
 
 
-async def _push_coverage_to_fg() -> None:
+async def _push_coverage_to_fg() -> bool:
     if not _root_ams_active or not _forest_guide_uri:
-        return
+        return False
 
     with _reloading_lock:
         if _reloading:
             log.warning("AMS: skipping FG push — GIS reload in progress")
-            return
+            return False
+
+    fg_sync_uri = _get_fg_sync_uri()
 
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    attempted = False
+    all_ok    = True
 
     for label, profile, src_id in [
         ("civic",    "civic",       sync_source_id_civic),
@@ -2049,10 +2170,12 @@ async def _push_coverage_to_fg() -> None:
         )
         if not entry:
             log.warning("AMS: could not find %s coverage entry in child store for FG push (no data?)", label)
+            all_ok = False
             continue
         mapping_xml = _child_entry_to_mapping_xml(entry)
         if not mapping_xml:
             log.warning("AMS: could not build %s coverage mapping for FG push (no data?)", label)
+            all_ok = False
             continue
 
         push_root = etree.Element(f"{{{_NS_SYNC}}}pushMappings")
@@ -2060,15 +2183,17 @@ async def _push_coverage_to_fg() -> None:
             push_root.append(etree.fromstring(mapping_xml))
         except Exception as exc:
             log.warning("AMS: could not parse %s mapping for FG push: %s", label, exc)
+            all_ok = False
             continue
 
         push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
         log.info("AMS: pushing %s coverage to Forest Guide %s", label, _forest_guide_uri)
 
+        attempted = True
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
-                    _forest_guide_uri,
+                    fg_sync_uri,
                     content=push_body,
                     headers={"Content-Type": "application/lostsync+xml"},
                 )
@@ -2079,19 +2204,30 @@ async def _push_coverage_to_fg() -> None:
                         log.info("AMS: successfully pushed %s coverage to Forest Guide %s", label, _forest_guide_uri)
                     else:
                         log.warning("AMS: unexpected response pushing %s to Forest Guide: %s", label, resp_root.tag)
+                        all_ok = False
                 except Exception:
                     log.warning("AMS: Forest Guide returned unparseable XML when pushing %s", label)
+                    all_ok = False
             else:
                 log.warning("AMS: push %s to Forest Guide %s returned HTTP %d", label, _forest_guide_uri, resp.status_code)
+                all_ok = False
         except Exception as exc:
             log.warning("AMS: failed to push %s coverage to Forest Guide %s: %s", label, _forest_guide_uri, exc)
+            all_ok = False
+
+    return attempted and all_ok
 
 
-async def _pull_from_child(child_sync_url: str) -> None:
+async def _pull_from_child(child_entry: str) -> bool:
+    if "://" not in child_entry:
+        child_sync_url = _resolve_lost_url(child_entry).rstrip("/") + "/sync"
+    else:
+        child_sync_url = child_entry
+
     with _reloading_lock:
         if _reloading:
             log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
-            return
+            return False
 
     base = child_sync_url.rstrip("/")
     child_lost_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/lost"
@@ -2114,7 +2250,7 @@ async def _pull_from_child(child_sync_url: str) -> None:
                 "LoST-Sync: getMappingsRequest to %s returned HTTP %d",
                 child_sync_url, resp.status_code,
             )
-            return
+            return False
 
         try:
             resp_root = etree.fromstring(resp.content)
@@ -2123,14 +2259,14 @@ async def _pull_from_child(child_sync_url: str) -> None:
                 "LoST-Sync: getMappingsResponse from %s has malformed XML: %s",
                 child_sync_url, exc,
             )
-            return
+            return False
 
         if resp_root.tag != f"{{{_NS_SYNC}}}getMappingsResponse":
             log.warning(
                 "LoST-Sync: unexpected response element from %s: %s",
                 child_sync_url, resp_root.tag,
             )
-            return
+            return False
 
         count = 0
         for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping"):
@@ -2143,25 +2279,90 @@ async def _pull_from_child(child_sync_url: str) -> None:
             log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
         else:
             log.info("LoST-Sync: no mappings received from %s", child_sync_url)
+        return True
 
     except Exception as exc:
         log.warning("LoST-Sync: failed to pull from %s: %s", child_sync_url, exc)
+        return False
+
+
+_SYNC_BACKOFF_INITIAL = 5   # seconds before first retry
+_SYNC_BACKOFF_CAP     = 60  # maximum seconds between retries
+
+
+async def _retry_sync_op(label: str, coro_fn) -> None:
+    """Call coro_fn() with exponential backoff until it returns True.
+
+    Backoff sequence: 5s, 10s, 20s, 40s, 60s, 60s, ...
+    A False return is treated as failure and triggers a retry, the same as an
+    exception would.  Exits immediately and silently on asyncio.CancelledError.
+    Logs a WARNING on each failed attempt with attempt number and next delay.
+    """
+    delay = _SYNC_BACKOFF_INITIAL
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            ok = await coro_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "LoST-Sync: %s failed (attempt %d): %s — retrying in %ds",
+                label, attempt, exc, delay,
+            )
+        else:
+            if ok:
+                return
+            log.warning(
+                "LoST-Sync: %s failed (attempt %d) — retrying in %ds",
+                label, attempt, delay,
+            )
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _SYNC_BACKOFF_CAP)
 
 
 async def _startup_sync() -> None:
+    """Launch independent retry tasks for each startup sync operation.
+
+    Child pulls run concurrently. The AMS Forest Guide push waits for all
+    child pulls to succeed before attempting, fixing the previous race where
+    FG push fired before child coverage was populated.
+    """
     await asyncio.sleep(1)
 
-    if _root_ams:
-        if _root_ams_active:
-            await _push_coverage_to_fg()
-    else:
-        sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-        sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-        if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri and not _forest_guide_mode:
-            await _push_coverage_to_parent()
+    # One event per child entry — set when that child's pull succeeds.
+    child_done_events: list[asyncio.Event] = []
 
-    for child_url in _sync_children:
-        await _pull_from_child(child_url)
+    for child_entry in _sync_children:
+        done = asyncio.Event()
+        child_done_events.append(done)
+
+        async def _child_task(entry=child_entry, event=done) -> None:
+            await _retry_sync_op(
+                f"pull from {entry}",
+                lambda e=entry: _pull_from_child(e),
+            )
+            event.set()
+
+        asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
+
+    if not _root_ams and not _forest_guide_mode:
+        sync_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC",    "")
+        sync_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+        if (sync_civic or sync_geodetic) and _parent_uri:
+            asyncio.create_task(
+                _retry_sync_op("push to parent", _push_coverage_to_parent),
+                name="lvf-sync-push-parent",
+            )
+
+    if _root_ams and _root_ams_active:
+        async def _fg_task() -> None:
+            for event in child_done_events:
+                await event.wait()
+            await _retry_sync_op("push to Forest Guide", _push_coverage_to_fg)
+
+        asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
 
 
 def _maybe_schedule_repush() -> None:
@@ -2707,6 +2908,11 @@ async def lifespan_startup() -> None:
         asyncio.create_task(_startup_sync())
         return
 
+    if _parent_uri and "://" not in _parent_uri:
+        _resolve_lost_url(_parent_uri)
+    if _forest_guide_uri and _root_ams and "://" not in _forest_guide_uri:
+        _resolve_lost_url(_forest_guide_uri)
+
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     gpkg_exists = gpkg_path and os.path.exists(gpkg_path)
 
@@ -2716,7 +2922,11 @@ async def lifespan_startup() -> None:
                 "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
                 "Recommended value: {00000000-0000-0000-0000-000000000000}"
             )
-        _load_gis_data(gpkg_path)
+        try:
+            _load_gis_data(gpkg_path)
+        except Exception as exc:
+            log.error("GIS data load failed from %s: %s", gpkg_path, exc, exc_info=True)
+            raise
         _routing_only = False
         _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
         _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")
@@ -2743,6 +2953,11 @@ async def lifespan_startup() -> None:
             log.warning(
                 "Routing-only mode: neither LVF_PARENT_URI nor LVF_SYNC_CHILDREN is configured "
                 "— this node cannot answer or route requests"
+            )
+        elif not _root_ams and not _forest_guide_mode:
+            log.info(
+                "Routing-only mode: this node has no local GIS data and will forward all "
+                "requests upstream; verify LVF_GPKG_PATH if local validation was intended"
             )
 
     _load_child_coverage()

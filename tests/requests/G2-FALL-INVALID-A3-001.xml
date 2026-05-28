@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+ATTENTION: This test will return a notFound error when LVF_PARENT_URI is unset.
+
 A2=Morton County, A3=Bismarck. Morton County exists in GIS but Bismarck is in Burleigh
 County, not Morton County. Both SSAP and RCL fail at ca:A3 — no records in either layer
-match A2=Morton County and A3=Bismarck. Result: invalid at ca:A3.  This test will return
-a notFound error when a parent isn't configured (LVF_PARENT_URI is unset).
+match A2=Morton County and A3=Bismarck. Result: invalid at ca:A3.  
 -->
 <findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
   <location id="L1" profile="civic">

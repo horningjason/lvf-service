@@ -13,6 +13,9 @@ pyogrio==0.12.1
 # NTP
 ntplib==0.4.0
 
+# DNS (U-NAPTR resolution for LVF_PARENT_URI)
+dnspython==2.7.0
+
 # SIP
 sipmessage
 
