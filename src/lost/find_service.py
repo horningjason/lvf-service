@@ -171,7 +171,7 @@ _root_ams_active:   bool = False
 _server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
 _display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
 _parent_uri:        str = os.environ.get("LVF_PARENT_URI",          "")
-_resolved_parent_url: str = ""  # cached result of _resolve_parent_url()
+_resolved_urls: dict[str, str] = {}  # cache: input URI → resolved base URL
 
 if _parent_uri:
     if "://" in _parent_uri:
@@ -1142,19 +1142,18 @@ def _make_errors_xml(error_type: str, message: str = "") -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 
 
-def _resolve_parent_url(parent_uri: str) -> str:
+def _resolve_lost_url(parent_uri: str) -> str:
     """Return the HTTP base URL for parent_uri, resolving via U-NAPTR if needed.
 
-    Result is cached in _resolved_parent_url after the first call so the DNS
-    lookup only happens once per process lifetime.
+    Results are cached in _resolved_urls keyed by input, so each DNS lookup
+    happens at most once per process lifetime — including for multiple children.
     """
-    global _resolved_parent_url
-    if _resolved_parent_url:
-        return _resolved_parent_url
+    if parent_uri in _resolved_urls:
+        return _resolved_urls[parent_uri]
 
     if "://" in parent_uri:
-        _resolved_parent_url = parent_uri.rstrip("/")
-        return _resolved_parent_url
+        _resolved_urls[parent_uri] = parent_uri.rstrip("/")
+        return _resolved_urls[parent_uri]
 
     try:
         answers = dns.resolver.resolve(parent_uri, "NAPTR")
@@ -1173,25 +1172,25 @@ def _resolve_parent_url(parent_uri: str) -> str:
             delim = regexp[0]
             parts = regexp.split(delim)
             if len(parts) >= 3 and parts[2]:
-                _resolved_parent_url = parts[2].rstrip("/")
-                log.info("U-NAPTR resolved %s → %s", parent_uri, _resolved_parent_url)
-                return _resolved_parent_url
+                _resolved_urls[parent_uri] = parts[2].rstrip("/")
+                log.info("U-NAPTR resolved %s → %s", parent_uri, _resolved_urls[parent_uri])
+                return _resolved_urls[parent_uri]
             log.warning("U-NAPTR record for %s has unparseable regexp %r — falling back to http://", parent_uri, regexp)
         else:
             log.warning("U-NAPTR lookup for %s returned no LoST records — falling back to http://", parent_uri)
     except Exception as exc:
         log.warning("U-NAPTR lookup failed for %s (%s) — falling back to http://", parent_uri, exc)
 
-    _resolved_parent_url = f"http://{parent_uri}"
-    return _resolved_parent_url
+    _resolved_urls[parent_uri] = f"http://{parent_uri}"
+    return _resolved_urls[parent_uri]
 
 
 def _do_recurse_sync(request_body: bytes) -> bytes:
-    return _do_recurse_to_uri_sync(request_body, _resolve_parent_url(_parent_uri) + "/lost")
+    return _do_recurse_to_uri_sync(request_body, _resolve_lost_url(_parent_uri) + "/lost")
 
 
 async def _do_recurse_async(request_body: bytes) -> bytes:
-    return await _do_recurse_to_uri_async(request_body, _resolve_parent_url(_parent_uri) + "/lost")
+    return await _do_recurse_to_uri_async(request_body, _resolve_lost_url(_parent_uri) + "/lost")
 
 
 def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
@@ -2008,7 +2007,7 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
 def _get_parent_sync_uri() -> str:
     if not _parent_uri:
         return ""
-    base = _resolve_parent_url(_parent_uri).rstrip("/")
+    base = _resolve_lost_url(_parent_uri).rstrip("/")
     if base.endswith("/validate") or base.endswith("/lost"):
         base = base.rsplit("/", 1)[0]
     return base + "/sync"
@@ -2146,7 +2145,12 @@ async def _push_coverage_to_fg() -> None:
             log.warning("AMS: failed to push %s coverage to Forest Guide %s: %s", label, _forest_guide_uri, exc)
 
 
-async def _pull_from_child(child_sync_url: str) -> None:
+async def _pull_from_child(child_entry: str) -> None:
+    if "://" not in child_entry:
+        child_sync_url = _resolve_lost_url(child_entry).rstrip("/") + "/sync"
+    else:
+        child_sync_url = child_entry
+
     with _reloading_lock:
         if _reloading:
             log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
@@ -2767,7 +2771,7 @@ async def lifespan_startup() -> None:
         return
 
     if _parent_uri and "://" not in _parent_uri:
-        _resolve_parent_url(_parent_uri)
+        _resolve_lost_url(_parent_uri)
 
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     gpkg_exists = gpkg_path and os.path.exists(gpkg_path)
