@@ -1964,6 +1964,7 @@ async def _handle_push_mappings(root: etree._Element) -> Response:
 async def _handle_get_mappings(root: etree._Element) -> Response:
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+    ams_source_ids = {s for s in (sync_source_id_civic, sync_source_id_geodetic) if s}
 
     exists_el = root.find(f"{{{_NS_SYNC}}}exists")
     mapping_xml_list: list[str] = []
@@ -1980,6 +1981,8 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
                     mapping_xml_list.append(geo_xml)
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
+            if _root_ams and entry.get("source_id") not in ams_source_ids:
+                continue
             xml = _child_entry_to_mapping_xml(entry)
             if xml:
                 mapping_xml_list.append(xml)
@@ -2010,6 +2013,8 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
 
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
+            if _root_ams and entry.get("source_id") not in ams_source_ids:
+                continue
             fp_lu = fingerprints.get(entry.get("source_id", ""))
             entry_lu = entry.get("last_updated", "")
             if fp_lu is None or _compare_timestamps(entry_lu, fp_lu) > 0:
