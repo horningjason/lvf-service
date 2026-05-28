@@ -158,7 +158,19 @@ def _diff(actual: dict, golden: dict) -> list[str]:
 def run_tests(test_names: list[str] | None = None) -> int:
     initialize()
 
-    xml_files = sorted(f for f in TESTS_DIR.glob("*.xml") if _TEST_ID_RE.match(f.stem))
+    all_xml_files = sorted(f for f in TESTS_DIR.glob("*.xml") if _TEST_ID_RE.match(f.stem))
+
+    # Auto-seed only when every discoverable test lacks a golden file (first-run scenario).
+    # Partial absence (some goldens present, some not) is intentional and left as SKIP.
+    if all_xml_files and not any(
+        (GOLDEN_DIR / f"{f.stem}.golden.xml").exists() for f in all_xml_files
+    ):
+        print("No golden files found — seeding baseline automatically...")
+        from tests.regression import seed as _seed_mod
+        _seed_mod.seed(names=None, force=False)
+        print("Seeding complete — running tests...")
+
+    xml_files = all_xml_files
     if test_names:
         xml_files = [f for f in xml_files if f.stem in test_names]
         missing = set(test_names) - {f.stem for f in xml_files}
