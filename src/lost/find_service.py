@@ -1969,14 +1969,15 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
     mapping_xml_list: list[str] = []
 
     if exists_el is None:
-        if sync_source_id_civic:
-            civic_xml = _build_civic_coverage_mapping_xml()
-            if civic_xml:
-                mapping_xml_list.append(civic_xml)
-        if sync_source_id_geodetic:
-            geo_xml = _build_geodetic_coverage_mapping_xml()
-            if geo_xml:
-                mapping_xml_list.append(geo_xml)
+        if not _root_ams:
+            if sync_source_id_civic:
+                civic_xml = _build_civic_coverage_mapping_xml()
+                if civic_xml:
+                    mapping_xml_list.append(civic_xml)
+            if sync_source_id_geodetic:
+                geo_xml = _build_geodetic_coverage_mapping_xml()
+                if geo_xml:
+                    mapping_xml_list.append(geo_xml)
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
             xml = _child_entry_to_mapping_xml(entry)
@@ -1992,19 +1993,20 @@ async def _handle_get_mappings(root: etree._Element) -> Response:
 
         my_lu = _gis_last_updated_str()
 
-        if sync_source_id_civic:
-            fp_lu = fingerprints.get(sync_source_id_civic)
-            if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
-                civic_xml = _build_civic_coverage_mapping_xml()
-                if civic_xml:
-                    mapping_xml_list.append(civic_xml)
+        if not _root_ams:
+            if sync_source_id_civic:
+                fp_lu = fingerprints.get(sync_source_id_civic)
+                if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
+                    civic_xml = _build_civic_coverage_mapping_xml()
+                    if civic_xml:
+                        mapping_xml_list.append(civic_xml)
 
-        if sync_source_id_geodetic:
-            fp_lu = fingerprints.get(sync_source_id_geodetic)
-            if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
-                geo_xml = _build_geodetic_coverage_mapping_xml()
-                if geo_xml:
-                    mapping_xml_list.append(geo_xml)
+            if sync_source_id_geodetic:
+                fp_lu = fingerprints.get(sync_source_id_geodetic)
+                if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
+                    geo_xml = _build_geodetic_coverage_mapping_xml()
+                    if geo_xml:
+                        mapping_xml_list.append(geo_xml)
 
         own_count = len(mapping_xml_list)
         for entry in _child_coverage:
