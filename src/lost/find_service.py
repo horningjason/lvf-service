@@ -1674,7 +1674,18 @@ def _load_ams_provisioning() -> bool:
         return False
 
     for entry in civic_entries + geodetic_entries:
-        _upsert_child_coverage(entry)
+        source    = entry.get("source", "")
+        source_id = entry.get("source_id", "")
+        for i, existing in enumerate(_child_coverage):
+            if existing.get("source_id") == source_id:
+                log.info(
+                    "AMS: provisioning entry supersedes cached entry source=%s sourceId=%s",
+                    source, source_id,
+                )
+                _child_coverage[i] = entry
+                break
+        else:
+            _child_coverage.append(entry)
 
     _root_ams_active = True
     civic_tuple_count = sum(len(e.get("civic_tuples") or []) for e in civic_entries)
