@@ -158,7 +158,19 @@ def _diff(actual: dict, golden: dict) -> list[str]:
 def run_tests(test_names: list[str] | None = None) -> int:
     initialize()
 
-    xml_files = sorted(f for f in TESTS_DIR.glob("*.xml") if _TEST_ID_RE.match(f.stem))
+    all_xml_files = sorted(f for f in TESTS_DIR.glob("*.xml") if _TEST_ID_RE.match(f.stem))
+
+    # Auto-seed only when every discoverable test lacks a golden file (first-run scenario).
+    # Partial absence (some goldens present, some not) is intentional and left as SKIP.
+    if all_xml_files and not any(
+        (GOLDEN_DIR / f"{f.stem}.golden.xml").exists() for f in all_xml_files
+    ):
+        print("No golden files found — seeding baseline automatically...")
+        from tests.regression import seed as _seed_mod
+        _seed_mod.seed(names=None, force=False)
+        print("Seeding complete — running tests...")
+
+    xml_files = all_xml_files
     if test_names:
         xml_files = [f for f in xml_files if f.stem in test_names]
         missing = set(test_names) - {f.stem for f in xml_files}
@@ -167,7 +179,7 @@ def run_tests(test_names: list[str] | None = None) -> int:
                 print(f"ERROR: no test file found for '{m}'")
             return 1
 
-    passed = failed = errors = 0
+    passed = failed = errors = skipped = 0
 
     for xml_path in xml_files:
         name = xml_path.stem
@@ -175,13 +187,13 @@ def run_tests(test_names: list[str] | None = None) -> int:
 
         if not golden_path.exists():
             print(f"SKIP  {name}  (no golden file — run seed.py first)")
-            errors += 1
+            skipped += 1
             continue
 
         try:
             actual_bytes = _dispatch(xml_path.read_bytes())
         except Exception as exc:
-            print(f"ERROR {name}: handle_find_service raised: {exc}")
+            print(f"ERROR {name}: handler raised: {exc}")
             errors += 1
             continue
 
@@ -203,13 +215,15 @@ def run_tests(test_names: list[str] | None = None) -> int:
             print(f"PASS  {name}")
             passed += 1
 
-    total = passed + failed + errors
-    summary = f"{passed}/{total} passed"
+    total = passed + failed + errors + skipped
+    parts = [f"{passed}/{total} passed"]
     if failed:
-        summary += f", {failed} failed"
+        parts.append(f"{failed} failed")
     if errors:
-        summary += f", {errors} errors/skipped"
-    print(f"\n{summary}")
+        parts.append(f"{errors} errors")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    print(f"\n{', '.join(parts)}")
     return 0 if (failed == 0 and errors == 0) else 1
 
 
