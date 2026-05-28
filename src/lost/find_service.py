@@ -2020,18 +2020,21 @@ def _get_parent_sync_uri() -> str:
     return base + "/sync"
 
 
-async def _push_coverage_to_parent() -> None:
+async def _push_coverage_to_parent() -> bool:
     with _reloading_lock:
         if _reloading:
             log.warning("LoST-Sync: skipping push — GIS reload in progress")
-            return
+            return False
 
     parent_sync_uri = _get_parent_sync_uri()
     if not parent_sync_uri:
-        return
+        return False
 
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    attempted = False
+    all_ok    = True
 
     for label, mapping_getter, src_id in [
         ("civic",    _build_civic_coverage_mapping_xml,    sync_source_id_civic),
@@ -2049,11 +2052,13 @@ async def _push_coverage_to_parent() -> None:
             push_root.append(etree.fromstring(mapping_xml))
         except Exception as exc:
             log.warning("LoST-Sync: could not parse %s mapping for push: %s", label, exc)
+            all_ok = False
             continue
 
         push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
         log.info("LoST-Sync: pushing %s coverage to parent %s", label, parent_sync_uri)
 
+        attempted = True
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
@@ -2074,31 +2079,40 @@ async def _push_coverage_to_parent() -> None:
                             "LoST-Sync: unexpected response pushing %s to parent: %s",
                             label, resp_root.tag,
                         )
+                        all_ok = False
                 except Exception:
                     log.warning("LoST-Sync: parent returned unparseable XML when pushing %s", label)
+                    all_ok = False
             else:
                 log.warning(
                     "LoST-Sync: push %s to parent %s returned HTTP %d",
                     label, parent_sync_uri, resp.status_code,
                 )
+                all_ok = False
         except Exception as exc:
             log.warning(
                 "LoST-Sync: failed to push %s coverage to parent %s: %s",
                 label, parent_sync_uri, exc,
             )
+            all_ok = False
+
+    return attempted and all_ok
 
 
-async def _push_coverage_to_fg() -> None:
+async def _push_coverage_to_fg() -> bool:
     if not _root_ams_active or not _forest_guide_uri:
-        return
+        return False
 
     with _reloading_lock:
         if _reloading:
             log.warning("AMS: skipping FG push — GIS reload in progress")
-            return
+            return False
 
     sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
     sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+
+    attempted = False
+    all_ok    = True
 
     for label, profile, src_id in [
         ("civic",    "civic",       sync_source_id_civic),
@@ -2114,10 +2128,12 @@ async def _push_coverage_to_fg() -> None:
         )
         if not entry:
             log.warning("AMS: could not find %s coverage entry in child store for FG push (no data?)", label)
+            all_ok = False
             continue
         mapping_xml = _child_entry_to_mapping_xml(entry)
         if not mapping_xml:
             log.warning("AMS: could not build %s coverage mapping for FG push (no data?)", label)
+            all_ok = False
             continue
 
         push_root = etree.Element(f"{{{_NS_SYNC}}}pushMappings")
@@ -2125,11 +2141,13 @@ async def _push_coverage_to_fg() -> None:
             push_root.append(etree.fromstring(mapping_xml))
         except Exception as exc:
             log.warning("AMS: could not parse %s mapping for FG push: %s", label, exc)
+            all_ok = False
             continue
 
         push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
         log.info("AMS: pushing %s coverage to Forest Guide %s", label, _forest_guide_uri)
 
+        attempted = True
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
@@ -2144,15 +2162,21 @@ async def _push_coverage_to_fg() -> None:
                         log.info("AMS: successfully pushed %s coverage to Forest Guide %s", label, _forest_guide_uri)
                     else:
                         log.warning("AMS: unexpected response pushing %s to Forest Guide: %s", label, resp_root.tag)
+                        all_ok = False
                 except Exception:
                     log.warning("AMS: Forest Guide returned unparseable XML when pushing %s", label)
+                    all_ok = False
             else:
                 log.warning("AMS: push %s to Forest Guide %s returned HTTP %d", label, _forest_guide_uri, resp.status_code)
+                all_ok = False
         except Exception as exc:
             log.warning("AMS: failed to push %s coverage to Forest Guide %s: %s", label, _forest_guide_uri, exc)
+            all_ok = False
+
+    return attempted and all_ok
 
 
-async def _pull_from_child(child_entry: str) -> None:
+async def _pull_from_child(child_entry: str) -> bool:
     if "://" not in child_entry:
         child_sync_url = _resolve_lost_url(child_entry).rstrip("/") + "/sync"
     else:
@@ -2161,7 +2185,7 @@ async def _pull_from_child(child_entry: str) -> None:
     with _reloading_lock:
         if _reloading:
             log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
-            return
+            return False
 
     base = child_sync_url.rstrip("/")
     child_lost_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/lost"
@@ -2184,7 +2208,7 @@ async def _pull_from_child(child_entry: str) -> None:
                 "LoST-Sync: getMappingsRequest to %s returned HTTP %d",
                 child_sync_url, resp.status_code,
             )
-            return
+            return False
 
         try:
             resp_root = etree.fromstring(resp.content)
@@ -2193,14 +2217,14 @@ async def _pull_from_child(child_entry: str) -> None:
                 "LoST-Sync: getMappingsResponse from %s has malformed XML: %s",
                 child_sync_url, exc,
             )
-            return
+            return False
 
         if resp_root.tag != f"{{{_NS_SYNC}}}getMappingsResponse":
             log.warning(
                 "LoST-Sync: unexpected response element from %s: %s",
                 child_sync_url, resp_root.tag,
             )
-            return
+            return False
 
         count = 0
         for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping"):
@@ -2213,25 +2237,90 @@ async def _pull_from_child(child_entry: str) -> None:
             log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
         else:
             log.info("LoST-Sync: no mappings received from %s", child_sync_url)
+        return True
 
     except Exception as exc:
         log.warning("LoST-Sync: failed to pull from %s: %s", child_sync_url, exc)
+        return False
+
+
+_SYNC_BACKOFF_INITIAL = 5   # seconds before first retry
+_SYNC_BACKOFF_CAP     = 60  # maximum seconds between retries
+
+
+async def _retry_sync_op(label: str, coro_fn) -> None:
+    """Call coro_fn() with exponential backoff until it returns True.
+
+    Backoff sequence: 5s, 10s, 20s, 40s, 60s, 60s, ...
+    A False return is treated as failure and triggers a retry, the same as an
+    exception would.  Exits immediately and silently on asyncio.CancelledError.
+    Logs a WARNING on each failed attempt with attempt number and next delay.
+    """
+    delay = _SYNC_BACKOFF_INITIAL
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            ok = await coro_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "LoST-Sync: %s failed (attempt %d): %s — retrying in %ds",
+                label, attempt, exc, delay,
+            )
+        else:
+            if ok:
+                return
+            log.warning(
+                "LoST-Sync: %s failed (attempt %d) — retrying in %ds",
+                label, attempt, delay,
+            )
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _SYNC_BACKOFF_CAP)
 
 
 async def _startup_sync() -> None:
+    """Launch independent retry tasks for each startup sync operation.
+
+    Child pulls run concurrently. The AMS Forest Guide push waits for all
+    child pulls to succeed before attempting, fixing the previous race where
+    FG push fired before child coverage was populated.
+    """
     await asyncio.sleep(1)
 
-    if _root_ams:
-        if _root_ams_active:
-            await _push_coverage_to_fg()
-    else:
-        sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-        sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-        if (sync_source_id_civic or sync_source_id_geodetic) and _parent_uri and not _forest_guide_mode:
-            await _push_coverage_to_parent()
+    # One event per child entry — set when that child's pull succeeds.
+    child_done_events: list[asyncio.Event] = []
 
-    for child_url in _sync_children:
-        await _pull_from_child(child_url)
+    for child_entry in _sync_children:
+        done = asyncio.Event()
+        child_done_events.append(done)
+
+        async def _child_task(entry=child_entry, event=done) -> None:
+            await _retry_sync_op(
+                f"pull from {entry}",
+                lambda e=entry: _pull_from_child(e),
+            )
+            event.set()
+
+        asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
+
+    if not _root_ams and not _forest_guide_mode:
+        sync_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC",    "")
+        sync_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
+        if (sync_civic or sync_geodetic) and _parent_uri:
+            asyncio.create_task(
+                _retry_sync_op("push to parent", _push_coverage_to_parent),
+                name="lvf-sync-push-parent",
+            )
+
+    if _root_ams and _root_ams_active:
+        async def _fg_task() -> None:
+            for event in child_done_events:
+                await event.wait()
+            await _retry_sync_op("push to Forest Guide", _push_coverage_to_fg)
+
+        asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
 
 
 def _maybe_schedule_repush() -> None:
