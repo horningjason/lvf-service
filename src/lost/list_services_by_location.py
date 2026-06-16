@@ -151,7 +151,7 @@ async def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
                 civic_fields.get("a3"), civic_fields.get("a4"), civic_fields.get("a5"),
             )
             if child:
-                child_lost = _child_lost_uri(child.get("child_uri", ""))
+                child_lost = _child_lost_uri(child.get("lost_server", ""))
                 if child_lost:
                     if recursive:
                         return _respond(await _forward_outgoing(xml_bytes, child_lost))

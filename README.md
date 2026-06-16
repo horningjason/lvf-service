@@ -161,6 +161,11 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SIP_HOST` | No | `0.0.0.0` | IP address or hostname to bind the SIP listener |
 | `LVF_SIP_PORT` | No | `5060` | SIP port for SUBSCRIBE/NOTIFY. Set to `0` to disable the SIP listener entirely |
 | `LVF_SIP_ALLOWED_SUBSCRIBERS` | No | — | Comma-separated SIP URIs permitted to subscribe (e.g. `sip:esrp.example.com`). When unset, all SUBSCRIBE requests are accepted (appropriate for ESInet trust model where network-level access control is assumed) |
+| **TLS** | | | |
+| `LVF_TLS_MODE` | No | `disabled` | Transport mode. `disabled` = HTTP only (default). `tls` = HTTPS with server certificate. `mtls` = HTTPS with mutual TLS; `/sync` requires a valid client certificate, `/lost` accepts but does not require one. |
+| `LVF_TLS_CERT_FILE` | No | — | Path to the server certificate PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
+| `LVF_TLS_KEY_FILE` | No | — | Path to the server private key PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
+| `LVF_TLS_CA_FILE` | No | — | Path to the CA certificate bundle PEM file used to verify client certificates. Required when `LVF_TLS_MODE` is `mtls`. |
 
 † Required when `LVF_GPKG_PATH` points to an existing file; not needed in routing-only mode.
 
@@ -181,7 +186,7 @@ The service supports four operating modes, set by environment variables:
 
 Root AMS nodes require two files in the same directory as the GeoPackage. Annotated templates are provided in `data/ams_civic_coverage.example.json` and `data/ams_geodetic_coverage.example.json` — copy and rename them to activate.
 
-**`ams_civic_coverage.json`** — JSON array of coverage mapping entries. Each entry declares one set of civic tuples this node is authoritative for:
+**`ams_civic_coverage.json`** — JSON array of coverage mapping entries. Each entry declares one set of civic addresses this node is authoritative for:
 
 ```json
 [
@@ -192,16 +197,17 @@ Root AMS nodes require two files in the same directory as the GeoPackage. Annota
     "expires": "NO-EXPIRATION",
     "service": "urn:service:sos",
     "profile": "civic",
-    "child_uri": "http://root-ams.lvf.example.com/lost",
-    "civic_tuples": [
-      { "country": "US", "a1": "ND", "a2": "Burleigh County", "lost_server": "http://root-ams.lvf.example.com/lost" },
-      { "country": "US", "a1": "ND", "a2": "McLean County",   "lost_server": "http://root-ams.lvf.example.com/lost" }
+    "lost_server": "http://root-ams.lvf.example.com/lost",
+    "civic_addresses": [
+      { "country": "US", "a1": "ND", "a2": "Adams County" },
+      { "country": "US", "a1": "ND", "a2": "Barnes County" },
+      { "country": "US", "a1": "ND", "a2": "Benson County", "a3": "Leeds" }
     ]
   }
 ]
 ```
 
-`source_id` must match `LVF_SYNC_SOURCE_ID_CIVIC`. `child_uri` and `lost_server` should be this node's own `/lost` URL (the Forest Guide will redirect queries here). `a3`, `a4`, `a5` are optional in each tuple.
+`source_id` must match `LVF_SYNC_SOURCE_ID_CIVIC`. `lost_server` is this node's own `/lost` URL (the Forest Guide will redirect queries here). Each address object requires `country`, `a1`, and `a2`; include `a3`, `a4`, `a5` only when they carry a real non-wildcard value (absent fields match any value).
 
 **`ams_geodetic_coverage.json`** — JSON array with a single entry containing a WKT polygon of the node's geodetic boundary:
 
@@ -214,7 +220,7 @@ Root AMS nodes require two files in the same directory as the GeoPackage. Annota
     "expires": "NO-EXPIRATION",
     "service": "urn:service:sos",
     "profile": "geodetic-2d",
-    "child_uri": "http://root-ams.lvf.example.com/lost",
+    "lost_server": "http://root-ams.lvf.example.com/lost",
     "geodetic_geom_wkt": "POLYGON ((-102.5 46.4, -100.0 46.4, -100.0 48.6, -102.5 48.6, -102.5 46.4))"
   }
 ]

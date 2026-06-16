@@ -6,7 +6,7 @@
     "expires": "NO-EXPIRATION",
     "service": "urn:service:sos",
     "profile": "geodetic-2d",
-    "child_uri": "http://root-ams.lvf.example.com/lost",
+    "lost_server": "http://root-ams.lvf.example.com/lost",
     "geodetic_geom_wkt": "POLYGON ((-102.5 46.4, -100.0 46.4, -100.0 48.6, -102.5 48.6, -102.5 46.4))"
   }
 ]

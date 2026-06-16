@@ -510,14 +510,6 @@ def _dict_to_civic_entry(d: dict) -> CivicCoverageEntry:
 def _load_gis_data(gpkg_path: str) -> None:
     global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage, _gis_last_loaded
 
-    pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
-    if os.path.exists(pickle_path):
-        try:
-            os.remove(pickle_path)
-            log.info("Removed legacy pickle cache: %s", pickle_path)
-        except Exception as exc:
-            log.warning("Could not remove legacy pickle cache %s: %s", pickle_path, exc)
-
     cache_path = os.path.splitext(gpkg_path)[0] + ".cache.json"
     gpkg_mtime = os.path.getmtime(gpkg_path)
 
@@ -1480,7 +1472,7 @@ def _lookup_child_coverage(
     for entry in _child_coverage:
         if entry.get("profile") != "civic":
             continue
-        tuples = entry.get("civic_tuples") or []
+        tuples = entry.get("civic_addresses") or []
 
         entry_best = -1
         for t in tuples:
@@ -1679,13 +1671,23 @@ def _validate_ams_civic_file(path: str) -> Optional[list]:
         log.error("AMS: ams_civic_coverage.json must be a non-empty JSON array")
         return None
 
-    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "child_uri"}
-    _TUPLE_REQUIRED = {"country", "a1", "a2", "lost_server"}
+    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "lost_server"}
+    _ADDR_REQUIRED  = {"country", "a1", "a2"}
 
     for i, entry in enumerate(data):
         if not isinstance(entry, dict):
             log.error("AMS: ams_civic_coverage.json entry %d is not an object", i)
             return None
+        if "lost_server" not in entry and "child_uri" in entry:
+            log.warning(
+                'AMS: ams_civic_coverage.json entry %d uses deprecated "child_uri" — rename to "lost_server"', i
+            )
+            entry["lost_server"] = entry.pop("child_uri")
+        if "civic_addresses" not in entry and "civic_tuples" in entry:
+            log.warning(
+                'AMS: ams_civic_coverage.json entry %d uses deprecated "civic_tuples" — rename to "civic_addresses"', i
+            )
+            entry["civic_addresses"] = entry.pop("civic_tuples")
         missing = _ENTRY_REQUIRED - entry.keys()
         if missing:
             log.error("AMS: ams_civic_coverage.json entry %d missing required key(s): %s", i, missing)
@@ -1693,17 +1695,17 @@ def _validate_ams_civic_file(path: str) -> Optional[list]:
         if entry.get("profile") != "civic":
             log.error('AMS: ams_civic_coverage.json entry %d has profile %r — expected "civic"', i, entry.get("profile"))
             return None
-        tuples = entry.get("civic_tuples")
-        if not isinstance(tuples, list) or not tuples:
-            log.error("AMS: ams_civic_coverage.json entry %d must have a non-empty civic_tuples array", i)
+        addrs = entry.get("civic_addresses")
+        if not isinstance(addrs, list) or not addrs:
+            log.error("AMS: ams_civic_coverage.json entry %d must have a non-empty civic_addresses array", i)
             return None
-        for j, t in enumerate(tuples):
+        for j, t in enumerate(addrs):
             if not isinstance(t, dict):
-                log.error("AMS: ams_civic_coverage.json entry %d civic_tuples[%d] is not an object", i, j)
+                log.error("AMS: ams_civic_coverage.json entry %d civic_addresses[%d] is not an object", i, j)
                 return None
-            tmissing = _TUPLE_REQUIRED - t.keys()
-            if tmissing:
-                log.error("AMS: ams_civic_coverage.json entry %d civic_tuples[%d] missing required key(s): %s", i, j, tmissing)
+            amissing = _ADDR_REQUIRED - t.keys()
+            if amissing:
+                log.error("AMS: ams_civic_coverage.json entry %d civic_addresses[%d] missing required key(s): %s", i, j, amissing)
                 return None
     return data
 
@@ -1724,12 +1726,17 @@ def _validate_ams_geodetic_file(path: str) -> Optional[list]:
         log.error("AMS: ams_geodetic_coverage.json must be a non-empty JSON array")
         return None
 
-    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "child_uri"}
+    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "lost_server"}
 
     for i, entry in enumerate(data):
         if not isinstance(entry, dict):
             log.error("AMS: ams_geodetic_coverage.json entry %d is not an object", i)
             return None
+        if "lost_server" not in entry and "child_uri" in entry:
+            log.warning(
+                'AMS: ams_geodetic_coverage.json entry %d uses deprecated "child_uri" — rename to "lost_server"', i
+            )
+            entry["lost_server"] = entry.pop("child_uri")
         missing = _ENTRY_REQUIRED - entry.keys()
         if missing:
             log.error("AMS: ams_geodetic_coverage.json entry %d missing required key(s): %s", i, missing)
@@ -1789,9 +1796,9 @@ def _load_ams_provisioning() -> bool:
             _child_coverage.append(entry)
 
     _root_ams_active = True
-    civic_tuple_count = sum(len(e.get("civic_tuples") or []) for e in civic_entries)
+    civic_tuple_count = sum(len(e.get("civic_addresses") or []) for e in civic_entries)
     log.info(
-        "AMS: provisioning files loaded (%d civic entry/entries, %d civic tuple(s), "
+        "AMS: provisioning files loaded (%d civic entry/entries, %d civic address(es), "
         "%d geodetic entry/entries) — FG push active targeting %s",
         len(civic_entries), civic_tuple_count, len(geodetic_entries), _forest_guide_uri,
     )
@@ -1859,14 +1866,14 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
 
     sb_el = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
     profile           = ""
-    civic_tuples      = None
+    civic_addresses   = None
     geodetic_geom_wkt = None
 
     if sb_el is not None:
         profile = sb_el.get("profile", "")
 
         if profile == "civic":
-            civic_tuples = []
+            civic_addresses = []
             for ca_el in sb_el.findall(f".//{{{_NS_CA}}}civicAddress"):
                 t: dict[str, Optional[str]] = {}
                 for field, tag in [
@@ -1875,7 +1882,7 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
                 ]:
                     el = ca_el.find(f"{{{_NS_CA}}}{tag}")
                     t[field] = el.text.strip() if (el is not None and el.text) else ("*" if field in ("a3", "a4", "a5") else None)
-                civic_tuples.append(t)
+                civic_addresses.append(t)
 
         elif profile == "geodetic-2d":
             try:
@@ -1887,32 +1894,28 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
 
     uri_el = mapping_el.find(f"{{{_NS_LOST}}}uri")
     if uri_el is not None and uri_el.text and uri_el.text.strip():
-        child_uri = uri_el.text.strip()
+        lost_server = uri_el.text.strip()
     elif child_uri_hint:
-        child_uri = child_uri_hint
+        lost_server = child_uri_hint
     else:
         if source and "://" not in source:
-            child_uri = f"http://{source}/lost"
+            lost_server = f"http://{source}/lost"
         elif source:
-            child_uri = source.rstrip("/") + "/lost"
+            lost_server = source.rstrip("/") + "/lost"
         else:
-            child_uri = ""
-
-    if civic_tuples is not None:
-        for t in civic_tuples:
-            t["lost_server"] = child_uri
+            lost_server = ""
 
     return {
-        "source":           source,
-        "source_id":        source_id,
-        "last_updated":     last_updated,
-        "expires":          expires,
-        "service":          service,
-        "display_name":     display_name,
-        "profile":          profile,
-        "civic_tuples":     civic_tuples,
+        "source":            source,
+        "source_id":         source_id,
+        "last_updated":      last_updated,
+        "expires":           expires,
+        "service":           service,
+        "display_name":      display_name,
+        "profile":           profile,
+        "civic_addresses":   civic_addresses,
         "geodetic_geom_wkt": geodetic_geom_wkt,
-        "child_uri":        child_uri,
+        "lost_server":       lost_server,
     }
 
 
@@ -1936,7 +1939,7 @@ def _child_entry_to_mapping_xml(entry: dict) -> Optional[str]:
     sb.set("profile", profile)
 
     if profile == "civic":
-        for t in (entry.get("civic_tuples") or []):
+        for t in (entry.get("civic_addresses") or []):
             ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
             for field, tag in [
                 ("country", "country"), ("a1", "A1"), ("a2", "A2"),
@@ -2615,13 +2618,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "Forest Guide: child coverage match found but child_uri is empty "
+                "Forest Guide: child coverage match found but lost_server is empty "
                 "(source=%s) — returning notFound",
                 child_match.get("source", ""),
             )
@@ -2636,7 +2639,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 if recursive:
                     return _respond(_recurse_to_uri_outgoing(xml_bytes, child_uri))
@@ -2644,7 +2647,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "LoST-Sync: child coverage match found but child_uri is empty "
+                "LoST-Sync: child coverage match found but lost_server is empty "
                 "(source=%s) — falling through to local processing",
                 child_match.get("source", ""),
             )
@@ -2844,13 +2847,13 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "Forest Guide: child coverage match found but child_uri is empty "
+                "Forest Guide: child coverage match found but lost_server is empty "
                 "(source=%s) — returning notFound",
                 child_match.get("source", ""),
             )
@@ -2867,7 +2870,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 if recursive:
                     return _respond(await _recurse_to_uri_out(xml_bytes, child_uri))
@@ -2875,7 +2878,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "LoST-Sync: child coverage match found but child_uri is empty "
+                "LoST-Sync: child coverage match found but lost_server is empty "
                 "(source=%s) — falling through to local processing",
                 child_match.get("source", ""),
             )

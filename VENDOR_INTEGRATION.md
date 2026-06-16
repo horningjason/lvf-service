@@ -272,7 +272,6 @@ testing. It is **not production-hardened**:
 - No authentication or access control on the `/lost` endpoint
 - No rate limiting
 - Single-process; not designed for horizontal scaling
-- The GeoPackage pickle cache is not secured against tampering
 - No formal SLA or uptime guarantee
 
 Vendors evaluating this implementation for production deployment should conduct their own security
