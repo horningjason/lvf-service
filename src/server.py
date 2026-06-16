@@ -9,12 +9,14 @@ re-exports the symbols that test harnesses import directly.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response
 from lxml import etree
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import src.lost.find_service as _fs
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
@@ -24,10 +26,36 @@ from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry
 
 _NS_LOST = _fs._NS_LOST
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    tls_mode = os.environ.get("LVF_TLS_MODE", "disabled").lower()
+    log.info("TLS mode: %s", tls_mode)
+    if tls_mode in ("tls", "mtls"):
+        cert_file = os.environ.get("LVF_TLS_CERT_FILE", "")
+        key_file  = os.environ.get("LVF_TLS_KEY_FILE",  "")
+        if not cert_file or not os.path.exists(cert_file):
+            log.error(
+                "LVF_TLS_CERT_FILE must be set and file must exist (got: %r) — aborting startup",
+                cert_file,
+            )
+            raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CERT_FILE")
+        if not key_file or not os.path.exists(key_file):
+            log.error(
+                "LVF_TLS_KEY_FILE must be set and file must exist (got: %r) — aborting startup",
+                key_file,
+            )
+            raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_KEY_FILE")
+        if tls_mode == "mtls":
+            ca_file = os.environ.get("LVF_TLS_CA_FILE", "")
+            if not ca_file or not os.path.exists(ca_file):
+                log.error(
+                    "LVF_TLS_CA_FILE must be set and file must exist for mtls mode (got: %r) — aborting startup",
+                    ca_file,
+                )
+                raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CA_FILE")
     await _fs.lifespan_startup()
     _maybe_start_sip()
     yield
@@ -49,7 +77,15 @@ def _maybe_start_sip() -> None:
     asyncio.ensure_future(notifier.start())
 
 
+class LimitBodySize(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if int(request.headers.get("content-length", 0)) > 1_048_576:
+            return Response(status_code=413)
+        return await call_next(request)
+
+
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
+app.add_middleware(LimitBodySize)
 
 
 @app.get("/health")
@@ -186,6 +222,18 @@ async def sync_endpoint(request: Request) -> Response:
     Accepts pushMappings and getMappingsRequest in application/lostsync+xml.
     Returns HTTP 200 for both success and protocol-level errors.
     """
+    if os.environ.get("LVF_TLS_MODE", "disabled").lower() == "mtls":
+        ssl_object = request.scope.get("ssl_object")
+        peer_cert = ssl_object.getpeercert() if ssl_object is not None else None
+        if not peer_cert:
+            return Response(
+                content='{"error": "Client certificate required for /sync endpoint"}',
+                status_code=401,
+                media_type="application/json",
+            )
+        subject = dict(x[0] for x in peer_cert.get("subject", []))
+        log.info("Sync request authenticated: CN=%s", subject.get("commonName", "<unknown>"))
+
     body = await request.body()
     return await _fs.handle_sync(body, request.client)
 
@@ -197,14 +245,24 @@ async def lost_endpoint(request: Request) -> Response:
     listServicesByLocation, getServiceBoundary.
     Content-Type: application/lost+xml.
     """
+    if os.environ.get("LVF_TLS_MODE", "disabled").lower() == "mtls":
+        ssl_object = request.scope.get("ssl_object")
+        peer_cert = ssl_object.getpeercert() if ssl_object is not None else None
+        if peer_cert:
+            subject = dict(x[0] for x in peer_cert.get("subject", []))
+            log.debug("LoST request with client cert: CN=%s", subject.get("commonName", "<unknown>"))
+        else:
+            log.debug("LoST request without client cert (allowed)")
+
     body = await request.body()
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _fs._XML_PARSER)
     except etree.XMLSyntaxError as exc:
+        log.error("Lost endpoint: XML parse failed: %s", exc)
         err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
         err.set("source", _fs._server_uri)
         br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", f"Malformed XML: {exc}")
+        br.set("message", "Malformed XML.")
         br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
         return Response(
             content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),

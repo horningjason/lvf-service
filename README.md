@@ -52,6 +52,15 @@ To use your own GeoPackage, place it in the `data/` folder and update `LVF_GPKG_
 The `data/` folder is mounted as a volume — changes are picked up at the next poll interval
 without rebuilding the image.
 
+> **Linux / macOS volume permissions:** The container process runs as `lvfuser` (UID 1000). If
+> Docker cannot read your host `data/` directory as that user, the service will fail to load GIS
+> data. Fix it once before the first `docker compose up`:
+> ```bash
+> sudo chown -R 1000:1000 ./data
+> ```
+> Windows (Docker Desktop with WSL 2) and macOS (Docker Desktop) handle volume ownership
+> transparently — no `chown` is needed on those platforms.
+
 ---
 
 ## Quick Start — Python

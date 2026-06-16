@@ -6,7 +6,7 @@
     "expires": "NO-EXPIRATION",
     "service": "urn:service:sos",
     "profile": "civic",
-    "child_uri": "http://root-ams.lvf.example.com/validate",
+    "child_uri": "http://root-ams.lvf.example.com/lost",
     "civic_tuples": [
       {
         "country": "US",

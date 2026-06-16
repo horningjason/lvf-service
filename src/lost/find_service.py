@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import os
-import pickle
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -43,6 +42,8 @@ from shapely.ops import transform, unary_union
 from fastapi import Response
 from lxml import etree
 import httpx
+
+_XML_PARSER = etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
 
 from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
 from src.logging_events.log_events import generate_query_id
@@ -249,9 +250,10 @@ def _validate_schema(body: bytes) -> Optional[str]:
     if _schema is None:
         return None
     try:
-        doc = etree.fromstring(body)
+        doc = etree.fromstring(body, _XML_PARSER)
     except etree.XMLSyntaxError as exc:
-        return f"Malformed XML: {exc}"
+        log.error("Schema validation: XML parse failed: %s", exc)
+        return "Malformed XML."
     if _schema.validate(doc):
         return None
     error_log = _schema.error_log
@@ -431,39 +433,122 @@ def _build_default_mapping(service_urn: str) -> MappingElement:
     )
 
 
+# ---------------------------------------------------------------------------
+# GIS cache — JSON serialization helpers
+# ---------------------------------------------------------------------------
+
+def _ssap_to_dict(r: SSAPRecord) -> dict:
+    d = r.model_dump(exclude={"geometry"})
+    d["geometry"] = r.geometry.wkt if r.geometry is not None else None
+    return d
+
+
+def _dict_to_ssap(d: dict) -> SSAPRecord:
+    from shapely.wkt import loads as _wkt_loads
+    geom_wkt = d.get("geometry")
+    return SSAPRecord(
+        **{k: v for k, v in d.items() if k != "geometry"},
+        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
+    )
+
+
+def _rcl_to_dict(r: RCLRecord) -> dict:
+    d = r.model_dump(exclude={"geometry"})
+    d["geometry"] = r.geometry.wkt if r.geometry is not None else None
+    return d
+
+
+def _dict_to_rcl(d: dict) -> RCLRecord:
+    from shapely.wkt import loads as _wkt_loads
+    geom_wkt = d.get("geometry")
+    return RCLRecord(
+        **{k: v for k, v in d.items() if k != "geometry"},
+        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
+    )
+
+
+def _boundary_to_dict(b: ServiceBoundary) -> dict:
+    d = b.model_dump(exclude={"geometry"})
+    d["geometry"] = b.geometry.wkt if b.geometry is not None else None
+    return d
+
+
+def _dict_to_boundary(d: dict) -> ServiceBoundary:
+    from shapely.wkt import loads as _wkt_loads
+    geom_wkt = d.get("geometry")
+    return ServiceBoundary(
+        **{k: v for k, v in d.items() if k != "geometry"},
+        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
+    )
+
+
+def _civic_entry_to_dict(e: CivicCoverageEntry) -> dict:
+    return {
+        "country":  e.country,
+        "a1":       e.a1,
+        "a2":       e.a2,
+        "a3":       e.a3,
+        "a4":       e.a4,
+        "a5":       e.a5,
+        "boundary": _boundary_to_dict(e.boundary) if e.boundary is not None else None,
+    }
+
+
+def _dict_to_civic_entry(d: dict) -> CivicCoverageEntry:
+    boundary_d = d.get("boundary")
+    return CivicCoverageEntry(
+        country=d["country"],
+        a1=d["a1"],
+        a2=d["a2"],
+        a3=d.get("a3"),
+        a4=d.get("a4"),
+        a5=d.get("a5"),
+        boundary=_dict_to_boundary(boundary_d) if boundary_d is not None else None,
+    )
+
+
 def _load_gis_data(gpkg_path: str) -> None:
     global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage, _gis_last_loaded
 
     pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
-    gpkg_mtime = os.path.getmtime(gpkg_path)
-
     if os.path.exists(pickle_path):
         try:
-            with open(pickle_path, "rb") as f:
-                data = pickle.load(f)
+            os.remove(pickle_path)
+            log.info("Removed legacy pickle cache: %s", pickle_path)
+        except Exception as exc:
+            log.warning("Could not remove legacy pickle cache %s: %s", pickle_path, exc)
+
+    cache_path = os.path.splitext(gpkg_path)[0] + ".cache.json"
+    gpkg_mtime = os.path.getmtime(gpkg_path)
+
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
             if data.get("gpkg_mtime") == gpkg_mtime:
-                log.info("Cache hit — loading GIS data from pickle: %s", pickle_path)
-                _ssap              = data["ssap"]
-                _rcl               = data["rcl"]
-                _boundaries        = data["boundaries"]
-                _civic_coverage    = data["civic_coverage"]
-                _geodetic_coverage = data["geodetic_coverage"]
+                log.info("Cache hit — loading GIS data from JSON cache: %s", cache_path)
+                from shapely.wkt import loads as _wkt_loads
+                _ssap              = [_dict_to_ssap(d) for d in data["ssap"]]
+                _rcl               = [_dict_to_rcl(d)  for d in data["rcl"]]
+                _boundaries        = [_dict_to_boundary(d) for d in data["boundaries"]]
+                _civic_coverage    = [_dict_to_civic_entry(d) for d in data["civic_coverage"]]
+                _geodetic_coverage = {urn: _wkt_loads(wkt) for urn, wkt in data["geodetic_coverage"].items()}
                 _gis_last_loaded   = _ntp_client.get_current_time()
                 log.info(
-                    "Loaded from pickle: %d SSAP, %d RCL, %d boundaries, "
+                    "Loaded from cache: %d SSAP, %d RCL, %d boundaries, "
                     "%d civic coverage entries, %d geodetic URN(s)",
                     len(_ssap), len(_rcl), len(_boundaries),
                     len(_civic_coverage), len(_geodetic_coverage),
                 )
                 return
             else:
-                log.info("Cache miss — GPKG mtime changed, rebuilding: %s", pickle_path)
+                log.info("Cache miss — GPKG mtime changed, rebuilding: %s", cache_path)
         except Exception as exc:
             log.warning(
-                "Pickle load failed (%s) — falling back to GPKG and rebuilding cache", exc,
+                "JSON cache load failed (%s) — falling back to GPKG and rebuilding cache", exc,
             )
     else:
-        log.info("Cache miss — no pickle found, building for the first time: %s", pickle_path)
+        log.info("Cache miss — no JSON cache found, building for the first time: %s", cache_path)
 
     ssap_layer      = os.environ.get("LVF_SSAP_LAYER",     "SiteStructureAddressPoint")
     rcl_layer       = os.environ.get("LVF_RCL_LAYER",      "RoadCenterLine")
@@ -504,21 +589,21 @@ def _load_gis_data(gpkg_path: str) -> None:
     _gis_last_loaded = _ntp_client.get_current_time()
 
     try:
-        with open(pickle_path, "wb") as f:
-            pickle.dump(
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(
                 {
-                    "ssap":              _ssap,
-                    "rcl":               _rcl,
-                    "boundaries":        _boundaries,
-                    "civic_coverage":    _civic_coverage,
-                    "geodetic_coverage": _geodetic_coverage,
+                    "ssap":              [_ssap_to_dict(r) for r in _ssap],
+                    "rcl":               [_rcl_to_dict(r)  for r in _rcl],
+                    "boundaries":        [_boundary_to_dict(b) for b in _boundaries],
+                    "civic_coverage":    [_civic_entry_to_dict(e) for e in _civic_coverage],
+                    "geodetic_coverage": {urn: geom.wkt for urn, geom in _geodetic_coverage.items()},
                     "gpkg_mtime":        gpkg_mtime,
                 },
                 f,
             )
-        log.info("GIS data cached to pickle: %s", pickle_path)
+        log.info("GIS data cached to JSON: %s", cache_path)
     except Exception as exc:
-        log.warning("Could not write pickle cache: %s", exc)
+        log.warning("Could not write JSON cache: %s", exc)
 
 
 def _watch_gpkg(gpkg_path: str) -> None:
@@ -743,9 +828,10 @@ def lookup_civic_coverage(
 
 def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.datetime]]:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
     except etree.XMLSyntaxError as exc:
-        raise ValueError(f"Malformed XML: {exc}") from exc
+        log.error("Request parse: XML syntax error: %s", exc)
+        raise ValueError("Malformed XML.") from exc
 
     if root.tag != f"{{{_NS_LOST}}}findService":
         local = root.tag.split("}")[-1] if "}" in root.tag else root.tag
@@ -797,7 +883,7 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
 def _parse_return_additional_location(body: bytes) -> str:
     _VALID = {"none", "similar", "complete", "any"}
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         val = root.get(f"{{{_NS_RLI}}}returnAdditionalLocation")
         if val is None:
             return "complete"
@@ -808,7 +894,7 @@ def _parse_return_additional_location(body: bytes) -> str:
 
 def _parse_recursive(body: bytes) -> bool:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         return root.get("recursive", "false").lower() == "true"
     except Exception:
         return False
@@ -1113,7 +1199,7 @@ def _check_ooc_admin(address: CivicAddress, g2):
 
 def _has_loop(body: bytes) -> bool:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         path_el = root.find(f"{{{_NS_LOST}}}path")
         if path_el is None:
             return False
@@ -1127,7 +1213,7 @@ def _has_loop(body: bytes) -> bool:
 
 def _add_via_to_request(body: bytes) -> bytes:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         path_el = root.find(f"{{{_NS_LOST}}}path")
         if path_el is None:
             path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
@@ -1235,7 +1321,8 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
     except httpx.TimeoutException:
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        return _make_errors_xml("serverError", f"Could not reach target LVF: {exc}")
+        log.error("Recursion (sync) to %s failed: %s", validate_uri, exc)
+        return _make_errors_xml("serverError", "An internal error occurred.")
 
 
 async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> bytes:
@@ -1276,7 +1363,8 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
     except httpx.TimeoutException:
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        return _make_errors_xml("serverError", f"Could not reach target LVF: {exc}")
+        log.error("Recursion (async) to %s failed: %s", validate_uri, exc)
+        return _make_errors_xml("serverError", "An internal error occurred.")
 
 
 # ---------------------------------------------------------------------------
@@ -2500,7 +2588,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     recursive = _parse_recursive(xml_bytes)
 
-    _req_root = etree.fromstring(xml_bytes)
+    _req_root = etree.fromstring(xml_bytes, _XML_PARSER)
     call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
     ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
     if call_id or incident_tracking_id:
@@ -2728,7 +2816,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 
     recursive = _parse_recursive(xml_bytes)
 
-    _req_root = etree.fromstring(xml_bytes)
+    _req_root = etree.fromstring(xml_bytes, _XML_PARSER)
     call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
     ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
     if call_id or incident_tracking_id:
@@ -2977,9 +3065,10 @@ async def lifespan_startup() -> None:
 async def handle_sync(body: bytes, client) -> Response:
     """Handle an incoming LoST-Sync request body. Returns a Response directly."""
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
     except etree.XMLSyntaxError as exc:
-        return _sync_error_response("badRequest", f"Malformed XML: {exc}")
+        log.error("Sync request: XML parse failed: %s", exc)
+        return _sync_error_response("badRequest", "Malformed XML.")
 
     if root.tag == f"{{{_NS_SYNC}}}pushMappings":
         log.info("LoST-Sync: received pushMappings from %s", client)

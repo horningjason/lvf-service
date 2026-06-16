@@ -9,4 +9,15 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+    environment:
+      # TLS config - see docs
+      # LVF_TLS_MODE:
+      # LVF_TLS_CERT_FILE:
+      # LVF_TLS_KEY_FILE:
+      # LVF_TLS_CA_FILE:
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
