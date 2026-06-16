@@ -155,6 +155,18 @@ def _diff(actual: dict, golden: dict) -> list[str]:
     return diffs
 
 
+_HEADER_WIDTH = 56
+
+
+def _pretty_xml(xml_bytes: bytes) -> str:
+    """Return indented XML string, falling back to raw text on parse error."""
+    try:
+        root = etree.fromstring(xml_bytes)
+        return etree.tostring(root, pretty_print=True).decode()
+    except Exception:
+        return xml_bytes.decode(errors="replace")
+
+
 def run_tests(test_names: list[str] | None = None) -> int:
     initialize()
 
@@ -180,40 +192,64 @@ def run_tests(test_names: list[str] | None = None) -> int:
             return 1
 
     passed = failed = errors = skipped = 0
+    results: list[tuple[str, str]] = []  # (name, "PASS" | "FAIL" | "ERROR" | "SKIP")
 
     for xml_path in xml_files:
         name = xml_path.stem
         golden_path = GOLDEN_DIR / f"{name}.golden.xml"
 
+        print(f"\n{'═' * _HEADER_WIDTH}")
+        print(f"TEST: {name}")
+        print(f"{'═' * _HEADER_WIDTH}")
+
         if not golden_path.exists():
-            print(f"SKIP  {name}  (no golden file — run seed.py first)")
+            print("SKIP  (no golden file — run seed.py first)")
             skipped += 1
+            results.append((name, "SKIP"))
             continue
 
+        request_bytes = xml_path.read_bytes()
+        print(f"\nREQUEST:\n{_pretty_xml(request_bytes)}")
+
         try:
-            actual_bytes = _dispatch(xml_path.read_bytes())
+            actual_bytes = _dispatch(request_bytes)
         except Exception as exc:
-            print(f"ERROR {name}: handler raised: {exc}")
+            print(f"ACTUAL RESPONSE:\n(handler raised: {exc})")
+            print("\nERROR")
             errors += 1
+            results.append((name, "ERROR"))
             continue
+
+        print(f"ACTUAL RESPONSE:\n{_pretty_xml(actual_bytes)}")
 
         try:
             actual = _parse_outcome(actual_bytes)
             golden = _parse_outcome(golden_path.read_bytes())
         except Exception as exc:
-            print(f"ERROR {name}: could not parse XML: {exc}")
+            print(f"(could not parse XML: {exc})")
+            print("\nERROR")
             errors += 1
+            results.append((name, "ERROR"))
             continue
 
         diffs = _diff(actual, golden)
         if diffs:
-            print(f"FAIL  {name}")
+            print(f"EXPECTED:\n{_pretty_xml(golden_path.read_bytes())}")
+            print("Differences:")
             for d in diffs:
-                print(f"        {d}")
+                print(f"  {d}")
+            print("\nFAIL")
             failed += 1
+            results.append((name, "FAIL"))
         else:
-            print(f"PASS  {name}")
+            print("\nPASS")
             passed += 1
+            results.append((name, "PASS"))
+
+    # --- summary table ---
+    print("\n--- RESULTS ---")
+    for name, status in results:
+        print(f"  {status:<5}  {name}")
 
     total = passed + failed + errors + skipped
     parts = [f"{passed}/{total} passed"]
@@ -224,6 +260,13 @@ def run_tests(test_names: list[str] | None = None) -> int:
     if skipped:
         parts.append(f"{skipped} skipped")
     print(f"\n{', '.join(parts)}")
+
+    non_passing = [(n, s) for n, s in results if s != "PASS"]
+    if non_passing:
+        print("\nFailed / non-passing tests:")
+        for name, status in non_passing:
+            print(f"  {status:<5}  {name}")
+
     return 0 if (failed == 0 and errors == 0) else 1
 
 
