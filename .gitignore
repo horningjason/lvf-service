@@ -1,9 +1,10 @@
 # Environment — never commit real credentials
 .env
 
-# Pickle cache generated at startup
+# Cache generated at startup
 *.pkl
 *.pickle
+*.cache.json
 
 # Python
 __pycache__/

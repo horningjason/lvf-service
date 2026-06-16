@@ -78,8 +78,14 @@ def _maybe_start_sip() -> None:
 
 
 class LimitBodySize(BaseHTTPMiddleware):
+    _LIMITS = {
+        "/sync": 10_485_760,
+    }
+    _DEFAULT = 1_048_576
+
     async def dispatch(self, request, call_next):
-        if int(request.headers.get("content-length", 0)) > 1_048_576:
+        limit = self._LIMITS.get(request.scope["path"], self._DEFAULT)
+        if int(request.headers.get("content-length", 0)) > limit:
             return Response(status_code=413)
         return await call_next(request)
 
