@@ -164,6 +164,8 @@ _rcl:        list[RCLRecord]       = []
 _boundaries: list[ServiceBoundary] = []
 _geodetic_coverage: dict[str, Any] = {}
 _civic_coverage: list[CivicCoverageEntry] = []
+_ssap_index: dict[tuple, list] = {}
+_rcl_index:  dict[tuple, list] = {}
 
 _reloading: bool = False
 _reloading_lock = threading.Lock()
@@ -336,7 +338,7 @@ def _row_to_ssap(row: pd.Series) -> SSAPRecord:
         unitvalue=_get(row, "UnitValue"),
         room=_get(row, "Room"),
         section=_get(row, "Section"),
-        row=_get(row, "Row"),
+        row=_get(row, "Row_"),
         seat=_get(row, "Seat"),
         locmarker=_get(row, "LocMarker"),
         post_comm=_get(row, "Post_Comm"),
@@ -507,6 +509,44 @@ def _dict_to_civic_entry(d: dict) -> CivicCoverageEntry:
     )
 
 
+def _norm_key(v: Optional[str]) -> Optional[str]:
+    if not v:
+        return None
+    s = v.strip()
+    return s.upper() if s else None
+
+
+def _build_attribute_index() -> None:
+    global _ssap_index, _rcl_index
+    ssap_idx: dict[tuple, list] = {}
+    for r in _ssap:
+        key = (_norm_key(r.country), _norm_key(r.a1), _norm_key(r.a2))
+        ssap_idx.setdefault(key, []).append(r)
+    _ssap_index = ssap_idx
+
+    rcl_idx: dict[tuple, list] = {}
+    for r in _rcl:
+        l_key = (_norm_key(r.country_l), _norm_key(r.a1_l), _norm_key(r.a2_l))
+        r_key = (_norm_key(r.country_r), _norm_key(r.a1_r), _norm_key(r.a2_r))
+        rcl_idx.setdefault(l_key, []).append(r)
+        if r_key != l_key:
+            rcl_idx.setdefault(r_key, []).append(r)
+    _rcl_index = rcl_idx
+    log.debug(
+        "Attribute index built: %d SSAP buckets, %d RCL buckets",
+        len(_ssap_index), len(_rcl_index),
+    )
+
+
+def _candidates_for(address: CivicAddress) -> tuple[list, list]:
+    key = (_norm_key(address.country), _norm_key(address.a1), _norm_key(address.a2))
+    ssap_subset = _ssap_index.get(key)
+    rcl_subset  = _rcl_index.get(key)
+    if ssap_subset is None and rcl_subset is None:
+        return _ssap, _rcl
+    return (ssap_subset or [], rcl_subset or [])
+
+
 def _load_gis_data(gpkg_path: str) -> None:
     global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage, _gis_last_loaded
 
@@ -532,6 +572,7 @@ def _load_gis_data(gpkg_path: str) -> None:
                     len(_ssap), len(_rcl), len(_boundaries),
                     len(_civic_coverage), len(_geodetic_coverage),
                 )
+                _build_attribute_index()
                 return
             else:
                 log.info("Cache miss — GPKG mtime changed, rebuilding: %s", cache_path)
@@ -578,6 +619,7 @@ def _load_gis_data(gpkg_path: str) -> None:
 
     _derive_geodetic_coverage()
     _derive_civic_coverage()
+    _build_attribute_index()
     _gis_last_loaded = _ntp_client.get_current_time()
 
     try:
@@ -2688,7 +2730,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes)
-    g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
+    _ssap_cand, _rcl_cand = _candidates_for(req.civic_address)
+    g2 = gate2.run(req.civic_address, _ssap_cand, _rcl_cand, now)
 
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
@@ -2917,7 +2960,8 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes)
-    g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
+    _ssap_cand, _rcl_cand = _candidates_for(req.civic_address)
+    g2 = gate2.run(req.civic_address, _ssap_cand, _rcl_cand, now)
 
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:

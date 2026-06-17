@@ -102,6 +102,8 @@ async def health():
         "rcl_records": len(_fs._rcl),
         "boundaries": len(_fs._boundaries),
         "civic_coverage_entries": len(_fs._civic_coverage),
+        "ssap_index_buckets": len(_fs._ssap_index),
+        "rcl_index_buckets":  len(_fs._rcl_index),
         "element_state": _element_state.get_state().value,
         "service_state": _service_state.get_state().value,
     }
