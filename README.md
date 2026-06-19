@@ -105,17 +105,29 @@ The LVF supports running multiple worker processes on a single machine. Every no
 service behaves **exactly** like the previous single-process deployment — same validation,
 routing, recursion, and coverage results.
 
-**Single worker (unchanged behavior):**
+> **Platform requirements**
+> - **Single-worker** (uvicorn / `python main.py`) runs on **Linux, macOS, and Windows** —
+>   this is the cross-platform path.
+> - **Multi-worker** (gunicorn / `LVF_WORKERS=N`) requires **Linux or Docker**. gunicorn is
+>   POSIX-only (it depends on `os.fork` and `fcntl`) and does **not** run natively on Windows
+>   — there it fails with "command not found" if absent, or a runtime error if installed.
+>   On Windows, use the single-worker dev command below; run multi-worker inside the
+>   **Docker stack** instead.
+> - The application still runs single-process on Windows: the `fcntl`-based cross-process
+>   coverage lock and leader election degrade to no-ops there (the lone process is always the
+>   leader), so Windows is fully supported for single-process development.
+
+**Single worker (unchanged behavior) — Linux, macOS, Windows:**
 
 ```bash
-# Development:
+# Development (cross-platform):
 python main.py
 
-# Production, explicit single worker:
+# Production, explicit single worker (Linux / Docker):
 LVF_WORKERS=1 gunicorn -c gunicorn.conf.py src.server:app
 ```
 
-**Multiple workers (per-machine):**
+**Multiple workers (per-machine) — Linux / Docker only:**
 
 ```bash
 # Build the GIS cache once before forking, then run N workers.
@@ -125,6 +137,9 @@ LVF_WORKERS=4 gunicorn -c gunicorn.conf.py src.server:app
 ```
 
 > **The Forest Guide must run single-worker** (`LVF_WORKERS=1`).
+>
+> In production, multi-worker runs inside the Docker stack (Linux containers) — that is the
+> supported environment for gunicorn / `LVF_WORKERS`.
 
 **Pre-warm step.** `python prewarm.py` builds the GIS JSON cache once up front so the
 workers all start against a warm cache instead of cold-building the GeoPackage
@@ -185,7 +200,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
 | `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
 | **Process Management** | | | |
-| `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a **Forest Guide must use `1`**. Ignored by `python main.py` (always single-process) |
+| `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a **Forest Guide must use `1`**. Ignored by `python main.py` (always single-process). Multi-worker requires **Linux/Docker** — gunicorn is POSIX-only and does not run on Windows |
 | `LVF_WORKER_TIMEOUT` | No | `120` | Gunicorn worker timeout in seconds (read by `gunicorn.conf.py`) |
 | `LVF_COVERAGE_POLL_INTERVAL_SECONDS` | No | `15` | How often (seconds) each worker polls the child-coverage file so siblings converge on each other's LoST-Sync writes. Silent read-only refresh — never triggers a push or startup sync. Set to `0` to disable |
 | **GIS Data** | | | |
