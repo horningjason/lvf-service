@@ -239,6 +239,14 @@ _schema: Optional[etree.XMLSchema] = None
 
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
+# Long-running LoST-Sync retry tasks spawned by _startup_sync() (one per
+# configured child, plus parent-push and/or Forest-Guide-push). Each retries
+# indefinitely (exponential backoff up to _SYNC_BACKOFF_CAP seconds) while its
+# target is unreachable, so they must be cancelled explicitly on shutdown
+# (lifespan_shutdown()) rather than left to keep the event loop alive past
+# gunicorn's graceful_timeout.
+_background_sync_tasks: list[asyncio.Task] = []
+
 _child_coverage: list[dict] = []
 
 # Guards reassignment of the _child_coverage global (in-process). The list is
@@ -2708,15 +2716,19 @@ async def _startup_sync() -> None:
             )
             event.set()
 
-        asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
+        _background_sync_tasks.append(
+            asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
+        )
 
     if not _root_ams and not _forest_guide_mode:
         sync_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC",    "")
         sync_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
         if (sync_civic or sync_geodetic) and _parent_uri:
-            asyncio.create_task(
-                _retry_sync_op("push to parent", _push_coverage_to_parent),
-                name="lvf-sync-push-parent",
+            _background_sync_tasks.append(
+                asyncio.create_task(
+                    _retry_sync_op("push to parent", _push_coverage_to_parent),
+                    name="lvf-sync-push-parent",
+                )
             )
 
     if _root_ams and _root_ams_active:
@@ -2725,7 +2737,9 @@ async def _startup_sync() -> None:
                 await event.wait()
             await _retry_sync_op("push to Forest Guide", _push_coverage_to_fg)
 
-        asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
+        _background_sync_tasks.append(
+            asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
+        )
 
 
 def _maybe_schedule_repush() -> None:
@@ -3369,6 +3383,25 @@ async def lifespan_startup() -> None:
         asyncio.create_task(_startup_sync())
     else:
         log.info("LoST-Sync: startup sync skipped on non-leader worker")
+
+
+async def lifespan_shutdown() -> None:
+    """Run shutdown cleanup — call from the FastAPI lifespan context manager
+    after yield. Cancels the long-running LoST-Sync retry tasks spawned by
+    _startup_sync() (child pulls, parent push, Forest Guide push) so they
+    don't keep the event loop alive past gunicorn's graceful_timeout while
+    retrying an unreachable parent/child/Forest Guide."""
+    tasks = [t for t in _background_sync_tasks if not t.done()]
+    _background_sync_tasks.clear()
+    for t in tasks:
+        t.cancel()
+    for t in tasks:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.warning("LoST-Sync: background sync task raised during shutdown: %s", exc)
 
 
 # ---------------------------------------------------------------------------

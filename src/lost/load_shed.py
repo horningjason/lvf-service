@@ -169,6 +169,7 @@ _streak_start: Optional[float] = None    # monotonic start of the current unbrok
 _last_shed_time: Optional[float] = None  # monotonic time of the most recent shed, of either kind
 
 _recovery_task_started = False
+_recovery_task: Optional[asyncio.Task] = None
 
 
 def _partial_reason(reason: str) -> str:
@@ -226,13 +227,30 @@ def start_recovery_watcher_if_needed() -> None:
     LVF_MAX_CONCURRENT_REQUESTS), consistent with this whole feature being a
     no-op by default. Safe to call more than once; only starts the task once.
     Must be called from a running event loop (e.g. application startup)."""
-    global _recovery_task_started
+    global _recovery_task_started, _recovery_task
     if _recovery_task_started:
         return
     if _fs._rate_limit_per_source <= 0 and _fs._max_concurrent_requests <= 0:
         return
     _recovery_task_started = True
-    asyncio.create_task(_watch_service_state_recovery(), name="lvf-load-shed-recovery")
+    _recovery_task = asyncio.create_task(_watch_service_state_recovery(), name="lvf-load-shed-recovery")
+
+
+async def stop_recovery_watcher() -> None:
+    """Cancel the periodic recovery watcher, if running, and await its
+    cancellation. Required for graceful shutdown under gunicorn: without this,
+    the watcher's open-ended `while True: await asyncio.sleep(...)` keeps the
+    event loop alive past graceful_timeout. Resets _recovery_task_started so a
+    future startup can start it again cleanly (relevant for tests/dev reload)."""
+    global _recovery_task, _recovery_task_started
+    if _recovery_task is not None:
+        _recovery_task.cancel()
+        try:
+            await _recovery_task
+        except asyncio.CancelledError:
+            pass
+        _recovery_task = None
+    _recovery_task_started = False
 
 
 # ---------------------------------------------------------------------------

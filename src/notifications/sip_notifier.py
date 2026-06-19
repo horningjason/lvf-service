@@ -82,6 +82,7 @@ class SIPNotifier:
         self._subscriptions: Dict[str, _Subscription] = {}
         self._udp: Optional[_UDPProtocol] = None
         self._tcp_server: Optional[asyncio.AbstractServer] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -118,8 +119,33 @@ class SIPNotifier:
         _element_state.subscribe(self._on_element_state_change)
         _service_state.subscribe(self._on_service_state_change)
 
-        asyncio.ensure_future(self._cleanup_loop())
+        self._cleanup_task = asyncio.ensure_future(self._cleanup_loop())
         log.info("SIP notifier listening on %s:%d (UDP+TCP)", self._host, self._port)
+
+    async def stop(self) -> None:
+        """Cancel the cleanup loop and close the UDP/TCP listeners. Safe to
+        call even if start() never successfully bound (no-op in that case) —
+        required for graceful shutdown under gunicorn: without this, the
+        cleanup loop's open-ended `while True: await asyncio.sleep(...)` and
+        the bound listeners keep the event loop alive past graceful_timeout."""
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+
+        if self._tcp_server is not None:
+            self._tcp_server.close()
+            await self._tcp_server.wait_closed()
+            self._tcp_server = None
+
+        if self._udp is not None and self._udp.transport is not None:
+            self._udp.transport.close()
+        self._udp = None
+
+        log.info("SIP notifier stopped")
 
     # ── Transport entry points ────────────────────────────────────────────────
 

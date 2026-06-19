@@ -61,6 +61,29 @@ async def _lifespan(app: FastAPI):
     load_shed.start_recovery_watcher_if_needed()
     yield
 
+    # Shutdown — cancel every long-running background asyncio task this
+    # lifespan started, so the process exits promptly under gunicorn instead
+    # of idling until graceful_timeout. Daemon threads (_watch_gpkg,
+    # _watch_child_coverage) exit on their own and need no action here.
+    sip_notifier = getattr(app.state, "sip_notifier", None)
+    if sip_notifier is not None:
+        try:
+            await sip_notifier.stop()
+        except Exception as exc:
+            log.warning("Shutdown: SIP notifier stop raised: %s", exc)
+
+    try:
+        await load_shed.stop_recovery_watcher()
+    except Exception as exc:
+        log.warning("Shutdown: load-shed recovery watcher stop raised: %s", exc)
+
+    try:
+        await _fs.lifespan_shutdown()
+    except Exception as exc:
+        log.warning("Shutdown: LoST-Sync background task cleanup raised: %s", exc)
+
+    log.info("LVF shutdown complete")
+
 
 def _maybe_start_sip() -> None:
     if os.environ.get("LVF_ENABLE_SIP", "true").strip().lower() != "true":
