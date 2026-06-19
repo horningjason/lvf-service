@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 import src.lost.find_service as _fs
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
-from src.lost import list_services, list_services_by_location, get_service_boundary
+from src.lost import list_services, list_services_by_location, get_service_boundary, load_shed
 from src.notifications import element_state as _element_state
 from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry
@@ -58,6 +58,7 @@ async def _lifespan(app: FastAPI):
                 raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CA_FILE")
     await _fs.lifespan_startup()
     _maybe_start_sip()
+    load_shed.start_recovery_watcher_if_needed()
     yield
 
 
@@ -294,50 +295,77 @@ async def lost_endpoint(request: Request) -> Response:
         else:
             log.debug("LoST request without client cert (allowed)")
 
-    body = await request.body()
+    # Load shedding (spec §3.11.5) — checked before any XML parsing or schema
+    # validation. Disabled (no-op) unless LVF_RATE_LIMIT_PER_SOURCE and/or
+    # LVF_MAX_CONCURRENT_REQUESTS are configured.
+    source_ip = request.client.host if request.client else None
+    shed_reason = load_shed.check(source_ip)
+    if shed_reason is not None:
+        return Response(
+            content=f'{{"error": "rate_limited", "reason": "{shed_reason}"}}',
+            status_code=429,
+            media_type="application/json",
+        )
+
+    concurrency_acquired = False
+    if _fs._max_concurrent_requests > 0:
+        if not load_shed.try_acquire_concurrency():
+            load_shed.log_shed(load_shed.CONCURRENCY_CAP, source_ip)
+            return Response(
+                content='{"error": "rate_limited", "reason": "concurrency_cap"}',
+                status_code=429,
+                media_type="application/json",
+            )
+        concurrency_acquired = True
+
     try:
-        root = etree.fromstring(body, _fs._XML_PARSER)
-    except etree.XMLSyntaxError as exc:
-        log.error("Lost endpoint: XML parse failed: %s", exc)
-        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        err.set("source", _fs._server_uri)
-        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", "Malformed XML.")
-        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        return Response(
-            content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
-            status_code=200,
-            media_type="application/lost+xml",
-        )
+        body = await request.body()
+        try:
+            root = etree.fromstring(body, _fs._XML_PARSER)
+        except etree.XMLSyntaxError as exc:
+            log.error("Lost endpoint: XML parse failed: %s", exc)
+            err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+            err.set("source", _fs._server_uri)
+            br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+            br.set("message", "Malformed XML.")
+            br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            return Response(
+                content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+                status_code=200,
+                media_type="application/lost+xml",
+            )
 
-    schema_error = _validate_schema(body)
-    if schema_error:
-        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        err.set("source", _fs._server_uri)
-        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", schema_error)
-        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        return Response(
-            content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
-            status_code=200,
-            media_type="application/lost+xml",
-        )
+        schema_error = _validate_schema(body)
+        if schema_error:
+            err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+            err.set("source", _fs._server_uri)
+            br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+            br.set("message", schema_error)
+            br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            return Response(
+                content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+                status_code=200,
+                media_type="application/lost+xml",
+            )
 
-    client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
-    if root.tag == f"{{{_NS_LOST}}}findService":
-        result = await _fs.handle_find_service_async(body, client_addr=client_addr)
-    elif root.tag == f"{{{_NS_LOST}}}listServices":
-        result = list_services.handle(body, client_addr=client_addr)
-    elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
-        result = await list_services_by_location.handle(body, client_addr=client_addr)
-    elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
-        result = get_service_boundary.build_response(_fs._server_uri)
-    else:
-        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        err.set("source", _fs._server_uri)
-        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", f"Unexpected root element {root.tag!r}")
-        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        result = etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
+        if root.tag == f"{{{_NS_LOST}}}findService":
+            result = await _fs.handle_find_service_async(body, client_addr=client_addr)
+        elif root.tag == f"{{{_NS_LOST}}}listServices":
+            result = list_services.handle(body, client_addr=client_addr)
+        elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
+            result = await list_services_by_location.handle(body, client_addr=client_addr)
+        elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
+            result = get_service_boundary.build_response(_fs._server_uri)
+        else:
+            err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+            err.set("source", _fs._server_uri)
+            br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+            br.set("message", f"Unexpected root element {root.tag!r}")
+            br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            result = etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 
-    return Response(content=result, status_code=200, media_type="application/lost+xml")
+        return Response(content=result, status_code=200, media_type="application/lost+xml")
+    finally:
+        if concurrency_acquired:
+            load_shed.release_concurrency()

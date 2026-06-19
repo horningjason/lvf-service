@@ -220,6 +220,13 @@ _sync_children: list[str] = [
     if url.strip()
 ]
 
+# Load shedding (spec §3.11.5) — both disabled (0) by default so existing
+# deployments are unaffected until explicitly tuned. Per-worker, not
+# cross-worker accurate: effective capacity scales with LVF_WORKERS.
+_max_concurrent_requests:   int = int(os.environ.get("LVF_MAX_CONCURRENT_REQUESTS", "0"))
+_rate_limit_per_source:     int = int(os.environ.get("LVF_RATE_LIMIT_PER_SOURCE", "0"))
+_rate_limit_window_seconds: int = int(os.environ.get("LVF_RATE_LIMIT_WINDOW_SECONDS", "60"))
+
 _ADMIN_PIDF_LO: frozenset[str] = frozenset({
     "ca:country", "ca:A1", "ca:A2", "ca:A3", "ca:A4", "ca:A5",
 })

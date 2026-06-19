@@ -118,8 +118,12 @@ additional submitted elements are evaluated in hierarchical order (§7 of the sp
 | `<redirect>` | Out-of-coverage admin-level failure with a configured parent | §13.3 |
 | `<findServiceResponse>` with `<warnings><locationValidationUnavailable>` | `validateLocation` was not `"true"` | §13.2 |
 
-All responses are HTTP 200. Error conditions are expressed in the XML body, not HTTP status codes,
-per RFC 5222.
+All protocol-level responses are HTTP 200 — error conditions are expressed in the XML body, not
+HTTP status codes, per RFC 5222. The one exception is load shedding (§3.11.5): when
+`LVF_MAX_CONCURRENT_REQUESTS` or `LVF_RATE_LIMIT_PER_SOURCE` is configured and exceeded, the
+request is rejected before XML parsing with HTTP `429` and a JSON body (e.g.
+`{"error": "rate_limited", "reason": "concurrency_cap"}`), not a LoST element. Both limits are
+disabled by default.
 
 ### Key Behavioral Invariants
 
@@ -270,7 +274,10 @@ This is an open reference implementation intended for vendor evaluation and inte
 testing. It is **not production-hardened**:
 
 - No authentication or access control on the `/lost` endpoint
-- No rate limiting
+- Optional load shedding only (§3.11.5) — a per-source rate limit and a global concurrency cap
+  on `POST /lost`, both off by default and both per-worker (not cross-worker accurate; effective
+  capacity scales with `LVF_WORKERS`). Not a substitute for upstream rate limiting/WAF in a
+  production deployment.
 - Per-machine multi-worker is supported (gunicorn with `LVF_WORKERS=N`; see the README) on
   **Linux or Docker only** — gunicorn is POSIX-only and does not run natively on Windows
   (single-worker via `python main.py`/uvicorn is cross-platform). Cross-machine clustering of

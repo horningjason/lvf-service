@@ -203,6 +203,9 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a **Forest Guide must use `1`**. Ignored by `python main.py` (always single-process). Multi-worker requires **Linux/Docker** — gunicorn is POSIX-only and does not run on Windows |
 | `LVF_WORKER_TIMEOUT` | No | `120` | Gunicorn worker timeout in seconds (read by `gunicorn.conf.py`) |
 | `LVF_COVERAGE_POLL_INTERVAL_SECONDS` | No | `15` | How often (seconds) each worker polls the child-coverage file so siblings converge on each other's LoST-Sync writes. Silent read-only refresh — never triggers a push or startup sync. Set to `0` to disable |
+| `LVF_MAX_CONCURRENT_REQUESTS` | No | `0` | Load shedding (§3.11.5): per-worker in-flight cap on `POST /lost` only. `0` = unlimited. Shed requests return HTTP `429`, not a LoST element. Per-worker, not cross-worker accurate — scales with `LVF_WORKERS` |
+| `LVF_RATE_LIMIT_PER_SOURCE` | No | `0` | Load shedding: per-worker, per-source-IP request cap on `POST /lost` within `LVF_RATE_LIMIT_WINDOW_SECONDS`. `0` = unlimited |
+| `LVF_RATE_LIMIT_WINDOW_SECONDS` | No | `60` | Sliding window (seconds) for `LVF_RATE_LIMIT_PER_SOURCE` |
 | **GIS Data** | | | |
 | `LVF_GPKG_PATH` | No† | — | Path to the GeoPackage file. Absent or missing file → routing-only mode (no GIS lookup; requests are routed via child coverage store or `LVF_PARENT_URI`) |
 | `LVF_DEFAULT_MAPPING_SOURCE_ID` | No† | — | UUID used as `sourceId` on the synthetic default mapping. Recommended: `{00000000-0000-0000-0000-000000000000}`. Required when a GPKG is present; not needed in routing-only mode |
@@ -321,6 +324,12 @@ systems) to subscribe to LVF health state. The SIP endpoint listens on both UDP 
 In production, the SIP interface should be on the ESInet SIP network, separate from the HTTPS
 LoST interface.
 
+`ServiceState` also reflects sustained load shedding on `POST /lost` (§3.11.6): continuous
+shedding (`LVF_RATE_LIMIT_PER_SOURCE` and/or `LVF_MAX_CONCURRENT_REQUESTS`, see
+[Environment Variables](#environment-variables)) for 15s trips state to `Partial`; it returns
+to `Normal` only after shedding has been fully quiet for 30s. These windows are fixed, not
+configurable. `GET /health` reflects the current value.
+
 **To enable:** set `LVF_SIP_PORT=5060` (or another port) in `.env`.
 
 **To disable:** set `LVF_SIP_PORT=0` (or leave unset).
@@ -350,7 +359,7 @@ See `tests/regression/README.md` for full details on seeding golden files.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/lost` | LoST protocol endpoint (RFC 5222) — `findService`, `listServices`, `listServicesByLocation`, `getServiceBoundary` (`Content-Type: application/lost+xml`). `findService` requires `validateLocation="true"` |
+| `POST` | `/lost` | LoST protocol endpoint (RFC 5222) — `findService`, `listServices`, `listServicesByLocation`, `getServiceBoundary` (`Content-Type: application/lost+xml`). `findService` requires `validateLocation="true"`. Subject to load shedding (§3.11.5, `LVF_MAX_CONCURRENT_REQUESTS` / `LVF_RATE_LIMIT_PER_SOURCE`) — shed requests return HTTP `429`, disabled by default |
 | `POST` | `/sync` | LoST-Sync (RFC 6739) — accepts `pushMappings` and `getMappingsRequest` (`Content-Type: application/lostsync+xml`) |
 | `GET` | `/health` | Liveness — GIS layer record counts, element state, and service state (always `200` while the process is up) |
 | `GET` | `/ready` | Readiness — `503` while a GIS reload is in progress or before GIS data is loaded; `200` once records are present (or immediately for routing-only / Forest Guide nodes). Load balancers should check this |
