@@ -1383,6 +1383,8 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
     if _has_loop(request_body):
         return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
     modified = _add_via_to_request(request_body)
+    _t0 = time.monotonic()
+    log.debug("Recursion (sync): POST %s", validate_uri)
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(
@@ -1390,6 +1392,10 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
+        log.debug(
+            "Recursion (sync): %s responded in %.3fs (status=%d)",
+            validate_uri, time.monotonic() - _t0, resp.status_code,
+        )
         if resp.status_code == 200:
             try:
                 result = _prepend_via_to_response(resp.content)
@@ -1399,9 +1405,13 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
                 return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
         return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
     except httpx.TimeoutException:
+        log.warning("Recursion (sync): %s timed out after %.3fs", validate_uri, time.monotonic() - _t0)
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        log.error("Recursion (sync) to %s failed: %s", validate_uri, exc)
+        log.error(
+            "Recursion (sync) to %s failed after %.3fs: %s",
+            validate_uri, time.monotonic() - _t0, exc,
+        )
         return _make_errors_xml("serverError", "An internal error occurred.")
 
 
@@ -1409,6 +1419,8 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
     if _has_loop(request_body):
         return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
     modified = _add_via_to_request(request_body)
+    _t0 = time.monotonic()
+    log.debug("Recursion (async): POST %s", validate_uri)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -1416,6 +1428,10 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
+        log.debug(
+            "Recursion (async): %s responded in %.3fs (status=%d)",
+            validate_uri, time.monotonic() - _t0, resp.status_code,
+        )
         if resp.status_code == 200:
             try:
                 result = _prepend_via_to_response(resp.content)
@@ -1441,9 +1457,13 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
         ))
         return err
     except httpx.TimeoutException:
+        log.warning("Recursion (async): %s timed out after %.3fs", validate_uri, time.monotonic() - _t0)
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        log.error("Recursion (async) to %s failed: %s", validate_uri, exc)
+        log.error(
+            "Recursion (async) to %s failed after %.3fs: %s",
+            validate_uri, time.monotonic() - _t0, exc,
+        )
         return _make_errors_xml("serverError", "An internal error occurred.")
 
 
@@ -1526,8 +1546,12 @@ def _coverage_file_lock():
         return
     lock_path = _child_coverage_path() + ".lock"
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    _t0 = time.monotonic()
     try:
         _fcntl.flock(fd, _fcntl.LOCK_EX)
+        _wait = time.monotonic() - _t0
+        if _wait > 0.05:
+            log.debug("Coverage file lock: acquired after waiting %.3fs", _wait)
         yield
     finally:
         try:
