@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -21,12 +22,33 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import src.lost.find_service as _fs
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
 from src.lost import list_services, list_services_by_location, get_service_boundary, load_shed
+from src import metrics
 from src.notifications import element_state as _element_state
 from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry
 
 _NS_LOST = _fs._NS_LOST
 log = logging.getLogger(__name__)
+
+
+def _record_lost_outcome(result: bytes) -> None:
+    """Increment lvf_lost_errors_total when `result` is a LoST <errors>
+    response, labeled by the actual error child element name (e.g.
+    "notFound", "locationInvalid"). No-op for successful responses. Used for
+    outcomes produced deep inside find_service.py/list_services.py/etc. where
+    there's no cheaper, already-available discriminator without restructuring
+    their return type — mirrors the lightweight result-inspection pattern
+    find_service.py itself already uses (e.g. _has_loop, _prepend_via_to_response)."""
+    try:
+        root = etree.fromstring(result, _fs._XML_PARSER)
+    except etree.XMLSyntaxError:
+        return
+    if root.tag != f"{{{_NS_LOST}}}errors" or len(root) == 0:
+        return
+    child_tag = root[0].tag
+    if "}" in child_tag:
+        child_tag = child_tag.split("}", 1)[1]
+    metrics.lost_errors_total.labels(error_type=child_tag).inc()
 
 
 @asynccontextmanager
@@ -120,8 +142,26 @@ class LimitBodySize(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Records lvf_http_requests_total / lvf_http_request_duration_seconds for
+    every request. Added after LimitBodySize so it wraps it (outermost) — a
+    413 rejection from LimitBodySize still passes through call_next here and
+    is counted with its actual status code."""
+
+    async def dispatch(self, request, call_next):
+        path = request.scope["path"]
+        start = time.monotonic()
+        response = await call_next(request)
+        elapsed = time.monotonic() - start
+        metrics.http_requests_total.labels(endpoint=path, status=str(response.status_code)).inc()
+        metrics.http_request_duration_seconds.labels(endpoint=path).observe(elapsed)
+        return response
+
+
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
 app.add_middleware(LimitBodySize)
+app.add_middleware(MetricsMiddleware)
+app.mount("/metrics", metrics.metrics_app())
 
 
 @app.get("/health")
@@ -347,6 +387,7 @@ async def lost_endpoint(request: Request) -> Response:
             root = etree.fromstring(body, _fs._XML_PARSER)
         except etree.XMLSyntaxError as exc:
             log.error("Lost endpoint: XML parse failed: %s", exc)
+            metrics.lost_errors_total.labels(error_type="badRequest").inc()
             err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
             err.set("source", _fs._server_uri)
             br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
@@ -360,6 +401,7 @@ async def lost_endpoint(request: Request) -> Response:
 
         schema_error = _validate_schema(body)
         if schema_error:
+            metrics.lost_errors_total.labels(error_type="badRequest").inc()
             err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
             err.set("source", _fs._server_uri)
             br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
@@ -381,13 +423,16 @@ async def lost_endpoint(request: Request) -> Response:
         elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
             result = get_service_boundary.build_response(_fs._server_uri)
         else:
+            metrics.lost_errors_total.labels(error_type="badRequest").inc()
             err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
             err.set("source", _fs._server_uri)
             br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
             br.set("message", f"Unexpected root element {root.tag!r}")
             br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
             result = etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+            return Response(content=result, status_code=200, media_type="application/lost+xml")
 
+        _record_lost_outcome(result)
         return Response(content=result, status_code=200, media_type="application/lost+xml")
     finally:
         if concurrency_acquired:

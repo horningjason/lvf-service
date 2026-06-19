@@ -25,6 +25,7 @@ import time
 from typing import Optional
 
 import src.lost.find_service as _fs
+from src import metrics as _metrics
 from src.notifications import service_state as _service_state
 from src.notifications.service_state import ServiceState
 
@@ -266,6 +267,7 @@ def log_shed(reason: str, source_ip: Optional[str] = None) -> None:
         )
     else:
         log.warning("Load shed: rejecting /lost request — global concurrency cap reached")
+    _metrics.load_shed_total.labels(reason=reason).inc()
     _record_shed_for_service_state(reason)
 
 

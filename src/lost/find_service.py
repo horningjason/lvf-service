@@ -53,6 +53,7 @@ _XML_PARSER = etree.XMLParser(resolve_entities=False, load_dtd=False, no_network
 from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
 from src.logging_events.log_events import generate_query_id
 from src.ntp import NTPClient
+from src import metrics as _metrics
 from src.notifications import element_state as _element_state
 from src.notifications import service_state as _service_state
 from src.notifications.element_state import ElementState
@@ -712,6 +713,7 @@ def _watch_gpkg(gpkg_path: str) -> None:
                 baseline_mtime = current_mtime
                 with _reloading_lock:
                     _reloading = False
+                _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="success").inc()
                 log.info("GIS data reload complete — resuming normal service")
                 _element_state._notifier.set_state(ElementState.Normal, "GIS reload succeeded")
                 _service_state._notifier.set_state(ServiceState.Normal, "GIS reload succeeded")
@@ -719,6 +721,7 @@ def _watch_gpkg(gpkg_path: str) -> None:
                     _load_ams_provisioning()
                 _maybe_schedule_repush()
             except Exception as exc:
+                _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="failure").inc()
                 log.error(
                     "GIS data reload failed — service remains unavailable", exc_info=True
                 )
@@ -1392,9 +1395,12 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="success").inc()
         log.debug(
             "Recursion (sync): %s responded in %.3fs (status=%d)",
-            validate_uri, time.monotonic() - _t0, resp.status_code,
+            validate_uri, elapsed, resp.status_code,
         )
         if resp.status_code == 200:
             try:
@@ -1405,12 +1411,18 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
                 return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
         return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
     except httpx.TimeoutException:
-        log.warning("Recursion (sync): %s timed out after %.3fs", validate_uri, time.monotonic() - _t0)
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="timeout").inc()
+        log.warning("Recursion (sync): %s timed out after %.3fs", validate_uri, elapsed)
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="error").inc()
         log.error(
             "Recursion (sync) to %s failed after %.3fs: %s",
-            validate_uri, time.monotonic() - _t0, exc,
+            validate_uri, elapsed, exc,
         )
         return _make_errors_xml("serverError", "An internal error occurred.")
 
@@ -1428,9 +1440,12 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="success").inc()
         log.debug(
             "Recursion (async): %s responded in %.3fs (status=%d)",
-            validate_uri, time.monotonic() - _t0, resp.status_code,
+            validate_uri, elapsed, resp.status_code,
         )
         if resp.status_code == 200:
             try:
@@ -1457,12 +1472,18 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
         ))
         return err
     except httpx.TimeoutException:
-        log.warning("Recursion (async): %s timed out after %.3fs", validate_uri, time.monotonic() - _t0)
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="timeout").inc()
+        log.warning("Recursion (async): %s timed out after %.3fs", validate_uri, elapsed)
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="error").inc()
         log.error(
             "Recursion (async) to %s failed after %.3fs: %s",
-            validate_uri, time.monotonic() - _t0, exc,
+            validate_uri, elapsed, exc,
         )
         return _make_errors_xml("serverError", "An internal error occurred.")
 
@@ -3359,8 +3380,10 @@ async def lifespan_startup() -> None:
         try:
             _load_gis_data(gpkg_path)
         except Exception as exc:
+            _metrics.reload_events_total.labels(trigger="startup", outcome="failure").inc()
             log.error("GIS data load failed from %s: %s", gpkg_path, exc, exc_info=True)
             raise
+        _metrics.reload_events_total.labels(trigger="startup", outcome="success").inc()
         _routing_only = False
         _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
         _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")

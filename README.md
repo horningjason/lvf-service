@@ -206,6 +206,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_MAX_CONCURRENT_REQUESTS` | No | `0` | Load shedding (§3.11.5): per-worker in-flight cap on `POST /lost` only. `0` = unlimited. Shed requests return HTTP `429`, not a LoST element. Per-worker, not cross-worker accurate — scales with `LVF_WORKERS` |
 | `LVF_RATE_LIMIT_PER_SOURCE` | No | `0` | Load shedding: per-worker, per-source-IP request cap on `POST /lost` within `LVF_RATE_LIMIT_WINDOW_SECONDS`. `0` = unlimited |
 | `LVF_RATE_LIMIT_WINDOW_SECONDS` | No | `60` | Sliding window (seconds) for `LVF_RATE_LIMIT_PER_SOURCE` |
+| `PROMETHEUS_MULTIPROC_DIR` | No | `/tmp/lvf_prometheus_multiproc` | Directory backing `prometheus_client`'s multiprocess mode, required for `GET /metrics` to report correct totals when `LVF_WORKERS > 1`. Wiped and recreated fresh on every startup automatically — no operator action needed |
 | **GIS Data** | | | |
 | `LVF_GPKG_PATH` | No† | — | Path to the GeoPackage file. Absent or missing file → routing-only mode (no GIS lookup; requests are routed via child coverage store or `LVF_PARENT_URI`) |
 | `LVF_DEFAULT_MAPPING_SOURCE_ID` | No† | — | UUID used as `sourceId` on the synthetic default mapping. Recommended: `{00000000-0000-0000-0000-000000000000}`. Required when a GPKG is present; not needed in routing-only mode |
@@ -366,6 +367,27 @@ See `tests/regression/README.md` for full details on seeding golden files.
 | `GET` | `/coverage/geodetic` | GeoJSON of the unioned service boundary coverage polygon |
 | `GET` | `/coverage/civic` | Civic coverage lookup table |
 | `GET` | `/coverage/civic/explain` | Diagnose RCL segment coverage for a given admin hierarchy |
+| `GET` | `/metrics` | Prometheus exposition-format metrics (operations tooling only — no spec/protocol impact). Correct under multi-worker via prometheus_client multiprocess mode; see [Metrics](#metrics) below |
+
+---
+
+## Metrics
+
+`GET /metrics` exposes Prometheus-format counters and histograms: `lvf_http_requests_total` /
+`lvf_http_request_duration_seconds` (every HTTP request, by endpoint and status),
+`lvf_lost_errors_total` (LoST `<errors>` responses from `/lost`, by error element name),
+`lvf_recursion_total` / `lvf_recursion_duration_seconds` (outbound recursive calls, by
+outcome), `lvf_reload_events_total` (GIS reloads, by trigger and outcome), and
+`lvf_load_shed_total` (§3.11.5 shed requests, by reason).
+
+**Multi-worker correctness is automatic.** Plain `prometheus_client` does not aggregate
+across gunicorn workers by default — each worker would keep separate in-memory counters, so
+a scrape would only reflect whichever worker happened to handle it. This service uses
+`prometheus_client`'s documented [multiprocess mode](https://prometheus.github.io/client_python/multiprocess/)
+instead: metrics are backed by files under `PROMETHEUS_MULTIPROC_DIR`, and `/metrics`
+aggregates across every worker's files at scrape time. The directory is wiped and recreated
+fresh on every startup (`prewarm.py`, `main.py`, and gunicorn's `on_starting` hook all do
+this) — no operator action needed beyond the default in `.env.example`.
 
 ---
 

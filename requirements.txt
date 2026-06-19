@@ -6,6 +6,9 @@ python-dotenv==1.2.2
 pydantic==2.13.4
 lxml==6.1.0
 
+# Metrics
+prometheus_client==0.25.0
+
 # GIS / spatial
 geopandas==1.1.3
 shapely==2.1.2

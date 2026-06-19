@@ -36,6 +36,10 @@ htmlcov/
 tests/regression/golden/*
 !tests/regression/golden/.gitkeep
 
+# Prometheus multiprocess metrics (runtime-only; default path is /tmp,
+# outside the repo, but ignore the common in-repo override too)
+**/prometheus_multiproc/
+
 # Archives
 *.zip
 

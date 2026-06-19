@@ -11,6 +11,13 @@ load_dotenv()
 
 import uvicorn
 
+from src import metrics
+
+# Single-process dev mode never goes through prewarm.py — clear/recreate the
+# Prometheus multiprocess directory here so /metrics works correctly even
+# without gunicorn. Safe to do unconditionally: this is the only process.
+metrics.clear_multiproc_dir()
+
 
 def main() -> None:
     tls_mode = os.environ.get("LVF_TLS_MODE", "disabled").lower()

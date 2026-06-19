@@ -13,11 +13,28 @@ The Forest Guide must run single-worker (LVF_WORKERS=1).
 import os
 import ssl
 
+from src import metrics
+
 bind = "0.0.0.0:8000"
 worker_class = "uvicorn.workers.UvicornWorker"
 workers = int(os.environ.get("LVF_WORKERS", "1"))          # default 1 == today's behavior
 timeout = int(os.environ.get("LVF_WORKER_TIMEOUT", "120"))
 graceful_timeout = 30
+
+
+def on_starting(server):
+    """Runs once in the gunicorn master, before any worker forks — the only
+    safe place to clear the Prometheus multiprocess directory (clearing it
+    per-worker would race with siblings writing to it). Normally prewarm.py
+    already did this; this is a defense-in-depth, harmless-if-redundant
+    re-run for anyone invoking gunicorn directly without prewarm.py first."""
+    metrics.clear_multiproc_dir()
+
+
+def child_exit(server, worker):
+    """Official prometheus_client multiprocess pattern: remove a dead
+    worker's metric files on exit. See src/metrics.py:mark_worker_dead."""
+    metrics.mark_worker_dead(worker.pid)
 
 # ── TLS (mirrors main.py) ─────────────────────────────────────────────────────
 _tls_mode = os.environ.get("LVF_TLS_MODE", "disabled").lower()
