@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY schemas/ ./schemas/
 COPY main.py .
+COPY prewarm.py .
+COPY gunicorn.conf.py .
 
 # Copy the included GeoPackage data files
 COPY data/ ./data/
@@ -29,8 +31,10 @@ RUN adduser --disabled-password --gecos "" lvfuser \
     && chown -R lvfuser:lvfuser /app
 USER lvfuser
 
-# Expose the default uvicorn port
+# Expose the default service port
 EXPOSE 8000
 
-# Run the service
-CMD ["python", "main.py"]
+# Pre-warm the GIS cache once, then launch gunicorn with the uvicorn worker
+# class. Worker count is controlled by LVF_WORKERS (default 1 == single-process
+# behavior, identical to the previous `python main.py` launch).
+CMD ["sh", "-c", "python prewarm.py && exec gunicorn -c gunicorn.conf.py src.server:app"]

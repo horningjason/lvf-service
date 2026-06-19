@@ -10,6 +10,11 @@ services:
     env_file:
       - .env
     environment:
+      # Per-machine multi-worker. A leaf/child node may run multiple workers;
+      # a good starting point is roughly the number of CPU cores, then measure.
+      # NOTE: a Forest Guide node MUST run single-worker — set LVF_WORKERS=1 on
+      # any service running with LVF_FOREST_GUIDE_MODE=true.
+      LVF_WORKERS: "2"
       # TLS config - see docs
       # LVF_TLS_MODE:
       # LVF_TLS_CERT_FILE:

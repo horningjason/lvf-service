@@ -271,7 +271,10 @@ testing. It is **not production-hardened**:
 
 - No authentication or access control on the `/lost` endpoint
 - No rate limiting
-- Single-process; not designed for horizontal scaling
+- Per-machine multi-worker is supported (gunicorn with `LVF_WORKERS=N`; see the README), but
+  cross-machine clustering of a single coordination node is out of scope — it would require a
+  shared store. For machine-failure resilience, run stateless query/validation nodes
+  active-active behind a load balancer and coordination nodes active+standby.
 - No formal SLA or uptime guarantee
 
 Vendors evaluating this implementation for production deployment should conduct their own security

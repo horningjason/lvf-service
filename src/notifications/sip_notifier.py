@@ -86,17 +86,34 @@ class SIPNotifier:
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
 
-        _, protocol = await loop.create_datagram_endpoint(
-            lambda: _UDPProtocol(self._handle_datagram),
-            local_addr=(self._host, self._port),
-        )
-        self._udp = protocol
+        try:
+            _, protocol = await loop.create_datagram_endpoint(
+                lambda: _UDPProtocol(self._handle_datagram),
+                local_addr=(self._host, self._port),
+            )
+            self._udp = protocol
+        except OSError as exc:
+            log.info(
+                "SIP notifier: UDP bind on %s:%d failed (%s) — SIP notifier not started",
+                self._host, self._port, exc,
+            )
+            return
 
-        self._tcp_server = await asyncio.start_server(
-            self._handle_tcp_client,
-            host=self._host,
-            port=self._port,
-        )
+        try:
+            self._tcp_server = await asyncio.start_server(
+                self._handle_tcp_client,
+                host=self._host,
+                port=self._port,
+            )
+        except OSError as exc:
+            log.info(
+                "SIP notifier: TCP bind on %s:%d failed (%s) — SIP notifier not started",
+                self._host, self._port, exc,
+            )
+            if self._udp is not None and self._udp.transport is not None:
+                self._udp.transport.close()
+            self._udp = None
+            return
 
         _element_state.subscribe(self._on_element_state_change)
         _service_state.subscribe(self._on_service_state_change)

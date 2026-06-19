@@ -14,8 +14,13 @@ import logging
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, NamedTuple, Optional
+
+try:
+    import fcntl as _fcntl  # POSIX only — used for cross-process file locks
+except ImportError:  # pragma: no cover - Windows dev path
+    _fcntl = None  # type: ignore[assignment]
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -228,6 +233,23 @@ _schema: Optional[etree.XMLSchema] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 _child_coverage: list[dict] = []
+
+# Guards reassignment of the _child_coverage global (in-process). The list is
+# only ever swapped wholesale for a fresh list — never mutated in place once
+# published — so readers can take the current reference without locking and
+# always see a complete, consistent snapshot.
+_coverage_lock = threading.Lock()
+
+# Most-recently loaded operator-authored AMS provisioning entries (root-AMS
+# only). Cached by _load_ams_provisioning() so they can be re-asserted on top of
+# the dynamic coverage file after every reload (manual provisioning always wins).
+_ams_provisioning_cache: list[dict] = []
+
+# Single-leader election: exactly one worker process on a machine acquires this
+# lock and runs the singletons (SIP notifier + boot-time startup sync). The file
+# descriptor is held open for the process lifetime so the lock is not released.
+_leader_lock_fd: Optional[int] = None
+_is_leader: bool = False
 
 _ntp_client: Optional[NTPClient] = None
 
@@ -622,8 +644,11 @@ def _load_gis_data(gpkg_path: str) -> None:
     _build_attribute_index()
     _gis_last_loaded = _ntp_client.get_current_time()
 
+    # Atomic write (temp file + os.replace) so concurrent workers never observe a
+    # half-written cache. Mirrors the pattern used by _save_child_coverage_list.
+    tmp_cache = cache_path + ".tmp"
     try:
-        with open(cache_path, "w", encoding="utf-8") as f:
+        with open(tmp_cache, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "ssap":              [_ssap_to_dict(r) for r in _ssap],
@@ -635,9 +660,15 @@ def _load_gis_data(gpkg_path: str) -> None:
                 },
                 f,
             )
+        os.replace(tmp_cache, cache_path)
         log.info("GIS data cached to JSON: %s", cache_path)
     except Exception as exc:
         log.warning("Could not write JSON cache: %s", exc)
+        try:
+            if os.path.exists(tmp_cache):
+                os.remove(tmp_cache)
+        except OSError:
+            pass
 
 
 def _watch_gpkg(gpkg_path: str) -> None:
@@ -1413,6 +1444,24 @@ def _child_coverage_path() -> str:
     return os.path.join("data", filename)
 
 
+def _read_child_coverage_file() -> list[dict]:
+    """Read and parse the coverage file into a FRESH list.
+
+    Returns an empty list if the file is absent, unreadable, or not a JSON array.
+    Does not touch any global — callers decide whether/how to publish the result.
+    """
+    path = _child_coverage_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
+        return []
+
+
 def _load_child_coverage() -> None:
     global _child_coverage
     path = _child_coverage_path()
@@ -1421,21 +1470,174 @@ def _load_child_coverage() -> None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        _child_coverage = data if isinstance(data, list) else []
-        log.info("LoST-Sync: loaded %d child coverage entries from %s", len(_child_coverage), path)
+        fresh = data if isinstance(data, list) else []
     except Exception as exc:
         log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
+        return
+    with _coverage_lock:
+        _child_coverage = fresh
+    log.info("LoST-Sync: loaded %d child coverage entries from %s", len(fresh), path)
 
 
-def _save_child_coverage() -> None:
+def _save_child_coverage_list(entries: list[dict]) -> None:
+    """Atomically persist `entries` to the coverage file (temp + os.replace)."""
     path = _child_coverage_path()
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_child_coverage, f, indent=2, default=str)
+            json.dump(entries, f, indent=2, default=str)
         os.replace(tmp, path)
     except Exception as exc:
         log.warning("LoST-Sync: could not save child coverage store to %s: %s", path, exc)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _save_child_coverage() -> None:
+    _save_child_coverage_list(_child_coverage)
+
+
+@contextmanager
+def _coverage_file_lock():
+    """Exclusive cross-process lock guarding the read-modify-write of the coverage
+    file. The lock is taken on a dedicated `.lock` sidecar file (never the data
+    file, which is replaced via os.replace). On platforms without fcntl (Windows
+    dev), this is a no-op — multi-worker deployment targets POSIX/containers."""
+    if _fcntl is None:
+        yield
+        return
+    lock_path = _child_coverage_path() + ".lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _with_coverage_write(apply_fn) -> bool:
+    """Serialize a read-modify-write of the coverage store across processes.
+
+    1. Acquire the exclusive cross-process file lock (blocking).
+    2. Reload the latest coverage from disk into a FRESH private list.
+    3. Call apply_fn(fresh_list) which performs the upsert/delete operations
+       against that private list (returns truthy when coverage changed).
+    4. On root-AMS nodes, re-assert operator provisioning on top (always wins).
+    5. Atomically save the fresh list.
+    6. Publish it as the new _child_coverage under _coverage_lock.
+
+    Returns whatever apply_fn returned.
+    """
+    global _child_coverage
+    with _coverage_file_lock():
+        fresh = _read_child_coverage_file()
+        result = apply_fn(fresh)
+        if _root_ams:
+            _reapply_ams_provisioning(fresh)
+        _save_child_coverage_list(fresh)
+        with _coverage_lock:
+            _child_coverage = fresh
+    return result
+
+
+def _reapply_ams_provisioning(target: list[dict]) -> None:
+    """Re-assert the cached operator-authored AMS provisioning entries on top of
+    `target` (matching/superseding by source_id), so manual provisioning always
+    wins after any reload of the dynamic coverage file. No-op when not root-AMS
+    or when no provisioning has been loaded."""
+    if not _root_ams or not _ams_provisioning_cache:
+        return
+    for entry in _ams_provisioning_cache:
+        source_id = entry.get("source_id", "")
+        for i, existing in enumerate(target):
+            if existing.get("source_id") == source_id:
+                target[i] = entry
+                break
+        else:
+            target.append(entry)
+
+
+def _watch_child_coverage() -> None:
+    """Poll the coverage file mtime so sibling workers converge on each other's
+    writes. Pure read-view refresh: never triggers an upstream push or startup
+    sync. On root-AMS nodes, re-asserts provisioning after each reload."""
+    global _child_coverage
+    interval = int(os.environ.get("LVF_COVERAGE_POLL_INTERVAL_SECONDS", "15"))
+    if interval <= 0:
+        return
+    path = _child_coverage_path()
+    try:
+        baseline = os.path.getmtime(path) if os.path.exists(path) else 0.0
+    except OSError:
+        baseline = 0.0
+
+    while True:
+        time.sleep(interval)
+        try:
+            current = os.path.getmtime(path) if os.path.exists(path) else 0.0
+        except OSError:
+            continue
+        if current != baseline:
+            baseline = current
+            fresh = _read_child_coverage_file()
+            if _root_ams:
+                _reapply_ams_provisioning(fresh)
+            with _coverage_lock:
+                _child_coverage = fresh
+            log.debug(
+                "LoST-Sync: coverage file changed — reloaded %d entries (read-view only)",
+                len(fresh),
+            )
+
+
+def _start_coverage_watcher() -> None:
+    """Start the coverage-file watcher thread (section 4), unless disabled."""
+    interval = int(os.environ.get("LVF_COVERAGE_POLL_INTERVAL_SECONDS", "15"))
+    if interval <= 0:
+        log.info("Coverage watcher disabled (LVF_COVERAGE_POLL_INTERVAL_SECONDS=0)")
+        return
+    threading.Thread(target=_watch_child_coverage, daemon=True).start()
+    log.info("Coverage watcher started (poll interval: %ds)", interval)
+
+
+def _leader_lock_path() -> str:
+    gpkg_path = os.environ.get("LVF_GPKG_PATH")
+    data_dir = (os.path.dirname(gpkg_path) or ".") if gpkg_path else "data"
+    return os.path.join(data_dir, ".lvf_leader.lock")
+
+
+def _acquire_leadership() -> bool:
+    """Try to become the single leader worker via a non-blocking exclusive file
+    lock. The leader runs the SIP notifier and boot-time startup sync; others
+    skip them. The lock fd is kept open for the process lifetime so the lock is
+    not released. On platforms without fcntl (Windows dev = single process),
+    this node is always the leader."""
+    global _leader_lock_fd, _is_leader
+    if _fcntl is None:
+        _is_leader = True
+        return True
+    path = _leader_lock_path()
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        log.warning("Leader election: could not open %s (%s) — assuming leader", path, exc)
+        _is_leader = True
+        return True
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        _is_leader = False
+        return False
+    _leader_lock_fd = fd  # keep open for process lifetime — do not close/GC
+    _is_leader = True
+    return True
 
 
 def _parse_iso_timestamp(ts: str) -> Optional[datetime.datetime]:
@@ -1463,15 +1665,16 @@ def _compare_timestamps(a: str, b: str) -> int:
     return 0
 
 
-def _upsert_child_coverage(parsed: dict) -> bool:
+def _upsert_child_coverage(parsed: dict, target: Optional[list] = None) -> bool:
+    coverage = _child_coverage if target is None else target
     source    = parsed.get("source", "")
     source_id = parsed.get("source_id", "")
     new_lu    = parsed.get("last_updated", "")
 
-    for i, entry in enumerate(_child_coverage):
+    for i, entry in enumerate(coverage):
         if entry.get("source") == source and entry.get("source_id") == source_id:
             if _compare_timestamps(new_lu, entry.get("last_updated", "")) > 0:
-                _child_coverage[i] = parsed
+                coverage[i] = parsed
                 log.info(
                     "LoST-Sync: updated child coverage entry source=%s sourceId=%s",
                     source, source_id,
@@ -1484,7 +1687,7 @@ def _upsert_child_coverage(parsed: dict) -> bool:
                 )
                 return False
 
-    _child_coverage.append(parsed)
+    coverage.append(parsed)
     log.info(
         "LoST-Sync: added new child coverage entry source=%s sourceId=%s profile=%s",
         source, source_id, parsed.get("profile", ""),
@@ -1799,7 +2002,7 @@ def _validate_ams_geodetic_file(path: str) -> Optional[list]:
 
 
 def _load_ams_provisioning() -> bool:
-    global _root_ams_active
+    global _root_ams_active, _ams_provisioning_cache, _child_coverage
 
     if not _forest_guide_uri:
         log.warning(
@@ -1823,19 +2026,28 @@ def _load_ams_provisioning() -> bool:
         _root_ams_active = False
         return False
 
-    for entry in civic_entries + geodetic_entries:
+    # Cache the entries so they can be re-asserted on top of the dynamic coverage
+    # file after every reload (manual provisioning always wins — section 6).
+    _ams_provisioning_cache = list(civic_entries + geodetic_entries)
+
+    # Merge onto a fresh copy and publish by swap (never mutate the live list in
+    # place) so lock-free readers always see a complete snapshot.
+    merged = list(_child_coverage)
+    for entry in _ams_provisioning_cache:
         source    = entry.get("source", "")
         source_id = entry.get("source_id", "")
-        for i, existing in enumerate(_child_coverage):
+        for i, existing in enumerate(merged):
             if existing.get("source_id") == source_id:
                 log.info(
                     "AMS: provisioning entry supersedes cached entry source=%s sourceId=%s",
                     source, source_id,
                 )
-                _child_coverage[i] = entry
+                merged[i] = entry
                 break
         else:
-            _child_coverage.append(entry)
+            merged.append(entry)
+    with _coverage_lock:
+        _child_coverage = merged
 
     _root_ams_active = True
     civic_tuple_count = sum(len(e.get("civic_addresses") or []) for e in civic_entries)
@@ -2027,41 +2239,47 @@ def _sync_error_response(error_type: str, message: str) -> Response:
 async def _handle_push_mappings(root: etree._Element) -> Response:
     mapping_els = root.findall(f"{{{_NS_LOST}}}mapping")
     not_deleted: list[tuple[str, str]] = []
-    coverage_changed = False
     last_source_id = ""
 
+    # Parse all mappings up front (cheap, lock-free), then apply the same
+    # upsert/delete merge under the cross-process coverage write lock.
+    ops: list[tuple[bool, dict]] = []
     for mapping_el in mapping_els:
-        sb_el    = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
+        sb_el     = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
         is_delete = sb_el is None
-
         parsed    = _parse_sync_mapping(mapping_el)
-        source    = parsed["source"]
-        source_id = parsed["source_id"]
-        last_source_id = source_id
+        last_source_id = parsed["source_id"]
+        ops.append((is_delete, parsed))
 
-        if is_delete:
-            found = False
-            for i, entry in enumerate(_child_coverage):
-                if entry.get("source") == source and entry.get("source_id") == source_id:
-                    _child_coverage.pop(i)
-                    found = True
-                    coverage_changed = True
-                    log.info(
-                        "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
+    def _apply(coverage: list[dict]) -> bool:
+        changed = False
+        for is_delete, parsed in ops:
+            source    = parsed["source"]
+            source_id = parsed["source_id"]
+            if is_delete:
+                found = False
+                for i, entry in enumerate(coverage):
+                    if entry.get("source") == source and entry.get("source_id") == source_id:
+                        coverage.pop(i)
+                        found = True
+                        changed = True
+                        log.info(
+                            "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
+                            source, source_id,
+                        )
+                        break
+                if not found:
+                    log.warning(
+                        "LoST-Sync: delete requested for unknown entry source=%s sourceId=%s",
                         source, source_id,
                     )
-                    break
-            if not found:
-                log.warning(
-                    "LoST-Sync: delete requested for unknown entry source=%s sourceId=%s",
-                    source, source_id,
-                )
-                not_deleted.append((source, source_id))
-        else:
-            if _upsert_child_coverage(parsed):
-                coverage_changed = True
+                    not_deleted.append((source, source_id))
+            else:
+                if _upsert_child_coverage(parsed, coverage):
+                    changed = True
+        return changed
 
-    _save_child_coverage()
+    coverage_changed = _with_coverage_write(_apply)
 
     if coverage_changed:
         if _root_ams and _root_ams_active:
@@ -2401,14 +2619,19 @@ async def _pull_from_child(child_entry: str) -> bool:
             )
             return False
 
-        count = 0
-        for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping"):
-            parsed = _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
-            _upsert_child_coverage(parsed)
-            count += 1
+        parsed_list = [
+            _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
+            for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping")
+        ]
+        count = len(parsed_list)
 
         if count > 0:
-            _save_child_coverage()
+            def _apply(coverage: list[dict]) -> bool:
+                for parsed in parsed_list:
+                    _upsert_child_coverage(parsed, coverage)
+                return True
+
+            _with_coverage_write(_apply)
             log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
         else:
             log.info("LoST-Sync: no mappings received from %s", child_sync_url)
@@ -2998,6 +3221,28 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 # FastAPI lifespan startup (extracted from server._lifespan)
 # ---------------------------------------------------------------------------
 
+def prewarm() -> None:
+    """Build the GIS JSON cache once before workers fork (section 10).
+
+    No-op in Forest Guide mode. Initializes the NTP client if needed, resolves
+    LVF_GPKG_PATH, and loads the GIS data once so the (now-atomic) cache and
+    attribute index exist before multiple workers start — they then hit the warm
+    cache instead of all cold-building the GPKG concurrently.
+    """
+    global _ntp_client
+    if _forest_guide_mode:
+        log.info("Pre-warm skipped (FG mode)")
+        return
+    if _ntp_client is None:
+        _ntp_client = NTPClient()
+    gpkg_path = os.environ.get("LVF_GPKG_PATH")
+    if gpkg_path and os.path.exists(gpkg_path):
+        _load_gis_data(gpkg_path)
+        log.info("Pre-warm complete")
+    else:
+        log.info("Pre-warm skipped (no GeoPackage file present — routing-only mode)")
+
+
 async def lifespan_startup() -> None:
     """Run startup tasks — call from the FastAPI lifespan context manager."""
     global _schema, _routing_only, _event_loop, _ntp_client
@@ -3021,6 +3266,11 @@ async def lifespan_startup() -> None:
 
     _event_loop = asyncio.get_running_loop()
 
+    if _acquire_leadership():
+        log.info("Worker is the LVF leader — will run SIP notifier and startup sync")
+    else:
+        log.info("Worker is a non-leader — another worker runs SIP notifier and startup sync")
+
     if _forest_guide_mode:
         log.info(
             "Forest Guide mode active (LVF_FOREST_GUIDE_MODE=true): "
@@ -3040,7 +3290,11 @@ async def lifespan_startup() -> None:
             )
         _routing_only = True
         _load_child_coverage()
-        asyncio.create_task(_startup_sync())
+        _start_coverage_watcher()
+        if _is_leader:
+            asyncio.create_task(_startup_sync())
+        else:
+            log.info("LoST-Sync: startup sync skipped on non-leader worker")
         return
 
     if _parent_uri and "://" not in _parent_uri:
@@ -3102,7 +3356,12 @@ async def lifespan_startup() -> None:
     elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
         log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
 
-    asyncio.create_task(_startup_sync())
+    _start_coverage_watcher()
+
+    if _is_leader:
+        asyncio.create_task(_startup_sync())
+    else:
+        log.info("LoST-Sync: startup sync skipped on non-leader worker")
 
 
 # ---------------------------------------------------------------------------

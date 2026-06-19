@@ -88,11 +88,68 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env as needed
 
-# 5. Start the server
+# 5. Start the server (dev — single process)
+python main.py
+# ...or for auto-reload during development:
 uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Prerequisites:** Python 3.10 or later.
+
+---
+
+## Running: Single Worker vs. Multiple Workers
+
+The LVF supports running multiple worker processes on a single machine. Every node type
+**except the Forest Guide** can run multi-worker. With `LVF_WORKERS` unset or `=1`, the
+service behaves **exactly** like the previous single-process deployment — same validation,
+routing, recursion, and coverage results.
+
+**Single worker (unchanged behavior):**
+
+```bash
+# Development:
+python main.py
+
+# Production, explicit single worker:
+LVF_WORKERS=1 gunicorn -c gunicorn.conf.py src.server:app
+```
+
+**Multiple workers (per-machine):**
+
+```bash
+# Build the GIS cache once before forking, then run N workers.
+# Work is CPU-bound — a good starting point is ~the number of CPU cores, then measure.
+python prewarm.py
+LVF_WORKERS=4 gunicorn -c gunicorn.conf.py src.server:app
+```
+
+> **The Forest Guide must run single-worker** (`LVF_WORKERS=1`).
+
+**Pre-warm step.** `python prewarm.py` builds the GIS JSON cache once up front so the
+workers all start against a warm cache instead of cold-building the GeoPackage
+concurrently. It is a no-op in Forest Guide / routing-only mode. The Docker image runs it
+automatically before launching gunicorn.
+
+**Liveness vs. readiness.** `GET /health` is liveness (always 200 while the process is up).
+`GET /ready` is readiness: it returns **503** while a GIS reload is in progress or before
+GIS data is loaded, and **200** once records are present (or immediately, for routing-only
+and Forest Guide nodes, which legitimately have no GIS records). **Load balancers should
+check `/ready`.**
+
+**Multi-worker safety.** Coverage-store writes (inbound LoST-Sync pushes/pulls) are
+serialized with a cross-process file lock and the in-memory list is swapped atomically;
+workers converge on each other's writes via a coverage-file watcher
+(`LVF_COVERAGE_POLL_INTERVAL_SECONDS`, default 15s). Exactly one "leader" worker runs the
+singleton tasks — the SIP notifier and the boot-time startup sync — while the others skip
+them. On root-AMS nodes, operator-authored AMS provisioning is always re-asserted on top of
+the dynamic coverage file, so manual provisioning always wins.
+
+**Scope.** Multi-worker is **per-machine** only. To survive a machine failure, run multiple
+stateless query/validation nodes behind a load balancer (active-active) and use an
+active+standby setup for coordination nodes (parents/Forest Guides). Running a single
+coordination node active-active across multiple machines is intentionally **not** supported
+(it would require a shared store) and is out of scope.
 
 ---
 
@@ -127,6 +184,10 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3.1 §4.12.3.1). A WARNING is logged at startup if unset |
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
 | `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
+| **Process Management** | | | |
+| `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a **Forest Guide must use `1`**. Ignored by `python main.py` (always single-process) |
+| `LVF_WORKER_TIMEOUT` | No | `120` | Gunicorn worker timeout in seconds (read by `gunicorn.conf.py`) |
+| `LVF_COVERAGE_POLL_INTERVAL_SECONDS` | No | `15` | How often (seconds) each worker polls the child-coverage file so siblings converge on each other's LoST-Sync writes. Silent read-only refresh — never triggers a push or startup sync. Set to `0` to disable |
 | **GIS Data** | | | |
 | `LVF_GPKG_PATH` | No† | — | Path to the GeoPackage file. Absent or missing file → routing-only mode (no GIS lookup; requests are routed via child coverage store or `LVF_PARENT_URI`) |
 | `LVF_DEFAULT_MAPPING_SOURCE_ID` | No† | — | UUID used as `sourceId` on the synthetic default mapping. Recommended: `{00000000-0000-0000-0000-000000000000}`. Required when a GPKG is present; not needed in routing-only mode |
@@ -158,6 +219,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_DR_CONTACT_NAME` | No | `LVF Administrator` | Contact name in the DR jCard (`reportingContactJcard`). A WARNING is logged at startup if unset |
 | `LVF_DR_CONTACT_EMAIL` | No | — | Contact email in the DR jCard. A WARNING is logged at startup if unset |
 | **SIP State Notifications** | | | |
+| `LVF_ENABLE_SIP` | No | `true` | Master on/off switch for the SIP notifier. When `false`, the notifier never starts. In multi-worker mode it is a singleton that runs only in the elected leader worker |
 | `LVF_SIP_HOST` | No | `0.0.0.0` | IP address or hostname to bind the SIP listener |
 | `LVF_SIP_PORT` | No | `5060` | SIP port for SUBSCRIBE/NOTIFY. Set to `0` to disable the SIP listener entirely |
 | `LVF_SIP_ALLOWED_SUBSCRIBERS` | No | — | Comma-separated SIP URIs permitted to subscribe (e.g. `sip:esrp.example.com`). When unset, all SUBSCRIBE requests are accepted (appropriate for ESInet trust model where network-level access control is assumed) |
@@ -275,7 +337,8 @@ See `tests/regression/README.md` for full details on seeding golden files.
 |---|---|---|
 | `POST` | `/lost` | LoST protocol endpoint (RFC 5222) — `findService`, `listServices`, `listServicesByLocation`, `getServiceBoundary` (`Content-Type: application/lost+xml`). `findService` requires `validateLocation="true"` |
 | `POST` | `/sync` | LoST-Sync (RFC 6739) — accepts `pushMappings` and `getMappingsRequest` (`Content-Type: application/lostsync+xml`) |
-| `GET` | `/health` | GIS layer record counts, element state, and service state |
+| `GET` | `/health` | Liveness — GIS layer record counts, element state, and service state (always `200` while the process is up) |
+| `GET` | `/ready` | Readiness — `503` while a GIS reload is in progress or before GIS data is loaded; `200` once records are present (or immediately for routing-only / Forest Guide nodes). Load balancers should check this |
 | `GET` | `/coverage/geodetic` | GeoJSON of the unioned service boundary coverage polygon |
 | `GET` | `/coverage/civic` | Civic coverage lookup table |
 | `GET` | `/coverage/civic/explain` | Diagnose RCL segment coverage for a given admin hierarchy |
@@ -307,6 +370,9 @@ src/                        Application source
   notifications/            ElementState and ServiceState change notifiers (NENA-STA-010.3.1 §10.12–13)
   discrepancy/              Discrepancy report generation and submission (NENA-STA-010.3.1 §3.7)
 schemas/                    XSD files for XML schema validation
+main.py                     Single-process launcher (dev) — `python main.py`
+prewarm.py                  Builds the GIS cache once before workers fork
+gunicorn.conf.py            Gunicorn config — workers, timeout, TLS (multi-worker launch)
 data/                   GeoPackage data files and runtime state
   child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Oliver counties
   lvf_child_coverage.json     Child coverage store (written at runtime; do not edit manually)

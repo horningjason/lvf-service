@@ -62,6 +62,12 @@ async def _lifespan(app: FastAPI):
 
 
 def _maybe_start_sip() -> None:
+    if os.environ.get("LVF_ENABLE_SIP", "true").strip().lower() != "true":
+        log.info("SIP notifier disabled (LVF_ENABLE_SIP is not 'true')")
+        return
+    if not _fs._is_leader:
+        log.info("SIP notifier not started — another worker is the leader")
+        return
     sip_port_raw = os.environ.get("LVF_SIP_PORT", "5060").strip()
     try:
         sip_port = int(sip_port_raw)
@@ -106,6 +112,32 @@ async def health():
         "rcl_index_buckets":  len(_fs._rcl_index),
         "element_state": _element_state.get_state().value,
         "service_state": _service_state.get_state().value,
+    }
+
+
+@app.get("/ready")
+async def ready(response: Response):
+    """Readiness probe (distinct from /health liveness). Load balancers should
+    check this: it reports 503 while GIS data is unavailable so traffic is not
+    routed to a worker that cannot validate yet."""
+    reloading = _fs._reloading
+    ssap_n = len(_fs._ssap)
+    rcl_n = len(_fs._rcl)
+
+    if reloading:
+        ready_flag = False
+    elif _fs._routing_only or _fs._forest_guide_mode:
+        # Routing-only / Forest Guide nodes legitimately have no GIS records.
+        ready_flag = True
+    else:
+        ready_flag = bool(ssap_n or rcl_n)
+
+    response.status_code = 200 if ready_flag else 503
+    return {
+        "ready": ready_flag,
+        "reloading": reloading,
+        "ssap": ssap_n,
+        "rcl": rcl_n,
     }
 
 

@@ -1,0 +1,48 @@
+"""Gunicorn configuration for the LVF service (per-machine multi-worker).
+
+Run with:
+    gunicorn -c gunicorn.conf.py src.server:app
+
+Worker count is controlled by LVF_WORKERS (default 1 == today's single-process
+behavior). TLS handling mirrors main.py exactly so HTTPS/mTLS work identically
+whether you launch via `python main.py` (dev) or gunicorn (production).
+
+The Forest Guide must run single-worker (LVF_WORKERS=1).
+"""
+
+import os
+import ssl
+
+bind = "0.0.0.0:8000"
+worker_class = "uvicorn.workers.UvicornWorker"
+workers = int(os.environ.get("LVF_WORKERS", "1"))          # default 1 == today's behavior
+timeout = int(os.environ.get("LVF_WORKER_TIMEOUT", "120"))
+graceful_timeout = 30
+
+# ── TLS (mirrors main.py) ─────────────────────────────────────────────────────
+_tls_mode = os.environ.get("LVF_TLS_MODE", "disabled").lower()
+if _tls_mode in ("tls", "mtls"):
+    _cert = os.environ.get("LVF_TLS_CERT_FILE", "")
+    _key = os.environ.get("LVF_TLS_KEY_FILE", "")
+
+    if not _cert or not os.path.exists(_cert):
+        raise RuntimeError(
+            f"LVF_TLS_CERT_FILE must be set and the file must exist (got: {_cert!r})"
+        )
+    if not _key or not os.path.exists(_key):
+        raise RuntimeError(
+            f"LVF_TLS_KEY_FILE must be set and the file must exist (got: {_key!r})"
+        )
+
+    certfile = _cert
+    keyfile = _key
+
+    if _tls_mode == "mtls":
+        _ca = os.environ.get("LVF_TLS_CA_FILE", "")
+        if not _ca or not os.path.exists(_ca):
+            raise RuntimeError(
+                f"LVF_TLS_CA_FILE must be set and the file must exist for mtls mode "
+                f"(got: {_ca!r})"
+            )
+        ca_certs = _ca
+        cert_reqs = ssl.CERT_OPTIONAL
