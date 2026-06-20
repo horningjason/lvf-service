@@ -46,8 +46,17 @@ def test_query_and_response_events_emitted(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    with caplog.at_level(logging.INFO, logger="src.logging_events.logger"):
+    # src/lost/find_service.py sets propagate = False on the "src" logger (an
+    # ancestor of this one, intentional — prevents double-logging under
+    # uvicorn), so caplog.at_level() alone never sees records emitted here —
+    # attach caplog's handler directly to this logger instead.
+    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj.addHandler(caplog.handler)
+    logger_obj.setLevel(logging.INFO)
+    try:
         _fs.handle_find_service(_XML_VALID)
+    finally:
+        logger_obj.removeHandler(caplog.handler)
 
     events = [r for r in caplog.records if r.message.startswith("log_event ")]
     assert len(events) == 2, f"Expected 2 log_event records, got {len(events)}: {[r.message for r in events]}"
@@ -69,8 +78,17 @@ def test_malformed_request_sets_malformed_query(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    with caplog.at_level(logging.INFO, logger="src.logging_events.logger"):
+    # src/lost/find_service.py sets propagate = False on the "src" logger (an
+    # ancestor of this one, intentional — prevents double-logging under
+    # uvicorn), so caplog.at_level() alone never sees records emitted here —
+    # attach caplog's handler directly to this logger instead.
+    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj.addHandler(caplog.handler)
+    logger_obj.setLevel(logging.INFO)
+    try:
         _fs.handle_find_service(_XML_MALFORMED)
+    finally:
+        logger_obj.removeHandler(caplog.handler)
 
     events = [r for r in caplog.records if r.message.startswith("log_event ")]
     assert len(events) == 2
@@ -87,8 +105,17 @@ def test_call_incident_ids_propagated_to_events(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    with caplog.at_level(logging.INFO, logger="src.logging_events.logger"):
+    # src/lost/find_service.py sets propagate = False on the "src" logger (an
+    # ancestor of this one, intentional — prevents double-logging under
+    # uvicorn), so caplog.at_level() alone never sees records emitted here —
+    # attach caplog's handler directly to this logger instead.
+    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj.addHandler(caplog.handler)
+    logger_obj.setLevel(logging.INFO)
+    try:
         _fs.handle_find_service(_XML_WITH_IDS)
+    finally:
+        logger_obj.removeHandler(caplog.handler)
 
     events = [r for r in caplog.records if r.message.startswith("log_event ")]
     assert events, "No log events emitted"
@@ -120,7 +147,17 @@ def test_agency_id_warning_when_unset(monkeypatch, caplog):
     # Suppress load_dotenv during reload so .env doesn't repopulate LVF_AGENCY_ID.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
     import src.logging_events.logger as logger_mod
-    with caplog.at_level(logging.WARNING, logger="src.logging_events.logger"):
+
+    # src/lost/find_service.py sets propagate = False on the "src" logger (an
+    # ancestor of this one, intentional — prevents double-logging under
+    # uvicorn), so caplog.at_level() alone never sees records emitted here —
+    # attach caplog's handler directly to this logger instead.
+    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj.addHandler(caplog.handler)
+    logger_obj.setLevel(logging.WARNING)
+    try:
         reloaded = importlib.reload(logger_mod)
+    finally:
+        logger_obj.removeHandler(caplog.handler)
     assert reloaded._agency_id == ""
     assert any("LVF_AGENCY_ID" in r.message for r in caplog.records if r.levelno == logging.WARNING)

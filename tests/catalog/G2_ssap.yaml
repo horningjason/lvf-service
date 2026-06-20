@@ -187,6 +187,43 @@
   spec_ref: "§6.1, §6 (Gate 2), §8.5"
   status: has_test
 
+- id: RESP-MAPPING-DEFAULT-001
+  description: >
+    Pins down the synthetic default mapping's sourceId value itself — distinct from
+    G2-SSAP-INVALID-A3-001 and the other INVALID-* tests above, which assert
+    outcome/valid/invalid but never assert what sourceId actually appears in the
+    mapping element. Morton County's civic coverage is registered for A3=Mandan
+    specifically with no county-wide (A3-wildcard) entry, unlike Burleigh/McLean/
+    Mercer/Oliver. This address is a real Morton County SSAP record with no A3 (civic
+    city) value at all. HNO 9999 does not exist for this street, so Gate 2 fails at
+    ca:HNO — a non-admin element, so the out-of-coverage redirect rule does not apply.
+    Civic coverage lookup for the validated admin prefix (A3 wildcarded, since it was
+    never submitted) does not match Morton's Mandan-only registration, so the
+    synthetic default mapping is returned with sourceId equal to the
+    LVF_DEFAULT_MAPPING_SOURCE_ID sentinel.
+  preconditions:
+    - SSAP records exist for Shires Drive Southeast, Morton County with no A3 value
+    - No SSAP or RCL record for HNO=9999 on Shires Drive Southeast
+    - Morton County's only civic coverage entry is scoped to A3=Mandan (no blanket entry)
+    - LVF_DEFAULT_MAPPING_SOURCE_ID configured to the sentinel {00000000-0000-0000-0000-000000000000}
+  input_file: requests/RESP-MAPPING-DEFAULT-001.xml
+  expected:
+    response_type: locationValidation
+    valid: [ca:country, ca:A1, ca:A2, ca:RD, ca:STS, ca:POD]
+    invalid: [ca:HNO]
+    default_mapping_source_id: "{00000000-0000-0000-0000-000000000000}"
+  notes: >
+    This test ID was originally scoped (per a comment in
+    G2-REDIRECT-OOC-COUNTRY-001.xml) for a country-level GIS failure. That scenario
+    now correctly produces <redirect> per the out-of-coverage admin rule instead of a
+    default mapping — see G2-REDIRECT-OOC-COUNTRY-001. This test was re-scoped to the
+    A3-omitted/HNO-invalid scenario above, which is the current live path to a default
+    mapping for an in-coverage county. Same SSAP progressive-filter code path as
+    G2-SSAP-INVALID-A3-001; this entry's sole purpose is asserting the mapping
+    sourceId, which no existing test currently pins down.
+  spec_ref: "§6 (Gate 2), §8.5"
+  status: has_test
+
 - id: G2-SSAP-WHITESPACE-A2-001
   description: >
     A2 submitted with a trailing space ("Burleigh County "). All other elements are
