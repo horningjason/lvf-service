@@ -9,31 +9,111 @@ re-exports the symbols that test harnesses import directly.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response
 from lxml import etree
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import src.lost.find_service as _fs
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
-from src.lost import list_services, list_services_by_location, get_service_boundary
+from src.lost import list_services, list_services_by_location, get_service_boundary, load_shed
+from src import metrics
 from src.notifications import element_state as _element_state
 from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry
 
 _NS_LOST = _fs._NS_LOST
+log = logging.getLogger(__name__)
+
+
+def _record_lost_outcome(result: bytes) -> None:
+    """Increment lvf_lost_errors_total when `result` is a LoST <errors>
+    response, labeled by the actual error child element name (e.g.
+    "notFound", "locationInvalid"). No-op for successful responses. Used for
+    outcomes produced deep inside find_service.py/list_services.py/etc. where
+    there's no cheaper, already-available discriminator without restructuring
+    their return type — mirrors the lightweight result-inspection pattern
+    find_service.py itself already uses (e.g. _has_loop, _prepend_via_to_response)."""
+    try:
+        root = etree.fromstring(result, _fs._XML_PARSER)
+    except etree.XMLSyntaxError:
+        return
+    if root.tag != f"{{{_NS_LOST}}}errors" or len(root) == 0:
+        return
+    child_tag = root[0].tag
+    if "}" in child_tag:
+        child_tag = child_tag.split("}", 1)[1]
+    metrics.lost_errors_total.labels(error_type=child_tag).inc()
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    tls_mode = os.environ.get("LVF_TLS_MODE", "disabled").lower()
+    log.info("TLS mode: %s", tls_mode)
+    if tls_mode in ("tls", "mtls"):
+        cert_file = os.environ.get("LVF_TLS_CERT_FILE", "")
+        key_file  = os.environ.get("LVF_TLS_KEY_FILE",  "")
+        if not cert_file or not os.path.exists(cert_file):
+            log.error(
+                "LVF_TLS_CERT_FILE must be set and file must exist (got: %r) — aborting startup",
+                cert_file,
+            )
+            raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CERT_FILE")
+        if not key_file or not os.path.exists(key_file):
+            log.error(
+                "LVF_TLS_KEY_FILE must be set and file must exist (got: %r) — aborting startup",
+                key_file,
+            )
+            raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_KEY_FILE")
+        if tls_mode == "mtls":
+            ca_file = os.environ.get("LVF_TLS_CA_FILE", "")
+            if not ca_file or not os.path.exists(ca_file):
+                log.error(
+                    "LVF_TLS_CA_FILE must be set and file must exist for mtls mode (got: %r) — aborting startup",
+                    ca_file,
+                )
+                raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CA_FILE")
     await _fs.lifespan_startup()
     _maybe_start_sip()
+    load_shed.start_recovery_watcher_if_needed()
     yield
+
+    # Shutdown — cancel every long-running background asyncio task this
+    # lifespan started, so the process exits promptly under gunicorn instead
+    # of idling until graceful_timeout. Daemon threads (_watch_gpkg,
+    # _watch_child_coverage) exit on their own and need no action here.
+    sip_notifier = getattr(app.state, "sip_notifier", None)
+    if sip_notifier is not None:
+        try:
+            await sip_notifier.stop()
+        except Exception as exc:
+            log.warning("Shutdown: SIP notifier stop raised: %s", exc)
+
+    try:
+        await load_shed.stop_recovery_watcher()
+    except Exception as exc:
+        log.warning("Shutdown: load-shed recovery watcher stop raised: %s", exc)
+
+    try:
+        await _fs.lifespan_shutdown()
+    except Exception as exc:
+        log.warning("Shutdown: LoST-Sync background task cleanup raised: %s", exc)
+
+    log.info("LVF shutdown complete")
 
 
 def _maybe_start_sip() -> None:
+    if os.environ.get("LVF_ENABLE_SIP", "true").strip().lower() != "true":
+        log.info("SIP notifier disabled (LVF_ENABLE_SIP is not 'true')")
+        return
+    if not _fs._is_leader:
+        log.info("SIP notifier not started — another worker is the leader")
+        return
     sip_port_raw = os.environ.get("LVF_SIP_PORT", "5060").strip()
     try:
         sip_port = int(sip_port_raw)
@@ -49,7 +129,39 @@ def _maybe_start_sip() -> None:
     asyncio.ensure_future(notifier.start())
 
 
+class LimitBodySize(BaseHTTPMiddleware):
+    _LIMITS = {
+        "/sync": 10_485_760,
+    }
+    _DEFAULT = 1_048_576
+
+    async def dispatch(self, request, call_next):
+        limit = self._LIMITS.get(request.scope["path"], self._DEFAULT)
+        if int(request.headers.get("content-length", 0)) > limit:
+            return Response(status_code=413)
+        return await call_next(request)
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Records lvf_http_requests_total / lvf_http_request_duration_seconds for
+    every request. Added after LimitBodySize so it wraps it (outermost) — a
+    413 rejection from LimitBodySize still passes through call_next here and
+    is counted with its actual status code."""
+
+    async def dispatch(self, request, call_next):
+        path = request.scope["path"]
+        start = time.monotonic()
+        response = await call_next(request)
+        elapsed = time.monotonic() - start
+        metrics.http_requests_total.labels(endpoint=path, status=str(response.status_code)).inc()
+        metrics.http_request_duration_seconds.labels(endpoint=path).observe(elapsed)
+        return response
+
+
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
+app.add_middleware(LimitBodySize)
+app.add_middleware(MetricsMiddleware)
+app.mount("/metrics", metrics.metrics_app())
 
 
 @app.get("/health")
@@ -60,8 +172,36 @@ async def health():
         "rcl_records": len(_fs._rcl),
         "boundaries": len(_fs._boundaries),
         "civic_coverage_entries": len(_fs._civic_coverage),
+        "ssap_index_buckets": len(_fs._ssap_index),
+        "rcl_index_buckets":  len(_fs._rcl_index),
         "element_state": _element_state.get_state().value,
         "service_state": _service_state.get_state().value,
+    }
+
+
+@app.get("/ready")
+async def ready(response: Response):
+    """Readiness probe (distinct from /health liveness). Load balancers should
+    check this: it reports 503 while GIS data is unavailable so traffic is not
+    routed to a worker that cannot validate yet."""
+    reloading = _fs._reloading
+    ssap_n = len(_fs._ssap)
+    rcl_n = len(_fs._rcl)
+
+    if reloading:
+        ready_flag = False
+    elif _fs._routing_only or _fs._forest_guide_mode:
+        # Routing-only / Forest Guide nodes legitimately have no GIS records.
+        ready_flag = True
+    else:
+        ready_flag = bool(ssap_n or rcl_n)
+
+    response.status_code = 200 if ready_flag else 503
+    return {
+        "ready": ready_flag,
+        "reloading": reloading,
+        "ssap": ssap_n,
+        "rcl": rcl_n,
     }
 
 
@@ -186,6 +326,18 @@ async def sync_endpoint(request: Request) -> Response:
     Accepts pushMappings and getMappingsRequest in application/lostsync+xml.
     Returns HTTP 200 for both success and protocol-level errors.
     """
+    if os.environ.get("LVF_TLS_MODE", "disabled").lower() == "mtls":
+        ssl_object = request.scope.get("ssl_object")
+        peer_cert = ssl_object.getpeercert() if ssl_object is not None else None
+        if not peer_cert:
+            return Response(
+                content='{"error": "Client certificate required for /sync endpoint"}',
+                status_code=401,
+                media_type="application/json",
+            )
+        subject = dict(x[0] for x in peer_cert.get("subject", []))
+        log.info("Sync request authenticated: CN=%s", subject.get("commonName", "<unknown>"))
+
     body = await request.body()
     return await _fs.handle_sync(body, request.client)
 
@@ -197,49 +349,91 @@ async def lost_endpoint(request: Request) -> Response:
     listServicesByLocation, getServiceBoundary.
     Content-Type: application/lost+xml.
     """
-    body = await request.body()
+    if os.environ.get("LVF_TLS_MODE", "disabled").lower() == "mtls":
+        ssl_object = request.scope.get("ssl_object")
+        peer_cert = ssl_object.getpeercert() if ssl_object is not None else None
+        if peer_cert:
+            subject = dict(x[0] for x in peer_cert.get("subject", []))
+            log.debug("LoST request with client cert: CN=%s", subject.get("commonName", "<unknown>"))
+        else:
+            log.debug("LoST request without client cert (allowed)")
+
+    # Load shedding (spec §3.11.5) — checked before any XML parsing or schema
+    # validation. Disabled (no-op) unless LVF_RATE_LIMIT_PER_SOURCE and/or
+    # LVF_MAX_CONCURRENT_REQUESTS are configured.
+    source_ip = request.client.host if request.client else None
+    shed_reason = load_shed.check(source_ip)
+    if shed_reason is not None:
+        return Response(
+            content=f'{{"error": "rate_limited", "reason": "{shed_reason}"}}',
+            status_code=429,
+            media_type="application/json",
+        )
+
+    concurrency_acquired = False
+    if _fs._max_concurrent_requests > 0:
+        if not load_shed.try_acquire_concurrency():
+            load_shed.log_shed(load_shed.CONCURRENCY_CAP, source_ip)
+            return Response(
+                content='{"error": "rate_limited", "reason": "concurrency_cap"}',
+                status_code=429,
+                media_type="application/json",
+            )
+        concurrency_acquired = True
+
     try:
-        root = etree.fromstring(body)
-    except etree.XMLSyntaxError as exc:
-        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        err.set("source", _fs._server_uri)
-        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", f"Malformed XML: {exc}")
-        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        return Response(
-            content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
-            status_code=200,
-            media_type="application/lost+xml",
-        )
+        body = await request.body()
+        try:
+            root = etree.fromstring(body, _fs._XML_PARSER)
+        except etree.XMLSyntaxError as exc:
+            log.error("Lost endpoint: XML parse failed: %s", exc)
+            metrics.lost_errors_total.labels(error_type="badRequest").inc()
+            err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+            err.set("source", _fs._server_uri)
+            br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+            br.set("message", "Malformed XML.")
+            br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            return Response(
+                content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+                status_code=200,
+                media_type="application/lost+xml",
+            )
 
-    schema_error = _validate_schema(body)
-    if schema_error:
-        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        err.set("source", _fs._server_uri)
-        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", schema_error)
-        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        return Response(
-            content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
-            status_code=200,
-            media_type="application/lost+xml",
-        )
+        schema_error = _validate_schema(body)
+        if schema_error:
+            metrics.lost_errors_total.labels(error_type="badRequest").inc()
+            err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+            err.set("source", _fs._server_uri)
+            br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+            br.set("message", schema_error)
+            br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            return Response(
+                content=etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+                status_code=200,
+                media_type="application/lost+xml",
+            )
 
-    client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
-    if root.tag == f"{{{_NS_LOST}}}findService":
-        result = await _fs.handle_find_service_async(body, client_addr=client_addr)
-    elif root.tag == f"{{{_NS_LOST}}}listServices":
-        result = list_services.handle(body, client_addr=client_addr)
-    elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
-        result = await list_services_by_location.handle(body, client_addr=client_addr)
-    elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
-        result = get_service_boundary.build_response(_fs._server_uri)
-    else:
-        err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        err.set("source", _fs._server_uri)
-        br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
-        br.set("message", f"Unexpected root element {root.tag!r}")
-        br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        result = etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        client_addr = f"{request.client.host}:{request.client.port}" if request.client else None
+        if root.tag == f"{{{_NS_LOST}}}findService":
+            result = await _fs.handle_find_service_async(body, client_addr=client_addr)
+        elif root.tag == f"{{{_NS_LOST}}}listServices":
+            result = list_services.handle(body, client_addr=client_addr)
+        elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
+            result = await list_services_by_location.handle(body, client_addr=client_addr)
+        elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
+            result = get_service_boundary.build_response(_fs._server_uri)
+        else:
+            metrics.lost_errors_total.labels(error_type="badRequest").inc()
+            err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
+            err.set("source", _fs._server_uri)
+            br = etree.SubElement(err, f"{{{_NS_LOST}}}badRequest")
+            br.set("message", f"Unexpected root element {root.tag!r}")
+            br.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
+            result = etree.tostring(err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+            return Response(content=result, status_code=200, media_type="application/lost+xml")
 
-    return Response(content=result, status_code=200, media_type="application/lost+xml")
+        _record_lost_outcome(result)
+        return Response(content=result, status_code=200, media_type="application/lost+xml")
+    finally:
+        if concurrency_acquired:
+            load_shed.release_concurrency()

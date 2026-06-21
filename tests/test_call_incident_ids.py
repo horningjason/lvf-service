@@ -60,8 +60,17 @@ def test_debug_log_emitted(caplog, monkeypatch):
 
     _fs.initialize()  # routing-only mode — no GIS I/O
 
-    with caplog.at_level(logging.DEBUG, logger="src.lost.find_service"):
+    # src/lost/find_service.py sets propagate = False on the "src" logger (an
+    # ancestor of this one, intentional — prevents double-logging under
+    # uvicorn), so caplog.at_level() alone never sees records emitted here —
+    # attach caplog's handler directly to this logger instead.
+    logger_obj = logging.getLogger("src.lost.find_service")
+    logger_obj.addHandler(caplog.handler)
+    logger_obj.setLevel(logging.DEBUG)
+    try:
         _fs.handle_find_service(_XML_WITH_IDS)
+    finally:
+        logger_obj.removeHandler(caplog.handler)
 
     assert any(
         "test-call-1" in r.message and "test-incident-2" in r.message

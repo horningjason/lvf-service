@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This test specifically verifies the synthetic default mapping's sourceId equals
+LVF_DEFAULT_MAPPING_SOURCE_ID (the sentinel {00000000-0000-0000-0000-000000000000}), not
+just the outcome/valid/invalid lists already covered by G2-SSAP-INVALID-A3-001 and
+similar tests — none of those currently pin down the mapping element's sourceId value
+itself.
+
+NOTE ON SCOPE: this test ID was originally intended (per a comment in
+G2-REDIRECT-OOC-COUNTRY-001.xml) to exercise a country-level GIS failure. That scenario
+no longer reaches the default mapping path — it now correctly produces <redirect> per
+the out-of-coverage admin rule (see G2-REDIRECT-OOC-COUNTRY-001). This test was
+re-scoped to the scenario that still genuinely reaches default-mapping assembly today.
+
+SCENARIO: Morton County's civic coverage is registered for A3=Mandan specifically —
+unlike Burleigh/McLean/Mercer/Oliver, it has no county-wide (A3-wildcard) coverage
+entry. This address is a real Morton County SSAP record with no A3 (civic city) value
+at all (an unincorporated/institutional address — civic A3 is null even though the
+GIS record's postal community is "Mandan"). HNO 9999 does not exist for this street
+(real values run 1109-1413), so Gate 2 fails at ca:HNO. Because ca:HNO is not an
+admin-hierarchy element, the out-of-coverage redirect check does not apply (it only
+triggers on country/A1/A2/A3/A4/A5 failures). Response assembly then looks up civic
+coverage for the validated admin prefix (country/A1/A2, with A3 wildcarded since it
+was never submitted) — Morton County's Mandan-only registration does not match a
+wildcard A3 query, so no boundary can be identified and the synthetic default mapping
+is returned instead, with <defaultMappingReturned> per §8.5.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Morton County</A2>
+      <RD>Shires</RD>
+      <STS>Drive</STS>
+      <POD>Southeast</POD>
+      <HNO>9999</HNO>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

@@ -18,6 +18,9 @@ tests/
 # Git
 .git/
 
+# Prometheus multiprocess metrics (runtime-only; recreated fresh on startup)
+**/prometheus_multiproc/
+
 # Archives
 *.zip
 *.pkl

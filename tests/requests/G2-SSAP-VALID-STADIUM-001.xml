@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This request submits a valid stadium sub-address against a provisioned SSAP record at
+1701 Canary Avenue, Bismarck. cdx2:SECTION and cdx2:ROW (NENA-STA-004.2 venue sub-address
+extensions) and ca:SEAT (RFC 5139 §6 named-location) are rcl_unchecked elements: they are
+evaluated by the SSAP progressive filter and can appear in <valid>, but are bypassed on RCL
+and always placed in <unchecked> there. The SSAP record for this address uniquely matches the
+submitted section, row, and seat values, yielding a single candidate. The expected outcome is
+a conforming locationValidation result with all submitted elements, including cdx2:SECTION,
+cdx2:ROW, and ca:SEAT, in <valid>.
+-->
+<findService xmlns="urn:ietf:params:xml:ns:lost1" validateLocation="true">
+  <location id="L1" profile="civic">
+    <civicAddress xmlns="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr" xmlns:cdx2="urn:nena:xml:ns:pidf:nenaCivicAddr2">
+      <country>US</country>
+      <A1>ND</A1>
+      <A2>Burleigh County</A2>
+      <A3>Bismarck</A3>
+      <RD>Canary</RD>
+      <STS>Avenue</STS>
+      <HNO>1701</HNO>
+      <cdx2:SECTION>101</cdx2:SECTION>
+      <cdx2:ROW>15</cdx2:ROW>
+      <SEAT>17a</SEAT>
+    </civicAddress>
+  </location>
+  <service>urn:service:sos</service>
+</findService>

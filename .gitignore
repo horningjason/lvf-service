@@ -1,9 +1,10 @@
 # Environment — never commit real credentials
 .env
 
-# Pickle cache generated at startup
+# Cache generated at startup
 *.pkl
 *.pickle
+*.cache.json
 
 # Python
 __pycache__/
@@ -34,6 +35,10 @@ htmlcov/
 .coverage
 tests/regression/golden/*
 !tests/regression/golden/.gitkeep
+
+# Prometheus multiprocess metrics (runtime-only; default path is /tmp,
+# outside the repo, but ignore the common in-repo override too)
+**/prometheus_multiproc/
 
 # Archives
 *.zip

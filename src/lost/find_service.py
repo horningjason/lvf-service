@@ -12,11 +12,15 @@ import asyncio
 import json
 import logging
 import os
-import pickle
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, NamedTuple, Optional
+
+try:
+    import fcntl as _fcntl  # POSIX only — used for cross-process file locks
+except ImportError:  # pragma: no cover - Windows dev path
+    _fcntl = None  # type: ignore[assignment]
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -44,9 +48,12 @@ from fastapi import Response
 from lxml import etree
 import httpx
 
+_XML_PARSER = etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
+
 from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
 from src.logging_events.log_events import generate_query_id
 from src.ntp import NTPClient
+from src import metrics as _metrics
 from src.notifications import element_state as _element_state
 from src.notifications import service_state as _service_state
 from src.notifications.element_state import ElementState
@@ -163,6 +170,8 @@ _rcl:        list[RCLRecord]       = []
 _boundaries: list[ServiceBoundary] = []
 _geodetic_coverage: dict[str, Any] = {}
 _civic_coverage: list[CivicCoverageEntry] = []
+_ssap_index: dict[tuple, list] = {}
+_rcl_index:  dict[tuple, list] = {}
 
 _reloading: bool = False
 _reloading_lock = threading.Lock()
@@ -212,6 +221,13 @@ _sync_children: list[str] = [
     if url.strip()
 ]
 
+# Load shedding (spec §3.11.5) — both disabled (0) by default so existing
+# deployments are unaffected until explicitly tuned. Per-worker, not
+# cross-worker accurate: effective capacity scales with LVF_WORKERS.
+_max_concurrent_requests:   int = int(os.environ.get("LVF_MAX_CONCURRENT_REQUESTS", "0"))
+_rate_limit_per_source:     int = int(os.environ.get("LVF_RATE_LIMIT_PER_SOURCE", "0"))
+_rate_limit_window_seconds: int = int(os.environ.get("LVF_RATE_LIMIT_WINDOW_SECONDS", "60"))
+
 _ADMIN_PIDF_LO: frozenset[str] = frozenset({
     "ca:country", "ca:A1", "ca:A2", "ca:A3", "ca:A4", "ca:A5",
 })
@@ -224,7 +240,32 @@ _schema: Optional[etree.XMLSchema] = None
 
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
+# Long-running LoST-Sync retry tasks spawned by _startup_sync() (one per
+# configured child, plus parent-push and/or Forest-Guide-push). Each retries
+# indefinitely (exponential backoff up to _SYNC_BACKOFF_CAP seconds) while its
+# target is unreachable, so they must be cancelled explicitly on shutdown
+# (lifespan_shutdown()) rather than left to keep the event loop alive past
+# gunicorn's graceful_timeout.
+_background_sync_tasks: list[asyncio.Task] = []
+
 _child_coverage: list[dict] = []
+
+# Guards reassignment of the _child_coverage global (in-process). The list is
+# only ever swapped wholesale for a fresh list — never mutated in place once
+# published — so readers can take the current reference without locking and
+# always see a complete, consistent snapshot.
+_coverage_lock = threading.Lock()
+
+# Most-recently loaded operator-authored AMS provisioning entries (root-AMS
+# only). Cached by _load_ams_provisioning() so they can be re-asserted on top of
+# the dynamic coverage file after every reload (manual provisioning always wins).
+_ams_provisioning_cache: list[dict] = []
+
+# Single-leader election: exactly one worker process on a machine acquires this
+# lock and runs the singletons (SIP notifier + boot-time startup sync). The file
+# descriptor is held open for the process lifetime so the lock is not released.
+_leader_lock_fd: Optional[int] = None
+_is_leader: bool = False
 
 _ntp_client: Optional[NTPClient] = None
 
@@ -249,9 +290,10 @@ def _validate_schema(body: bytes) -> Optional[str]:
     if _schema is None:
         return None
     try:
-        doc = etree.fromstring(body)
+        doc = etree.fromstring(body, _XML_PARSER)
     except etree.XMLSyntaxError as exc:
-        return f"Malformed XML: {exc}"
+        log.error("Schema validation: XML parse failed: %s", exc)
+        return "Malformed XML."
     if _schema.validate(doc):
         return None
     error_log = _schema.error_log
@@ -334,7 +376,7 @@ def _row_to_ssap(row: pd.Series) -> SSAPRecord:
         unitvalue=_get(row, "UnitValue"),
         room=_get(row, "Room"),
         section=_get(row, "Section"),
-        row=_get(row, "Row"),
+        row=_get(row, "Row_"),
         seat=_get(row, "Seat"),
         locmarker=_get(row, "LocMarker"),
         post_comm=_get(row, "Post_Comm"),
@@ -431,39 +473,153 @@ def _build_default_mapping(service_urn: str) -> MappingElement:
     )
 
 
+# ---------------------------------------------------------------------------
+# GIS cache — JSON serialization helpers
+# ---------------------------------------------------------------------------
+
+def _ssap_to_dict(r: SSAPRecord) -> dict:
+    d = r.model_dump(exclude={"geometry"})
+    d["geometry"] = r.geometry.wkt if r.geometry is not None else None
+    return d
+
+
+def _dict_to_ssap(d: dict) -> SSAPRecord:
+    from shapely.wkt import loads as _wkt_loads
+    geom_wkt = d.get("geometry")
+    return SSAPRecord(
+        **{k: v for k, v in d.items() if k != "geometry"},
+        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
+    )
+
+
+def _rcl_to_dict(r: RCLRecord) -> dict:
+    d = r.model_dump(exclude={"geometry"})
+    d["geometry"] = r.geometry.wkt if r.geometry is not None else None
+    return d
+
+
+def _dict_to_rcl(d: dict) -> RCLRecord:
+    from shapely.wkt import loads as _wkt_loads
+    geom_wkt = d.get("geometry")
+    return RCLRecord(
+        **{k: v for k, v in d.items() if k != "geometry"},
+        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
+    )
+
+
+def _boundary_to_dict(b: ServiceBoundary) -> dict:
+    d = b.model_dump(exclude={"geometry"})
+    d["geometry"] = b.geometry.wkt if b.geometry is not None else None
+    return d
+
+
+def _dict_to_boundary(d: dict) -> ServiceBoundary:
+    from shapely.wkt import loads as _wkt_loads
+    geom_wkt = d.get("geometry")
+    return ServiceBoundary(
+        **{k: v for k, v in d.items() if k != "geometry"},
+        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
+    )
+
+
+def _civic_entry_to_dict(e: CivicCoverageEntry) -> dict:
+    return {
+        "country":  e.country,
+        "a1":       e.a1,
+        "a2":       e.a2,
+        "a3":       e.a3,
+        "a4":       e.a4,
+        "a5":       e.a5,
+        "boundary": _boundary_to_dict(e.boundary) if e.boundary is not None else None,
+    }
+
+
+def _dict_to_civic_entry(d: dict) -> CivicCoverageEntry:
+    boundary_d = d.get("boundary")
+    return CivicCoverageEntry(
+        country=d["country"],
+        a1=d["a1"],
+        a2=d["a2"],
+        a3=d.get("a3"),
+        a4=d.get("a4"),
+        a5=d.get("a5"),
+        boundary=_dict_to_boundary(boundary_d) if boundary_d is not None else None,
+    )
+
+
+def _norm_key(v: Optional[str]) -> Optional[str]:
+    if not v:
+        return None
+    s = v.strip()
+    return s.upper() if s else None
+
+
+def _build_attribute_index() -> None:
+    global _ssap_index, _rcl_index
+    ssap_idx: dict[tuple, list] = {}
+    for r in _ssap:
+        key = (_norm_key(r.country), _norm_key(r.a1), _norm_key(r.a2))
+        ssap_idx.setdefault(key, []).append(r)
+    _ssap_index = ssap_idx
+
+    rcl_idx: dict[tuple, list] = {}
+    for r in _rcl:
+        l_key = (_norm_key(r.country_l), _norm_key(r.a1_l), _norm_key(r.a2_l))
+        r_key = (_norm_key(r.country_r), _norm_key(r.a1_r), _norm_key(r.a2_r))
+        rcl_idx.setdefault(l_key, []).append(r)
+        if r_key != l_key:
+            rcl_idx.setdefault(r_key, []).append(r)
+    _rcl_index = rcl_idx
+    log.debug(
+        "Attribute index built: %d SSAP buckets, %d RCL buckets",
+        len(_ssap_index), len(_rcl_index),
+    )
+
+
+def _candidates_for(address: CivicAddress) -> tuple[list, list]:
+    key = (_norm_key(address.country), _norm_key(address.a1), _norm_key(address.a2))
+    ssap_subset = _ssap_index.get(key)
+    rcl_subset  = _rcl_index.get(key)
+    if ssap_subset is None and rcl_subset is None:
+        return _ssap, _rcl
+    return (ssap_subset or [], rcl_subset or [])
+
+
 def _load_gis_data(gpkg_path: str) -> None:
     global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage, _gis_last_loaded
 
-    pickle_path = os.path.splitext(gpkg_path)[0] + ".pickle"
+    cache_path = os.path.splitext(gpkg_path)[0] + ".cache.json"
     gpkg_mtime = os.path.getmtime(gpkg_path)
 
-    if os.path.exists(pickle_path):
+    if os.path.exists(cache_path):
         try:
-            with open(pickle_path, "rb") as f:
-                data = pickle.load(f)
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
             if data.get("gpkg_mtime") == gpkg_mtime:
-                log.info("Cache hit — loading GIS data from pickle: %s", pickle_path)
-                _ssap              = data["ssap"]
-                _rcl               = data["rcl"]
-                _boundaries        = data["boundaries"]
-                _civic_coverage    = data["civic_coverage"]
-                _geodetic_coverage = data["geodetic_coverage"]
+                log.info("Cache hit — loading GIS data from JSON cache: %s", cache_path)
+                from shapely.wkt import loads as _wkt_loads
+                _ssap              = [_dict_to_ssap(d) for d in data["ssap"]]
+                _rcl               = [_dict_to_rcl(d)  for d in data["rcl"]]
+                _boundaries        = [_dict_to_boundary(d) for d in data["boundaries"]]
+                _civic_coverage    = [_dict_to_civic_entry(d) for d in data["civic_coverage"]]
+                _geodetic_coverage = {urn: _wkt_loads(wkt) for urn, wkt in data["geodetic_coverage"].items()}
                 _gis_last_loaded   = _ntp_client.get_current_time()
                 log.info(
-                    "Loaded from pickle: %d SSAP, %d RCL, %d boundaries, "
+                    "Loaded from cache: %d SSAP, %d RCL, %d boundaries, "
                     "%d civic coverage entries, %d geodetic URN(s)",
                     len(_ssap), len(_rcl), len(_boundaries),
                     len(_civic_coverage), len(_geodetic_coverage),
                 )
+                _build_attribute_index()
                 return
             else:
-                log.info("Cache miss — GPKG mtime changed, rebuilding: %s", pickle_path)
+                log.info("Cache miss — GPKG mtime changed, rebuilding: %s", cache_path)
         except Exception as exc:
             log.warning(
-                "Pickle load failed (%s) — falling back to GPKG and rebuilding cache", exc,
+                "JSON cache load failed (%s) — falling back to GPKG and rebuilding cache", exc,
             )
     else:
-        log.info("Cache miss — no pickle found, building for the first time: %s", pickle_path)
+        log.info("Cache miss — no JSON cache found, building for the first time: %s", cache_path)
 
     ssap_layer      = os.environ.get("LVF_SSAP_LAYER",     "SiteStructureAddressPoint")
     rcl_layer       = os.environ.get("LVF_RCL_LAYER",      "RoadCenterLine")
@@ -501,24 +657,34 @@ def _load_gis_data(gpkg_path: str) -> None:
 
     _derive_geodetic_coverage()
     _derive_civic_coverage()
+    _build_attribute_index()
     _gis_last_loaded = _ntp_client.get_current_time()
 
+    # Atomic write (temp file + os.replace) so concurrent workers never observe a
+    # half-written cache. Mirrors the pattern used by _save_child_coverage_list.
+    tmp_cache = cache_path + ".tmp"
     try:
-        with open(pickle_path, "wb") as f:
-            pickle.dump(
+        with open(tmp_cache, "w", encoding="utf-8") as f:
+            json.dump(
                 {
-                    "ssap":              _ssap,
-                    "rcl":               _rcl,
-                    "boundaries":        _boundaries,
-                    "civic_coverage":    _civic_coverage,
-                    "geodetic_coverage": _geodetic_coverage,
+                    "ssap":              [_ssap_to_dict(r) for r in _ssap],
+                    "rcl":               [_rcl_to_dict(r)  for r in _rcl],
+                    "boundaries":        [_boundary_to_dict(b) for b in _boundaries],
+                    "civic_coverage":    [_civic_entry_to_dict(e) for e in _civic_coverage],
+                    "geodetic_coverage": {urn: geom.wkt for urn, geom in _geodetic_coverage.items()},
                     "gpkg_mtime":        gpkg_mtime,
                 },
                 f,
             )
-        log.info("GIS data cached to pickle: %s", pickle_path)
+        os.replace(tmp_cache, cache_path)
+        log.info("GIS data cached to JSON: %s", cache_path)
     except Exception as exc:
-        log.warning("Could not write pickle cache: %s", exc)
+        log.warning("Could not write JSON cache: %s", exc)
+        try:
+            if os.path.exists(tmp_cache):
+                os.remove(tmp_cache)
+        except OSError:
+            pass
 
 
 def _watch_gpkg(gpkg_path: str) -> None:
@@ -547,6 +713,7 @@ def _watch_gpkg(gpkg_path: str) -> None:
                 baseline_mtime = current_mtime
                 with _reloading_lock:
                     _reloading = False
+                _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="success").inc()
                 log.info("GIS data reload complete — resuming normal service")
                 _element_state._notifier.set_state(ElementState.Normal, "GIS reload succeeded")
                 _service_state._notifier.set_state(ServiceState.Normal, "GIS reload succeeded")
@@ -554,6 +721,7 @@ def _watch_gpkg(gpkg_path: str) -> None:
                     _load_ams_provisioning()
                 _maybe_schedule_repush()
             except Exception as exc:
+                _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="failure").inc()
                 log.error(
                     "GIS data reload failed — service remains unavailable", exc_info=True
                 )
@@ -743,9 +911,10 @@ def lookup_civic_coverage(
 
 def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.datetime]]:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
     except etree.XMLSyntaxError as exc:
-        raise ValueError(f"Malformed XML: {exc}") from exc
+        log.error("Request parse: XML syntax error: %s", exc)
+        raise ValueError("Malformed XML.") from exc
 
     if root.tag != f"{{{_NS_LOST}}}findService":
         local = root.tag.split("}")[-1] if "}" in root.tag else root.tag
@@ -797,7 +966,7 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
 def _parse_return_additional_location(body: bytes) -> str:
     _VALID = {"none", "similar", "complete", "any"}
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         val = root.get(f"{{{_NS_RLI}}}returnAdditionalLocation")
         if val is None:
             return "complete"
@@ -808,7 +977,7 @@ def _parse_return_additional_location(body: bytes) -> str:
 
 def _parse_recursive(body: bytes) -> bool:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         return root.get("recursive", "false").lower() == "true"
     except Exception:
         return False
@@ -1113,7 +1282,7 @@ def _check_ooc_admin(address: CivicAddress, g2):
 
 def _has_loop(body: bytes) -> bool:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         path_el = root.find(f"{{{_NS_LOST}}}path")
         if path_el is None:
             return False
@@ -1127,7 +1296,7 @@ def _has_loop(body: bytes) -> bool:
 
 def _add_via_to_request(body: bytes) -> bytes:
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
         path_el = root.find(f"{{{_NS_LOST}}}path")
         if path_el is None:
             path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
@@ -1217,6 +1386,8 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
     if _has_loop(request_body):
         return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
     modified = _add_via_to_request(request_body)
+    _t0 = time.monotonic()
+    log.debug("Recursion (sync): POST %s", validate_uri)
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(
@@ -1224,6 +1395,13 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="success").inc()
+        log.debug(
+            "Recursion (sync): %s responded in %.3fs (status=%d)",
+            validate_uri, elapsed, resp.status_code,
+        )
         if resp.status_code == 200:
             try:
                 result = _prepend_via_to_response(resp.content)
@@ -1233,15 +1411,28 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
                 return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
         return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
     except httpx.TimeoutException:
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="timeout").inc()
+        log.warning("Recursion (sync): %s timed out after %.3fs", validate_uri, elapsed)
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        return _make_errors_xml("serverError", f"Could not reach target LVF: {exc}")
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="error").inc()
+        log.error(
+            "Recursion (sync) to %s failed after %.3fs: %s",
+            validate_uri, elapsed, exc,
+        )
+        return _make_errors_xml("serverError", "An internal error occurred.")
 
 
 async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> bytes:
     if _has_loop(request_body):
         return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
     modified = _add_via_to_request(request_body)
+    _t0 = time.monotonic()
+    log.debug("Recursion (async): POST %s", validate_uri)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -1249,6 +1440,13 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
                 content=modified,
                 headers={"Content-Type": "application/xml"},
             )
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="success").inc()
+        log.debug(
+            "Recursion (async): %s responded in %.3fs (status=%d)",
+            validate_uri, elapsed, resp.status_code,
+        )
         if resp.status_code == 200:
             try:
                 result = _prepend_via_to_response(resp.content)
@@ -1274,9 +1472,20 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
         ))
         return err
     except httpx.TimeoutException:
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="timeout").inc()
+        log.warning("Recursion (async): %s timed out after %.3fs", validate_uri, elapsed)
         return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
     except Exception as exc:
-        return _make_errors_xml("serverError", f"Could not reach target LVF: {exc}")
+        elapsed = time.monotonic() - _t0
+        _metrics.recursion_duration_seconds.observe(elapsed)
+        _metrics.recursion_total.labels(outcome="error").inc()
+        log.error(
+            "Recursion (async) to %s failed after %.3fs: %s",
+            validate_uri, elapsed, exc,
+        )
+        return _make_errors_xml("serverError", "An internal error occurred.")
 
 
 # ---------------------------------------------------------------------------
@@ -1291,6 +1500,24 @@ def _child_coverage_path() -> str:
     return os.path.join("data", filename)
 
 
+def _read_child_coverage_file() -> list[dict]:
+    """Read and parse the coverage file into a FRESH list.
+
+    Returns an empty list if the file is absent, unreadable, or not a JSON array.
+    Does not touch any global — callers decide whether/how to publish the result.
+    """
+    path = _child_coverage_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
+        return []
+
+
 def _load_child_coverage() -> None:
     global _child_coverage
     path = _child_coverage_path()
@@ -1299,21 +1526,178 @@ def _load_child_coverage() -> None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        _child_coverage = data if isinstance(data, list) else []
-        log.info("LoST-Sync: loaded %d child coverage entries from %s", len(_child_coverage), path)
+        fresh = data if isinstance(data, list) else []
     except Exception as exc:
         log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
+        return
+    with _coverage_lock:
+        _child_coverage = fresh
+    log.info("LoST-Sync: loaded %d child coverage entries from %s", len(fresh), path)
 
 
-def _save_child_coverage() -> None:
+def _save_child_coverage_list(entries: list[dict]) -> None:
+    """Atomically persist `entries` to the coverage file (temp + os.replace)."""
     path = _child_coverage_path()
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_child_coverage, f, indent=2, default=str)
+            json.dump(entries, f, indent=2, default=str)
         os.replace(tmp, path)
     except Exception as exc:
         log.warning("LoST-Sync: could not save child coverage store to %s: %s", path, exc)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _save_child_coverage() -> None:
+    _save_child_coverage_list(_child_coverage)
+
+
+@contextmanager
+def _coverage_file_lock():
+    """Exclusive cross-process lock guarding the read-modify-write of the coverage
+    file. The lock is taken on a dedicated `.lock` sidecar file (never the data
+    file, which is replaced via os.replace). On platforms without fcntl (Windows
+    dev), this is a no-op — multi-worker deployment targets POSIX/containers."""
+    if _fcntl is None:
+        yield
+        return
+    lock_path = _child_coverage_path() + ".lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    _t0 = time.monotonic()
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+        _wait = time.monotonic() - _t0
+        if _wait > 0.05:
+            log.debug("Coverage file lock: acquired after waiting %.3fs", _wait)
+        yield
+    finally:
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _with_coverage_write(apply_fn) -> bool:
+    """Serialize a read-modify-write of the coverage store across processes.
+
+    1. Acquire the exclusive cross-process file lock (blocking).
+    2. Reload the latest coverage from disk into a FRESH private list.
+    3. Call apply_fn(fresh_list) which performs the upsert/delete operations
+       against that private list (returns truthy when coverage changed).
+    4. On root-AMS nodes, re-assert operator provisioning on top (always wins).
+    5. Atomically save the fresh list.
+    6. Publish it as the new _child_coverage under _coverage_lock.
+
+    Returns whatever apply_fn returned.
+    """
+    global _child_coverage
+    with _coverage_file_lock():
+        fresh = _read_child_coverage_file()
+        result = apply_fn(fresh)
+        if _root_ams:
+            _reapply_ams_provisioning(fresh)
+        _save_child_coverage_list(fresh)
+        with _coverage_lock:
+            _child_coverage = fresh
+    return result
+
+
+def _reapply_ams_provisioning(target: list[dict]) -> None:
+    """Re-assert the cached operator-authored AMS provisioning entries on top of
+    `target` (matching/superseding by source_id), so manual provisioning always
+    wins after any reload of the dynamic coverage file. No-op when not root-AMS
+    or when no provisioning has been loaded."""
+    if not _root_ams or not _ams_provisioning_cache:
+        return
+    for entry in _ams_provisioning_cache:
+        source_id = entry.get("source_id", "")
+        for i, existing in enumerate(target):
+            if existing.get("source_id") == source_id:
+                target[i] = entry
+                break
+        else:
+            target.append(entry)
+
+
+def _watch_child_coverage() -> None:
+    """Poll the coverage file mtime so sibling workers converge on each other's
+    writes. Pure read-view refresh: never triggers an upstream push or startup
+    sync. On root-AMS nodes, re-asserts provisioning after each reload."""
+    global _child_coverage
+    interval = int(os.environ.get("LVF_COVERAGE_POLL_INTERVAL_SECONDS", "15"))
+    if interval <= 0:
+        return
+    path = _child_coverage_path()
+    try:
+        baseline = os.path.getmtime(path) if os.path.exists(path) else 0.0
+    except OSError:
+        baseline = 0.0
+
+    while True:
+        time.sleep(interval)
+        try:
+            current = os.path.getmtime(path) if os.path.exists(path) else 0.0
+        except OSError:
+            continue
+        if current != baseline:
+            baseline = current
+            fresh = _read_child_coverage_file()
+            if _root_ams:
+                _reapply_ams_provisioning(fresh)
+            with _coverage_lock:
+                _child_coverage = fresh
+            log.debug(
+                "LoST-Sync: coverage file changed — reloaded %d entries (read-view only)",
+                len(fresh),
+            )
+
+
+def _start_coverage_watcher() -> None:
+    """Start the coverage-file watcher thread (section 4), unless disabled."""
+    interval = int(os.environ.get("LVF_COVERAGE_POLL_INTERVAL_SECONDS", "15"))
+    if interval <= 0:
+        log.info("Coverage watcher disabled (LVF_COVERAGE_POLL_INTERVAL_SECONDS=0)")
+        return
+    threading.Thread(target=_watch_child_coverage, daemon=True).start()
+    log.info("Coverage watcher started (poll interval: %ds)", interval)
+
+
+def _leader_lock_path() -> str:
+    gpkg_path = os.environ.get("LVF_GPKG_PATH")
+    data_dir = (os.path.dirname(gpkg_path) or ".") if gpkg_path else "data"
+    return os.path.join(data_dir, ".lvf_leader.lock")
+
+
+def _acquire_leadership() -> bool:
+    """Try to become the single leader worker via a non-blocking exclusive file
+    lock. The leader runs the SIP notifier and boot-time startup sync; others
+    skip them. The lock fd is kept open for the process lifetime so the lock is
+    not released. On platforms without fcntl (Windows dev = single process),
+    this node is always the leader."""
+    global _leader_lock_fd, _is_leader
+    if _fcntl is None:
+        _is_leader = True
+        return True
+    path = _leader_lock_path()
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        log.warning("Leader election: could not open %s (%s) — assuming leader", path, exc)
+        _is_leader = True
+        return True
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        _is_leader = False
+        return False
+    _leader_lock_fd = fd  # keep open for process lifetime — do not close/GC
+    _is_leader = True
+    return True
 
 
 def _parse_iso_timestamp(ts: str) -> Optional[datetime.datetime]:
@@ -1341,15 +1725,16 @@ def _compare_timestamps(a: str, b: str) -> int:
     return 0
 
 
-def _upsert_child_coverage(parsed: dict) -> bool:
+def _upsert_child_coverage(parsed: dict, target: Optional[list] = None) -> bool:
+    coverage = _child_coverage if target is None else target
     source    = parsed.get("source", "")
     source_id = parsed.get("source_id", "")
     new_lu    = parsed.get("last_updated", "")
 
-    for i, entry in enumerate(_child_coverage):
+    for i, entry in enumerate(coverage):
         if entry.get("source") == source and entry.get("source_id") == source_id:
             if _compare_timestamps(new_lu, entry.get("last_updated", "")) > 0:
-                _child_coverage[i] = parsed
+                coverage[i] = parsed
                 log.info(
                     "LoST-Sync: updated child coverage entry source=%s sourceId=%s",
                     source, source_id,
@@ -1362,7 +1747,7 @@ def _upsert_child_coverage(parsed: dict) -> bool:
                 )
                 return False
 
-    _child_coverage.append(parsed)
+    coverage.append(parsed)
     log.info(
         "LoST-Sync: added new child coverage entry source=%s sourceId=%s profile=%s",
         source, source_id, parsed.get("profile", ""),
@@ -1392,7 +1777,7 @@ def _lookup_child_coverage(
     for entry in _child_coverage:
         if entry.get("profile") != "civic":
             continue
-        tuples = entry.get("civic_tuples") or []
+        tuples = entry.get("civic_addresses") or []
 
         entry_best = -1
         for t in tuples:
@@ -1591,13 +1976,23 @@ def _validate_ams_civic_file(path: str) -> Optional[list]:
         log.error("AMS: ams_civic_coverage.json must be a non-empty JSON array")
         return None
 
-    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "child_uri"}
-    _TUPLE_REQUIRED = {"country", "a1", "a2", "lost_server"}
+    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "lost_server"}
+    _ADDR_REQUIRED  = {"country", "a1", "a2"}
 
     for i, entry in enumerate(data):
         if not isinstance(entry, dict):
             log.error("AMS: ams_civic_coverage.json entry %d is not an object", i)
             return None
+        if "lost_server" not in entry and "child_uri" in entry:
+            log.warning(
+                'AMS: ams_civic_coverage.json entry %d uses deprecated "child_uri" — rename to "lost_server"', i
+            )
+            entry["lost_server"] = entry.pop("child_uri")
+        if "civic_addresses" not in entry and "civic_tuples" in entry:
+            log.warning(
+                'AMS: ams_civic_coverage.json entry %d uses deprecated "civic_tuples" — rename to "civic_addresses"', i
+            )
+            entry["civic_addresses"] = entry.pop("civic_tuples")
         missing = _ENTRY_REQUIRED - entry.keys()
         if missing:
             log.error("AMS: ams_civic_coverage.json entry %d missing required key(s): %s", i, missing)
@@ -1605,17 +2000,17 @@ def _validate_ams_civic_file(path: str) -> Optional[list]:
         if entry.get("profile") != "civic":
             log.error('AMS: ams_civic_coverage.json entry %d has profile %r — expected "civic"', i, entry.get("profile"))
             return None
-        tuples = entry.get("civic_tuples")
-        if not isinstance(tuples, list) or not tuples:
-            log.error("AMS: ams_civic_coverage.json entry %d must have a non-empty civic_tuples array", i)
+        addrs = entry.get("civic_addresses")
+        if not isinstance(addrs, list) or not addrs:
+            log.error("AMS: ams_civic_coverage.json entry %d must have a non-empty civic_addresses array", i)
             return None
-        for j, t in enumerate(tuples):
+        for j, t in enumerate(addrs):
             if not isinstance(t, dict):
-                log.error("AMS: ams_civic_coverage.json entry %d civic_tuples[%d] is not an object", i, j)
+                log.error("AMS: ams_civic_coverage.json entry %d civic_addresses[%d] is not an object", i, j)
                 return None
-            tmissing = _TUPLE_REQUIRED - t.keys()
-            if tmissing:
-                log.error("AMS: ams_civic_coverage.json entry %d civic_tuples[%d] missing required key(s): %s", i, j, tmissing)
+            amissing = _ADDR_REQUIRED - t.keys()
+            if amissing:
+                log.error("AMS: ams_civic_coverage.json entry %d civic_addresses[%d] missing required key(s): %s", i, j, amissing)
                 return None
     return data
 
@@ -1636,12 +2031,17 @@ def _validate_ams_geodetic_file(path: str) -> Optional[list]:
         log.error("AMS: ams_geodetic_coverage.json must be a non-empty JSON array")
         return None
 
-    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "child_uri"}
+    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "lost_server"}
 
     for i, entry in enumerate(data):
         if not isinstance(entry, dict):
             log.error("AMS: ams_geodetic_coverage.json entry %d is not an object", i)
             return None
+        if "lost_server" not in entry and "child_uri" in entry:
+            log.warning(
+                'AMS: ams_geodetic_coverage.json entry %d uses deprecated "child_uri" — rename to "lost_server"', i
+            )
+            entry["lost_server"] = entry.pop("child_uri")
         missing = _ENTRY_REQUIRED - entry.keys()
         if missing:
             log.error("AMS: ams_geodetic_coverage.json entry %d missing required key(s): %s", i, missing)
@@ -1662,7 +2062,7 @@ def _validate_ams_geodetic_file(path: str) -> Optional[list]:
 
 
 def _load_ams_provisioning() -> bool:
-    global _root_ams_active
+    global _root_ams_active, _ams_provisioning_cache, _child_coverage
 
     if not _forest_guide_uri:
         log.warning(
@@ -1686,24 +2086,33 @@ def _load_ams_provisioning() -> bool:
         _root_ams_active = False
         return False
 
-    for entry in civic_entries + geodetic_entries:
+    # Cache the entries so they can be re-asserted on top of the dynamic coverage
+    # file after every reload (manual provisioning always wins — section 6).
+    _ams_provisioning_cache = list(civic_entries + geodetic_entries)
+
+    # Merge onto a fresh copy and publish by swap (never mutate the live list in
+    # place) so lock-free readers always see a complete snapshot.
+    merged = list(_child_coverage)
+    for entry in _ams_provisioning_cache:
         source    = entry.get("source", "")
         source_id = entry.get("source_id", "")
-        for i, existing in enumerate(_child_coverage):
+        for i, existing in enumerate(merged):
             if existing.get("source_id") == source_id:
                 log.info(
                     "AMS: provisioning entry supersedes cached entry source=%s sourceId=%s",
                     source, source_id,
                 )
-                _child_coverage[i] = entry
+                merged[i] = entry
                 break
         else:
-            _child_coverage.append(entry)
+            merged.append(entry)
+    with _coverage_lock:
+        _child_coverage = merged
 
     _root_ams_active = True
-    civic_tuple_count = sum(len(e.get("civic_tuples") or []) for e in civic_entries)
+    civic_tuple_count = sum(len(e.get("civic_addresses") or []) for e in civic_entries)
     log.info(
-        "AMS: provisioning files loaded (%d civic entry/entries, %d civic tuple(s), "
+        "AMS: provisioning files loaded (%d civic entry/entries, %d civic address(es), "
         "%d geodetic entry/entries) — FG push active targeting %s",
         len(civic_entries), civic_tuple_count, len(geodetic_entries), _forest_guide_uri,
     )
@@ -1771,14 +2180,14 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
 
     sb_el = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
     profile           = ""
-    civic_tuples      = None
+    civic_addresses   = None
     geodetic_geom_wkt = None
 
     if sb_el is not None:
         profile = sb_el.get("profile", "")
 
         if profile == "civic":
-            civic_tuples = []
+            civic_addresses = []
             for ca_el in sb_el.findall(f".//{{{_NS_CA}}}civicAddress"):
                 t: dict[str, Optional[str]] = {}
                 for field, tag in [
@@ -1787,7 +2196,7 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
                 ]:
                     el = ca_el.find(f"{{{_NS_CA}}}{tag}")
                     t[field] = el.text.strip() if (el is not None and el.text) else ("*" if field in ("a3", "a4", "a5") else None)
-                civic_tuples.append(t)
+                civic_addresses.append(t)
 
         elif profile == "geodetic-2d":
             try:
@@ -1799,32 +2208,28 @@ def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") ->
 
     uri_el = mapping_el.find(f"{{{_NS_LOST}}}uri")
     if uri_el is not None and uri_el.text and uri_el.text.strip():
-        child_uri = uri_el.text.strip()
+        lost_server = uri_el.text.strip()
     elif child_uri_hint:
-        child_uri = child_uri_hint
+        lost_server = child_uri_hint
     else:
         if source and "://" not in source:
-            child_uri = f"http://{source}/lost"
+            lost_server = f"http://{source}/lost"
         elif source:
-            child_uri = source.rstrip("/") + "/lost"
+            lost_server = source.rstrip("/") + "/lost"
         else:
-            child_uri = ""
-
-    if civic_tuples is not None:
-        for t in civic_tuples:
-            t["lost_server"] = child_uri
+            lost_server = ""
 
     return {
-        "source":           source,
-        "source_id":        source_id,
-        "last_updated":     last_updated,
-        "expires":          expires,
-        "service":          service,
-        "display_name":     display_name,
-        "profile":          profile,
-        "civic_tuples":     civic_tuples,
+        "source":            source,
+        "source_id":         source_id,
+        "last_updated":      last_updated,
+        "expires":           expires,
+        "service":           service,
+        "display_name":      display_name,
+        "profile":           profile,
+        "civic_addresses":   civic_addresses,
         "geodetic_geom_wkt": geodetic_geom_wkt,
-        "child_uri":        child_uri,
+        "lost_server":       lost_server,
     }
 
 
@@ -1848,7 +2253,7 @@ def _child_entry_to_mapping_xml(entry: dict) -> Optional[str]:
     sb.set("profile", profile)
 
     if profile == "civic":
-        for t in (entry.get("civic_tuples") or []):
+        for t in (entry.get("civic_addresses") or []):
             ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
             for field, tag in [
                 ("country", "country"), ("a1", "A1"), ("a2", "A2"),
@@ -1894,41 +2299,47 @@ def _sync_error_response(error_type: str, message: str) -> Response:
 async def _handle_push_mappings(root: etree._Element) -> Response:
     mapping_els = root.findall(f"{{{_NS_LOST}}}mapping")
     not_deleted: list[tuple[str, str]] = []
-    coverage_changed = False
     last_source_id = ""
 
+    # Parse all mappings up front (cheap, lock-free), then apply the same
+    # upsert/delete merge under the cross-process coverage write lock.
+    ops: list[tuple[bool, dict]] = []
     for mapping_el in mapping_els:
-        sb_el    = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
+        sb_el     = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
         is_delete = sb_el is None
-
         parsed    = _parse_sync_mapping(mapping_el)
-        source    = parsed["source"]
-        source_id = parsed["source_id"]
-        last_source_id = source_id
+        last_source_id = parsed["source_id"]
+        ops.append((is_delete, parsed))
 
-        if is_delete:
-            found = False
-            for i, entry in enumerate(_child_coverage):
-                if entry.get("source") == source and entry.get("source_id") == source_id:
-                    _child_coverage.pop(i)
-                    found = True
-                    coverage_changed = True
-                    log.info(
-                        "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
+    def _apply(coverage: list[dict]) -> bool:
+        changed = False
+        for is_delete, parsed in ops:
+            source    = parsed["source"]
+            source_id = parsed["source_id"]
+            if is_delete:
+                found = False
+                for i, entry in enumerate(coverage):
+                    if entry.get("source") == source and entry.get("source_id") == source_id:
+                        coverage.pop(i)
+                        found = True
+                        changed = True
+                        log.info(
+                            "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
+                            source, source_id,
+                        )
+                        break
+                if not found:
+                    log.warning(
+                        "LoST-Sync: delete requested for unknown entry source=%s sourceId=%s",
                         source, source_id,
                     )
-                    break
-            if not found:
-                log.warning(
-                    "LoST-Sync: delete requested for unknown entry source=%s sourceId=%s",
-                    source, source_id,
-                )
-                not_deleted.append((source, source_id))
-        else:
-            if _upsert_child_coverage(parsed):
-                coverage_changed = True
+                    not_deleted.append((source, source_id))
+            else:
+                if _upsert_child_coverage(parsed, coverage):
+                    changed = True
+        return changed
 
-    _save_child_coverage()
+    coverage_changed = _with_coverage_write(_apply)
 
     if coverage_changed:
         if _root_ams and _root_ams_active:
@@ -2268,14 +2679,19 @@ async def _pull_from_child(child_entry: str) -> bool:
             )
             return False
 
-        count = 0
-        for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping"):
-            parsed = _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
-            _upsert_child_coverage(parsed)
-            count += 1
+        parsed_list = [
+            _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
+            for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping")
+        ]
+        count = len(parsed_list)
 
         if count > 0:
-            _save_child_coverage()
+            def _apply(coverage: list[dict]) -> bool:
+                for parsed in parsed_list:
+                    _upsert_child_coverage(parsed, coverage)
+                return True
+
+            _with_coverage_write(_apply)
             log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
         else:
             log.info("LoST-Sync: no mappings received from %s", child_sync_url)
@@ -2345,15 +2761,19 @@ async def _startup_sync() -> None:
             )
             event.set()
 
-        asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
+        _background_sync_tasks.append(
+            asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
+        )
 
     if not _root_ams and not _forest_guide_mode:
         sync_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC",    "")
         sync_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
         if (sync_civic or sync_geodetic) and _parent_uri:
-            asyncio.create_task(
-                _retry_sync_op("push to parent", _push_coverage_to_parent),
-                name="lvf-sync-push-parent",
+            _background_sync_tasks.append(
+                asyncio.create_task(
+                    _retry_sync_op("push to parent", _push_coverage_to_parent),
+                    name="lvf-sync-push-parent",
+                )
             )
 
     if _root_ams and _root_ams_active:
@@ -2362,7 +2782,9 @@ async def _startup_sync() -> None:
                 await event.wait()
             await _retry_sync_op("push to Forest Guide", _push_coverage_to_fg)
 
-        asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
+        _background_sync_tasks.append(
+            asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
+        )
 
 
 def _maybe_schedule_repush() -> None:
@@ -2500,7 +2922,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     recursive = _parse_recursive(xml_bytes)
 
-    _req_root = etree.fromstring(xml_bytes)
+    _req_root = etree.fromstring(xml_bytes, _XML_PARSER)
     call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
     ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
     if call_id or incident_tracking_id:
@@ -2527,13 +2949,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "Forest Guide: child coverage match found but child_uri is empty "
+                "Forest Guide: child coverage match found but lost_server is empty "
                 "(source=%s) — returning notFound",
                 child_match.get("source", ""),
             )
@@ -2548,7 +2970,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 if recursive:
                     return _respond(_recurse_to_uri_outgoing(xml_bytes, child_uri))
@@ -2556,7 +2978,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "LoST-Sync: child coverage match found but child_uri is empty "
+                "LoST-Sync: child coverage match found but lost_server is empty "
                 "(source=%s) — falling through to local processing",
                 child_match.get("source", ""),
             )
@@ -2597,7 +3019,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes)
-    g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
+    _ssap_cand, _rcl_cand = _candidates_for(req.civic_address)
+    g2 = gate2.run(req.civic_address, _ssap_cand, _rcl_cand, now)
 
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
@@ -2728,7 +3151,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 
     recursive = _parse_recursive(xml_bytes)
 
-    _req_root = etree.fromstring(xml_bytes)
+    _req_root = etree.fromstring(xml_bytes, _XML_PARSER)
     call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
     ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
     if call_id or incident_tracking_id:
@@ -2756,13 +3179,13 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "Forest Guide: child coverage match found but child_uri is empty "
+                "Forest Guide: child coverage match found but lost_server is empty "
                 "(source=%s) — returning notFound",
                 child_match.get("source", ""),
             )
@@ -2779,7 +3202,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
         if child_match:
-            child_uri = child_match.get("child_uri", "")
+            child_uri = child_match.get("lost_server", "")
             if child_uri:
                 if recursive:
                     return _respond(await _recurse_to_uri_out(xml_bytes, child_uri))
@@ -2787,7 +3210,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
                     RedirectResponse(target=child_uri, source=_server_uri), status=200
                 ).body)
             log.warning(
-                "LoST-Sync: child coverage match found but child_uri is empty "
+                "LoST-Sync: child coverage match found but lost_server is empty "
                 "(source=%s) — falling through to local processing",
                 child_match.get("source", ""),
             )
@@ -2826,7 +3249,8 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes)
-    g2 = gate2.run(req.civic_address, _ssap, _rcl, now)
+    _ssap_cand, _rcl_cand = _candidates_for(req.civic_address)
+    g2 = gate2.run(req.civic_address, _ssap_cand, _rcl_cand, now)
 
     ooc = _check_ooc_admin(req.civic_address, g2)
     if ooc is not None:
@@ -2863,6 +3287,28 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 # FastAPI lifespan startup (extracted from server._lifespan)
 # ---------------------------------------------------------------------------
 
+def prewarm() -> None:
+    """Build the GIS JSON cache once before workers fork (section 10).
+
+    No-op in Forest Guide mode. Initializes the NTP client if needed, resolves
+    LVF_GPKG_PATH, and loads the GIS data once so the (now-atomic) cache and
+    attribute index exist before multiple workers start — they then hit the warm
+    cache instead of all cold-building the GPKG concurrently.
+    """
+    global _ntp_client
+    if _forest_guide_mode:
+        log.info("Pre-warm skipped (FG mode)")
+        return
+    if _ntp_client is None:
+        _ntp_client = NTPClient()
+    gpkg_path = os.environ.get("LVF_GPKG_PATH")
+    if gpkg_path and os.path.exists(gpkg_path):
+        _load_gis_data(gpkg_path)
+        log.info("Pre-warm complete")
+    else:
+        log.info("Pre-warm skipped (no GeoPackage file present — routing-only mode)")
+
+
 async def lifespan_startup() -> None:
     """Run startup tasks — call from the FastAPI lifespan context manager."""
     global _schema, _routing_only, _event_loop, _ntp_client
@@ -2886,6 +3332,11 @@ async def lifespan_startup() -> None:
 
     _event_loop = asyncio.get_running_loop()
 
+    if _acquire_leadership():
+        log.info("Worker is the LVF leader — will run SIP notifier and startup sync")
+    else:
+        log.info("Worker is a non-leader — another worker runs SIP notifier and startup sync")
+
     if _forest_guide_mode:
         log.info(
             "Forest Guide mode active (LVF_FOREST_GUIDE_MODE=true): "
@@ -2905,7 +3356,11 @@ async def lifespan_startup() -> None:
             )
         _routing_only = True
         _load_child_coverage()
-        asyncio.create_task(_startup_sync())
+        _start_coverage_watcher()
+        if _is_leader:
+            asyncio.create_task(_startup_sync())
+        else:
+            log.info("LoST-Sync: startup sync skipped on non-leader worker")
         return
 
     if _parent_uri and "://" not in _parent_uri:
@@ -2925,8 +3380,10 @@ async def lifespan_startup() -> None:
         try:
             _load_gis_data(gpkg_path)
         except Exception as exc:
+            _metrics.reload_events_total.labels(trigger="startup", outcome="failure").inc()
             log.error("GIS data load failed from %s: %s", gpkg_path, exc, exc_info=True)
             raise
+        _metrics.reload_events_total.labels(trigger="startup", outcome="success").inc()
         _routing_only = False
         _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
         _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")
@@ -2967,7 +3424,31 @@ async def lifespan_startup() -> None:
     elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
         log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
 
-    asyncio.create_task(_startup_sync())
+    _start_coverage_watcher()
+
+    if _is_leader:
+        asyncio.create_task(_startup_sync())
+    else:
+        log.info("LoST-Sync: startup sync skipped on non-leader worker")
+
+
+async def lifespan_shutdown() -> None:
+    """Run shutdown cleanup — call from the FastAPI lifespan context manager
+    after yield. Cancels the long-running LoST-Sync retry tasks spawned by
+    _startup_sync() (child pulls, parent push, Forest Guide push) so they
+    don't keep the event loop alive past gunicorn's graceful_timeout while
+    retrying an unreachable parent/child/Forest Guide."""
+    tasks = [t for t in _background_sync_tasks if not t.done()]
+    _background_sync_tasks.clear()
+    for t in tasks:
+        t.cancel()
+    for t in tasks:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.warning("LoST-Sync: background sync task raised during shutdown: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -2977,9 +3458,10 @@ async def lifespan_startup() -> None:
 async def handle_sync(body: bytes, client) -> Response:
     """Handle an incoming LoST-Sync request body. Returns a Response directly."""
     try:
-        root = etree.fromstring(body)
+        root = etree.fromstring(body, _XML_PARSER)
     except etree.XMLSyntaxError as exc:
-        return _sync_error_response("badRequest", f"Malformed XML: {exc}")
+        log.error("Sync request: XML parse failed: %s", exc)
+        return _sync_error_response("badRequest", "Malformed XML.")
 
     if root.tag == f"{{{_NS_SYNC}}}pushMappings":
         log.info("LoST-Sync: received pushMappings from %s", client)

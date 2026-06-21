@@ -1,9 +1,13 @@
 # Core service
 fastapi==0.136.1
 uvicorn==0.46.0
+gunicorn==23.0.0
 python-dotenv==1.2.2
 pydantic==2.13.4
-lxml==6.0.2
+lxml==6.1.0
+
+# Metrics
+prometheus_client==0.25.0
 
 # GIS / spatial
 geopandas==1.1.3
@@ -17,7 +21,7 @@ ntplib==0.4.0
 dnspython==2.7.0
 
 # SIP
-sipmessage
+sipmessage==0.7.1
 
 # Testing
 pytest==9.0.3
