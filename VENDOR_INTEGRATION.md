@@ -15,14 +15,14 @@ requests under FCC Report and Order 24-78, and a longer-term problem for any 911
 might switch LVF providers and find that validation results change.
 
 This repository is an attempt to close that gap. The algorithm is specified in detail in
-`LVF_Algorithm_Specification_v70.docx`, and this codebase is a normative implementation of that
+`LVF_Algorithm_Specification_v73.docx`, and this codebase is a normative implementation of that
 specification. Where the code and the spec conflict, the spec governs.
 
 ---
 
 ## 2. The Algorithm Specification
 
-`LVF_Algorithm_Specification_v70.docx` (in this repository) is the authoritative description of
+`LVF_Algorithm_Specification_v73.docx` (in this repository) is the authoritative description of
 the algorithm. It defines:
 
 - The three-gate structure (Pre-Gate-0 → Gate 0 → Gate 1 → Gate 2)
@@ -208,8 +208,8 @@ To use it against your own implementation, adapt `tests/regression/runner.py` to
 request to your endpoint instead. The comparison logic is a normalized field-by-field XML diff,
 not a string comparison.
 
-The sample GeoPackage at `data/child_lvf_data.gpkg` (Burleigh, McLean, Mercer, and Oliver
-counties, ND) is the dataset against which all golden files are produced. To run the suite
+The sample GeoPackage at `data/child_lvf_data.gpkg` (Burleigh, McLean, Mercer, Morton, and
+Oliver counties, ND) is the dataset against which all golden files are produced. To run the suite
 meaningfully against your implementation, your system must load the same GeoPackage.
 
 ## Test Case Naming Convention

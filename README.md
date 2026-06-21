@@ -1,7 +1,7 @@
 # LVF — Location Validation Function
 
 This repository contains an open reference implementation of the NG9-1-1 Location Validation Function (LVF) 
-as specified in `LVF_Algorithm_Specification_v70.docx`. Validates civic PIDF-LO addresses against provisioned
+as specified in `LVF_Algorithm_Specification_v73.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222). The implementation can be configured to run as a child, parent, 
 root AMS or forest guide.  When operating in forest guide mode, the service is only configured to support
 queries relevant to LVF and location validation.
@@ -171,9 +171,9 @@ coordination node active-active across multiple machines is intentionally **not*
 ## GIS Data
 
 The repository includes `data/child_lvf_data.gpkg` — a sample GeoPackage provisioned for
-Burleigh County, McLean County, Mercer County and Oliver County, ND. This is sufficient to 
-run the service and evaluate LVF behavior out of the box.  The provided GeoPackage follows
-NENA's GeoPackage v3.0 template verbatim.
+Burleigh County, McLean County, Mercer County, Morton County, and Oliver County, ND. This is
+sufficient to run the service and evaluate LVF behavior out of the box. The provided GeoPackage
+follows NENA's GeoPackage v3.0 template verbatim.
 
 The server requires a GeoPackage containing three layer types:
 
@@ -223,7 +223,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SYNC_SOURCE_ID_GEODETIC` | No | — | Stable UUID for this node's geodetic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
 | **Root AMS Mode** | | | |
 | `LVF_ROOT_AMS` | No | `false` | When `true`, activates Root AMS mode. Suppresses programmatic GIS-derived push to `LVF_PARENT_URI` and instead pushes operator-declared coverage from provisioning files to `LVF_FOREST_GUIDE_URI`. Out-of-coverage redirect/recursion via `LVF_PARENT_URI` is unaffected |
-| `LVF_FOREST_GUIDE_URI` | No | — | Full `/sync` URL of the Forest Guide. Only used when `LVF_ROOT_AMS=true`. Example: `http://host.docker.internal:8002/sync` |
+| `LVF_FOREST_GUIDE_URI` | No | — | U-NAPTR application unique string (DNS name) identifying the Forest Guide — e.g. `lvf-fg.example.com`. Resolved via U-NAPTR on first use; `/sync` is appended internally. Must not include a path or scheme. Only used when `LVF_ROOT_AMS=true` |
 | **Forest Guide Mode** | | | |
 | `LVF_FOREST_GUIDE_MODE` | No | `false` | When `true`, this node operates as a Forest Guide: GIS validation is skipped, all requests are redirected to the matching child LVF, and `LVF_PARENT_URI` is ignored |
 | **NTP** | | | |
@@ -398,12 +398,14 @@ src/                        Application source
   server.py                 FastAPI thin router — app, lifespan, HTTP endpoints
   utils.py                  Shared utilities
   ntp.py                    NTP client — syncs time via ntplib, falls back to system clock
+  metrics.py                Prometheus counters/histograms, multiprocess /metrics ASGI app
   lost/                     LoST protocol handlers (RFC 5222)
     find_service.py         Core LVF logic: GIS loading, gate orchestration,
                             XML helpers, LoST-Sync, handle_find_service()
     list_services.py        listServices — returns provisioned URNs, optional child-filter
     list_services_by_location.py  listServicesByLocation — geodetic-2d and civic profiles
     get_service_boundary.py getServiceBoundary stub (notFound)
+    load_shed.py             Load shedding (§3.11.5) and ServiceState debounce (§3.11.6)
   validation/               Three-gate algorithm
     gate0.py                Gate 0 — service URN / boundary check
     gate1.py                Gate 1 — structural conformance check
@@ -420,7 +422,7 @@ main.py                     Single-process launcher (dev) — `python main.py`
 prewarm.py                  Builds the GIS cache once before workers fork
 gunicorn.conf.py            Gunicorn config — workers, timeout, TLS (multi-worker launch)
 data/                   GeoPackage data files and runtime state
-  child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Oliver counties
+  child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Morton, Oliver counties
   lvf_child_coverage.json     Child coverage store (written at runtime; do not edit manually)
   ams_civic_coverage.json     Root AMS civic coverage declaration (operator-provisioned)
   ams_geodetic_coverage.json     Root AMS geodetic boundary declaration (operator-provisioned)
