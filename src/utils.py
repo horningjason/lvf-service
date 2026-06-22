@@ -44,3 +44,16 @@ def outbound_ssl_context() -> Union[bool, str]:
     if ca_file and os.path.isfile(ca_file):
         return ca_file
     return True
+
+
+def outbound_client_cert() -> Optional[tuple[str, str]]:
+    """Return the value to pass as httpx's `cert=` for outbound calls to peer LVF nodes.
+
+    Presents our client certificate (LVF_TLS_CLIENT_CERT_FILE / _KEY_FILE) when
+    configured, so federation calls succeed under LVF_TLS_MODE=mtls.
+    """
+    cert_file = os.environ.get("LVF_TLS_CLIENT_CERT_FILE", "")
+    key_file  = os.environ.get("LVF_TLS_CLIENT_KEY_FILE", "")
+    if cert_file and key_file and os.path.isfile(cert_file) and os.path.isfile(key_file):
+        return (cert_file, key_file)
+    return None

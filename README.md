@@ -1,7 +1,7 @@
 # LVF — Location Validation Function
 
 This repository contains an open reference implementation of the NG9-1-1 Location Validation Function (LVF) 
-as specified in `LVF_Algorithm_Specification_v74.docx`. Validates civic PIDF-LO addresses against provisioned
+as specified in `LVF_Algorithm_Specification_v75.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222). The implementation can be configured to run as a child, parent, 
 root AMS or forest guide.  When operating in forest guide mode, the service is only configured to support
 queries relevant to LVF and location validation.
@@ -246,7 +246,9 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_TLS_MODE` | No | `disabled` | Transport mode. `disabled` = HTTP only (default). `tls` = HTTPS with server certificate. `mtls` = HTTPS with mutual TLS; `/sync` requires a valid client certificate, `/lost` accepts but does not require one. |
 | `LVF_TLS_CERT_FILE` | No | — | Path to the server certificate PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
 | `LVF_TLS_KEY_FILE` | No | — | Path to the server private key PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
-| `LVF_TLS_CA_FILE` | No | — | Path to the CA certificate bundle PEM file used to verify client certificates. Required when `LVF_TLS_MODE` is `mtls`. |
+| `LVF_TLS_CA_FILE` | No | — | Path to the CA certificate bundle PEM file. Used to verify inbound client certificates (server-side mTLS) and outbound peer server certificates on calls to other LVF nodes (sync push/pull, recursion). Required when `LVF_TLS_MODE` is `mtls`. |
+| `LVF_TLS_CLIENT_CERT_FILE` | No | — | Path to the client certificate PEM file used for mTLS outbound calls. When set, this node presents this certificate when making outbound HTTPS requests to peer nodes (child→parent sync push, parent→FG push, recursion calls). Required when `LVF_TLS_MODE` is `mtls`. Not used for `tls` or `disabled`. |
+| `LVF_TLS_CLIENT_KEY_FILE` | No | — | Path to the client private key PEM file used for mTLS outbound calls. Must correspond to `LVF_TLS_CLIENT_CERT_FILE`. Required when `LVF_TLS_MODE` is `mtls`. Not used for `tls` or `disabled`. |
 
 † Required when `LVF_GPKG_PATH` points to an existing file; not needed in routing-only mode.
 
