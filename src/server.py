@@ -324,9 +324,7 @@ async def sync_endpoint(request: Request) -> Response:
     """
     LoST-Sync endpoint (RFC 6739).
     Accepts pushMappings and getMappingsRequest in application/lostsync+xml.
-    Returns HTTP 200 for both success and protocol-level errors. In mtls
-    mode, client certificate presence is enforced at the TLS handshake by
-    gunicorn — connections without a valid client cert never reach here.
+    Returns HTTP 200 for both success and protocol-level errors.
     """
     body = await request.body()
     return await _fs.handle_sync(body, request.client)
@@ -337,9 +335,7 @@ async def lost_endpoint(request: Request) -> Response:
     """
     LoST protocol endpoint (RFC 5222) — findService, listServices,
     listServicesByLocation, getServiceBoundary.
-    Content-Type: application/lost+xml. In mtls mode, client certificate
-    presence is enforced at the TLS handshake by gunicorn — connections
-    without a valid client cert never reach here.
+    Content-Type: application/lost+xml.
     """
     # Load shedding (spec §3.11.5) — checked before any XML parsing or schema
     # validation. Disabled (no-op) unless LVF_RATE_LIMIT_PER_SOURCE and/or

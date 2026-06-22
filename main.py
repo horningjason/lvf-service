@@ -60,6 +60,10 @@ def main() -> None:
                 )
                 sys.exit(1)
             kwargs["ssl_ca_certs"]  = ca_file
+            # CERT_OPTIONAL: requests a client certificate but does not
+            # require one — connections without a client cert are still
+            # accepted. Known limitation: this is not equivalent to
+            # enforcing mTLS.
             kwargs["ssl_cert_reqs"] = ssl.CERT_OPTIONAL
 
     uvicorn.run(**kwargs)
