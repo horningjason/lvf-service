@@ -26,6 +26,7 @@ from src import runtime_state
 from src.federation import coverage as fed_coverage
 from src.federation import recursion as fed_recursion
 from src.provisioning.gis import provisioning as gis_provisioning
+from src.utils import outbound_ssl_context
 
 log = logging.getLogger(__name__)
 
@@ -477,7 +478,7 @@ async def _push_coverage_to_parent() -> bool:
 
         attempted = True
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
                 resp = await client.post(
                     parent_sync_uri,
                     content=push_body,
@@ -568,7 +569,7 @@ async def _push_coverage_to_fg() -> bool:
 
         attempted = True
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
                 resp = await client.post(
                     fg_sync_uri,
                     content=push_body,
@@ -616,7 +617,7 @@ async def _pull_from_child(child_entry: str) -> bool:
     log.info("LoST-Sync: sending getMappingsRequest to %s", child_sync_url)
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
             resp = await client.post(
                 child_sync_url,
                 content=get_body,

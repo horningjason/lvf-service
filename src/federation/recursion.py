@@ -23,6 +23,7 @@ from src.provisioning.discrepancy.discrepancy_report import (
     file_lost_dr,
     LoSTProblem, LoSTQuery, ProblemSeverity,
 )
+from src.utils import outbound_ssl_context
 
 log = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
     _t0 = time.monotonic()
     log.debug("Recursion (sync): POST %s", validate_uri)
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=10.0, verify=outbound_ssl_context()) as client:
             resp = client.post(
                 validate_uri,
                 content=modified,
@@ -183,7 +184,7 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
     _t0 = time.monotonic()
     log.debug("Recursion (async): POST %s", validate_uri)
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
             resp = await client.post(
                 validate_uri,
                 content=modified,
