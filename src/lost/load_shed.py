@@ -25,7 +25,7 @@ import time
 from typing import Optional
 
 import src.lost.find_service as _fs
-from src import metrics as _metrics
+from src.observability import metrics as _metrics
 from src.notifications import service_state as _service_state
 from src.notifications.service_state import ServiceState
 

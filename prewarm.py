@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import src.lost.find_service as find_service
-from src import metrics
+from src.observability import metrics
 
 
 def main() -> int:

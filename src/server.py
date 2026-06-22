@@ -22,7 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import src.lost.find_service as _fs
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
 from src.lost import list_services, list_services_by_location, get_service_boundary, load_shed
-from src import metrics
+from src.observability import metrics
 from src.notifications import element_state as _element_state
 from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry

@@ -21,7 +21,7 @@ from src.notifications.service_state import (
     ServiceStateNotifier,
     _notifier as _service_notifier,
 )
-from src.discrepancy.discrepancy_report import (
+from src.provisioning.discrepancy.discrepancy_report import (
     GISProblem,
     LoSTProblem,
     LoSTQuery,
@@ -224,7 +224,7 @@ class TestDiscrepancyReports:
             submitted.append(dr)
 
         with patch(
-            "src.discrepancy.discrepancy_report.submit_discrepancy_report",
+            "src.provisioning.discrepancy.discrepancy_report.submit_discrepancy_report",
             side_effect=fake_submit,
         ):
             asyncio.run(file_lost_dr(
@@ -250,7 +250,7 @@ class TestDiscrepancyReports:
             submitted.append(dr)
 
         with patch(
-            "src.discrepancy.discrepancy_report.submit_discrepancy_report",
+            "src.provisioning.discrepancy.discrepancy_report.submit_discrepancy_report",
             side_effect=fake_submit,
         ):
             asyncio.run(file_gis_dr(
@@ -268,7 +268,7 @@ class TestDiscrepancyReports:
 
     def test_rate_limiting_suppresses_duplicate_within_60s(self):
         """Second identical DR within 60s is suppressed by submit_discrepancy_report."""
-        from src.discrepancy.discrepancy_report import (
+        from src.provisioning.discrepancy.discrepancy_report import (
             GISDiscrepancyReport, DiscrepancyReportBase,
         )
         import datetime
@@ -298,7 +298,7 @@ class TestDiscrepancyReports:
         env = {k: v for k, v in os.environ.items() if k != "LVF_DR_ENDPOINT"}
         with patch.dict(os.environ, env, clear=True):
             with patch(
-                "src.discrepancy.discrepancy_report.log.info",
+                "src.provisioning.discrepancy.discrepancy_report.log.info",
                 side_effect=fake_log_info,
             ):
                 asyncio.run(_run())

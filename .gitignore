@@ -4,7 +4,6 @@
 # Cache generated at startup
 *.pkl
 *.pickle
-*.cache.json
 
 # Python
 __pycache__/

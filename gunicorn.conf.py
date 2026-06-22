@@ -13,7 +13,7 @@ The Forest Guide must run single-worker (LVF_WORKERS=1).
 import os
 import ssl
 
-from src import metrics
+from src.observability import metrics
 
 bind = "0.0.0.0:8000"
 worker_class = "uvicorn.workers.UvicornWorker"
@@ -33,7 +33,7 @@ def on_starting(server):
 
 def child_exit(server, worker):
     """Official prometheus_client multiprocess pattern: remove a dead
-    worker's metric files on exit. See src/metrics.py:mark_worker_dead."""
+    worker's metric files on exit. See src/observability/metrics.py:mark_worker_dead."""
     metrics.mark_worker_dead(worker.pid)
 
 # ── TLS (mirrors main.py) ─────────────────────────────────────────────────────

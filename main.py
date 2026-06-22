@@ -11,7 +11,7 @@ load_dotenv()
 
 import uvicorn
 
-from src import metrics
+from src.observability import metrics
 
 # Single-process dev mode never goes through prewarm.py — clear/recreate the
 # Prometheus multiprocess directory here so /metrics works correctly even

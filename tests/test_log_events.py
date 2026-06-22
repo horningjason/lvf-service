@@ -50,7 +50,7 @@ def test_query_and_response_events_emitted(monkeypatch, caplog):
     # ancestor of this one, intentional — prevents double-logging under
     # uvicorn), so caplog.at_level() alone never sees records emitted here —
     # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj = logging.getLogger("src.observability.logging_events.logger")
     logger_obj.addHandler(caplog.handler)
     logger_obj.setLevel(logging.INFO)
     try:
@@ -82,7 +82,7 @@ def test_malformed_request_sets_malformed_query(monkeypatch, caplog):
     # ancestor of this one, intentional — prevents double-logging under
     # uvicorn), so caplog.at_level() alone never sees records emitted here —
     # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj = logging.getLogger("src.observability.logging_events.logger")
     logger_obj.addHandler(caplog.handler)
     logger_obj.setLevel(logging.INFO)
     try:
@@ -109,7 +109,7 @@ def test_call_incident_ids_propagated_to_events(monkeypatch, caplog):
     # ancestor of this one, intentional — prevents double-logging under
     # uvicorn), so caplog.at_level() alone never sees records emitted here —
     # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj = logging.getLogger("src.observability.logging_events.logger")
     logger_obj.addHandler(caplog.handler)
     logger_obj.setLevel(logging.INFO)
     try:
@@ -130,7 +130,7 @@ def test_camel_case_keys_in_json(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    with caplog.at_level(logging.INFO, logger="src.logging_events.logger"):
+    with caplog.at_level(logging.INFO, logger="src.observability.logging_events.logger"):
         _fs.handle_find_service(_XML_VALID)
 
     for record in caplog.records:
@@ -146,13 +146,13 @@ def test_agency_id_warning_when_unset(monkeypatch, caplog):
     monkeypatch.delenv("LVF_AGENCY_ID", raising=False)
     # Suppress load_dotenv during reload so .env doesn't repopulate LVF_AGENCY_ID.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
-    import src.logging_events.logger as logger_mod
+    import src.observability.logging_events.logger as logger_mod
 
     # src/lost/find_service.py sets propagate = False on the "src" logger (an
     # ancestor of this one, intentional — prevents double-logging under
     # uvicorn), so caplog.at_level() alone never sees records emitted here —
     # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.logging_events.logger")
+    logger_obj = logging.getLogger("src.observability.logging_events.logger")
     logger_obj.addHandler(caplog.handler)
     logger_obj.setLevel(logging.WARNING)
     try:

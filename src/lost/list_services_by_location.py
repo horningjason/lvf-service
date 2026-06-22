@@ -28,8 +28,8 @@ async def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     """
     import src.lost.find_service as _fs
     from src.utils import _is_temporally_active
-    from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
-    from src.logging_events.log_events import generate_query_id
+    from src.observability.logging_events.logger import emit_log_event, make_query_event, make_response_event
+    from src.observability.logging_events.log_events import generate_query_id
 
     server_uri = _fs._server_uri
     parent_uri = _fs._parent_uri

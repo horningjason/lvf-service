@@ -1,225 +1,172 @@
 """
-Core LVF business logic — GIS loading, gate orchestration, XML helpers, LoST-Sync.
+The findService request/response handler (RFC 5222 §8) plus app
+startup/shutdown lifecycle.
 
 Extracted from server.py so that server.py can be a thin FastAPI router.
 All public symbols needed by tests (handle_find_service, initialize,
 _parent_uri, _server_uri) are defined here and re-exported by server.py.
+
+GIS loading lives in src/provisioning/gis/; recursion, AMS child coverage, and LoST-Sync
+now live in src/federation/. This file's __getattr__ forwards legacy
+find_service.<name> attribute access for those to keep server.py and
+src/lost/list_services*.py working unmodified.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import threading
-import time
-from contextlib import asynccontextmanager, contextmanager
-from typing import Any, NamedTuple, Optional
-
-try:
-    import fcntl as _fcntl  # POSIX only — used for cross-process file locks
-except ImportError:  # pragma: no cover - Windows dev path
-    _fcntl = None  # type: ignore[assignment]
+from contextlib import asynccontextmanager
+from typing import NamedTuple, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
-_log_level_name = os.environ.get("LVF_LOG_LEVEL", "INFO").upper()
-_log_level = getattr(logging, _log_level_name, None)
-if not isinstance(_log_level, int):
-    logging.warning("LVF_LOG_LEVEL=%r is not a valid level — defaulting to INFO", _log_level_name)
-    _log_level = logging.INFO
-_src_logger = logging.getLogger("src")
-_src_logger.setLevel(_log_level)
-if not _src_logger.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
-    _h.setLevel(_log_level)
-    _src_logger.addHandler(_h)
-    _src_logger.propagate = False  # uvicorn's handler lives on "uvicorn", not root — prevent double-logging
+# Shared runtime singletons/config (NTP client, server identity, etc.) now
+# live in src.runtime_state — imported here first (before any other src.*
+# import) so the "src" logger handler it configures is in place before any
+# other src.* module logs anything at import time.
+from src import runtime_state
+from src.lost.wire import lost_xml
+from src.lost.wire import gml_xml
 
 import datetime
-import dns.resolver
-import geopandas as gpd
-import pandas as pd
-from shapely.ops import transform, unary_union
 from fastapi import Response
 from lxml import etree
-import httpx
 
-_XML_PARSER = etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
-
-from src.logging_events.logger import emit_log_event, make_query_event, make_response_event
-from src.logging_events.log_events import generate_query_id
-from src.ntp import NTPClient
-from src import metrics as _metrics
-from src.notifications import element_state as _element_state
-from src.notifications import service_state as _service_state
-from src.notifications.element_state import ElementState
-from src.notifications.service_state import ServiceState
-from src.discrepancy.discrepancy_report import (
-    file_gis_dr, file_lost_dr,
-    GISProblem, LoSTProblem, LoSTQuery, ProblemSeverity,
-)
+from src.observability.logging_events.logger import emit_log_event, make_query_event, make_response_event
+from src.observability.logging_events.log_events import generate_query_id
+from src.provisioning.discrepancy.discrepancy_report import file_lost_dr, LoSTProblem, LoSTQuery
+from src.provisioning.gis import provisioning as gis_provisioning
+from src.provisioning.gis import records as gis_records
+from src.federation import recursion as fed_recursion
+from src.federation import coverage as fed_coverage
+from src.federation import sync as fed_sync
+from src.app import lifecycle
+from src.lost.wire import response_xml
 from src.validation import gate0, gate1, gate2, response_assembly
 from src.utils import _is_temporally_active
 from src.validation.models import (
-    ELEMENT_HIERARCHY,
     BadRequestResponse,
     CivicAddress,
-    CivicCoverageEntry,
     ForbiddenResponse,
     LocationValidationUnavailableResponse,
     MappingElement,
     NotFoundResponse,
-    RCLRecord,
     RedirectResponse,
     ServiceNotImplementedResponse,
-    SSAPRecord,
-    ServiceBoundary,
     ValidationRequest,
 )
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# XML namespace constants
-# ---------------------------------------------------------------------------
+# GIS data (loaded at startup) now lives in src.provisioning.gis.provisioning. Forward
+# find_service.<name> attribute access for these names there, since
+# src/server.py and src/lost/list_services*.py read them that way.
+_GIS_STATE_ATTRS: frozenset[str] = frozenset({
+    "_ssap", "_rcl", "_boundaries", "_geodetic_coverage", "_civic_coverage",
+    "_ssap_index", "_rcl_index", "_reloading", "_reloading_lock", "_gis_last_loaded",
+})
 
-_NS_LOST    = "urn:ietf:params:xml:ns:lost1"
-_NS_EXT_IDS = "urn:emergency:xml:ns:lostExt:Ids"
-_NS_CA      = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
-_NS_CAE     = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr:ext"
-_NS_CDX1    = "urn:nena:xml:ns:pidf:nenaCivicAddr"
-_NS_CDX2    = "urn:nena:xml:ns:pidf:nenaCivicAddr2"
-_NS_RLI     = "urn:ietf:params:xml:ns:lost-rli1"
-_NS_PLANNED = "urn:ietf:params:xml:ns:lostPlannedChange1"
-_NS_SYNC    = "urn:ietf:params:xml:ns:lostsync1"
-_NS_GML     = "http://www.opengis.net/gml"
+# Shared runtime singletons/config now live in src.runtime_state. Forward
+# find_service.<name> attribute access for these there too, since
+# src/server.py, src/lost/list_services*.py, and src/provisioning/discrepancy/
+# discrepancy_report.py all read these as find_service.<name>.
+_RUNTIME_STATE_ATTRS: frozenset[str] = frozenset({
+    "_src_logger", "_server_uri", "_display_name_lang", "_parent_uri",
+    "_sync_children", "_default_mapping_source_id", "_SERVER_START_TIME",
+    "_event_loop", "_ntp_client", "_forest_guide_mode",
+})
+
+# XML namespace constants and the safe XML parser config now live in
+# src.lost.wire.lost_xml. Forward find_service.<name> attribute access for these too —
+# src/server.py reads _NS_LOST and _XML_PARSER this way (confirmed via the
+# test suite, not just inspection: removing this shim broke test_recursion.py
+# at collection time with AttributeError, since server.py does
+# `_NS_LOST = _fs._NS_LOST` and `etree.fromstring(body, _fs._XML_PARSER)`
+# at module scope).
+_LOST_XML_ATTRS: frozenset[str] = frozenset({
+    "_XML_PARSER", "_NS_LOST", "_NS_EXT_IDS", "_NS_CA", "_NS_CAE",
+    "_NS_CDX1", "_NS_CDX2", "_NS_RLI", "_NS_PLANNED", "_NS_SYNC", "_NS_GML",
+})
+
+# AMS child coverage state and provisioning-file handling now live in
+# src.federation.coverage. Forward find_service.<name> attribute access for
+# these too — confirmed via the test suite, not just grep, that this is
+# needed: server.py reads _is_leader this way (_maybe_start_sip), and
+# list_services_by_location.py reads _child_coverage and
+# _lookup_child_coverage this way (routing-only mode lookup).
+_COVERAGE_ATTRS: frozenset[str] = frozenset({
+    "_child_coverage", "_coverage_lock", "_ams_provisioning_cache",
+    "_leader_lock_fd", "_is_leader", "_root_ams_active",
+    "_child_coverage_path", "_read_child_coverage_file", "_load_child_coverage",
+    "_save_child_coverage_list", "_coverage_file_lock",
+    "_with_coverage_write", "_reapply_ams_provisioning", "_watch_child_coverage",
+    "_start_coverage_watcher", "_leader_lock_path", "_acquire_leadership",
+    "_parse_iso_timestamp", "_compare_timestamps", "_upsert_child_coverage",
+    "_lookup_child_coverage", "_ams_provisioning_dir", "_validate_ams_civic_file",
+    "_validate_ams_geodetic_file", "_load_ams_provisioning",
+})
+
+# The RFC 6739 LoST-Sync protocol now lives in src.federation.sync. Forward
+# find_service.<name> attribute access for these too — confirmed via the
+# test suite, not just grep: server.py's /sync route handler calls
+# _fs.handle_sync(...) this way.
+_SYNC_ATTRS: frozenset[str] = frozenset({
+    "_gis_last_updated_str", "_build_civic_coverage_mapping_xml",
+    "_build_geodetic_coverage_mapping_xml", "_parse_sync_mapping",
+    "_child_entry_to_mapping_xml", "_sync_error_response",
+    "_handle_push_mappings", "_handle_get_mappings", "_get_parent_sync_uri",
+    "_get_fg_sync_uri", "_push_coverage_to_parent", "_push_coverage_to_fg",
+    "_pull_from_child", "_retry_sync_op", "_startup_sync",
+    "_maybe_schedule_repush", "handle_sync", "_background_sync_tasks",
+    "_SYNC_BACKOFF_INITIAL", "_SYNC_BACKOFF_CAP",
+})
+
+# Server lifecycle (schema/NTP setup, GIS initialization, FastAPI lifespan
+# startup/shutdown) now lives in src.app.lifecycle. Forward
+# find_service.<name> attribute access for these too — server.py imports
+# initialize/_validate_schema and calls _fs.lifespan_startup()/
+# lifespan_shutdown(), prewarm.py calls find_service.prewarm(), and tests
+# call _fs.initialize() / read _fs._routing_only this way.
+_LIFECYCLE_ATTRS: frozenset[str] = frozenset({
+    "initialize", "prewarm", "lifespan_startup", "lifespan_shutdown",
+    "_routing_only",
+})
+
+
+def __getattr__(name: str):
+    # Read-only forwarding: a write like find_service._ssap = ... would NOT
+    # come through here (module __getattr__ only fires on a failed lookup,
+    # never on assignment) — it would silently create a stale local
+    # attribute on this module instead of writing through to
+    # gis_provisioning/runtime_state/lost_xml/fed_coverage/fed_sync,
+    # bypassing this shim entirely.
+    if name in _GIS_STATE_ATTRS:
+        return getattr(gis_provisioning, name)
+    if name in _RUNTIME_STATE_ATTRS:
+        return getattr(runtime_state, name)
+    if name in _LOST_XML_ATTRS:
+        return getattr(lost_xml, name)
+    if name in _COVERAGE_ATTRS:
+        return getattr(fed_coverage, name)
+    if name in _SYNC_ATTRS:
+        return getattr(fed_sync, name)
+    if name in _LIFECYCLE_ATTRS:
+        return getattr(lifecycle, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 class RequestContext(NamedTuple):
     call_id: Optional[str]
     incident_tracking_id: Optional[str]
 
 
-_RESPONSE_NSMAP: dict = {
-    None:   _NS_LOST,
-    "ca":   _NS_CA,
-    "cae":  _NS_CAE,
-    "cdx1": _NS_CDX1,
-    "cdx2": _NS_CDX2,
-}
-
-_CLARK_TO_FIELD: dict[str, str] = {}
-for _e in ELEMENT_HIERARCHY:
-    _pfx, _local = _e.pidf_lo.split(":", 1)
-    _ns = {"ca": _NS_CA, "cae": _NS_CAE, "cdx1": _NS_CDX1, "cdx2": _NS_CDX2}[_pfx]
-    _CLARK_TO_FIELD[f"{{{_ns}}}{_local}"] = _e.civic_address_field
-
-_PIDF_PREFIX_NS: dict[str, str] = {"ca": _NS_CA, "cae": _NS_CAE, "cdx1": _NS_CDX1, "cdx2": _NS_CDX2}
-
-
-def _pidf_lo_to_clark(pidf_lo: str) -> str:
-    prefix, local = pidf_lo.split(":", 1)
-    return f"{{{_PIDF_PREFIX_NS[prefix]}}}{local}"
-
-
-_SSAP_ATTR: dict[str, str] = {
-    "country":      "country",
-    "a1":           "a1",
-    "a2":           "a2",
-    "a3":           "a3",
-    "a4":           "a4",
-    "a5":           "a5",
-    "rd":           "st_name",
-    "prm":          "st_premod",
-    "prd":          "st_predir",
-    "stp":          "st_pretyp",
-    "stps":         "st_presep",
-    "sts":          "st_postyp",
-    "pod":          "st_posdir",
-    "pom":          "st_posmod",
-    "hnp":          "addnum_pre",
-    "hns":          "addnum_suf",
-    "mp":           "distmarker",
-    "site":         "site",
-    "subsite":      "subsite",
-    "bld":          "structure",
-    "wing":         "wing",
-    "flr":          "floor",
-    "unit_pretype": "unitpretyp",
-    "unit_value":   "unitvalue",
-    "room":         "room",
-    "section":      "section",
-    "row":          "row",
-    "seat":         "seat",
-    "pn":           "locmarker",
-    "pcn":          "post_comm",
-    "pc":           "post_code",
-    "pce":          "postcodeex",
-}
-
-
 # ---------------------------------------------------------------------------
-# GIS data store (populated at startup)
+# GIS field mapping (CLARK_TO_FIELD, PIDF_PREFIX_NS, SSAP_ATTR,
+# pidf_lo_to_clark) and row/dict conversion are in src.provisioning.gis.records; the GIS
+# data store itself is in src.provisioning.gis.provisioning (see _GIS_STATE_ATTRS above).
 # ---------------------------------------------------------------------------
-
-_ssap:       list[SSAPRecord]      = []
-_rcl:        list[RCLRecord]       = []
-_boundaries: list[ServiceBoundary] = []
-_geodetic_coverage: dict[str, Any] = {}
-_civic_coverage: list[CivicCoverageEntry] = []
-_ssap_index: dict[tuple, list] = {}
-_rcl_index:  dict[tuple, list] = {}
-
-_reloading: bool = False
-_reloading_lock = threading.Lock()
-
-_routing_only: bool = False
-_forest_guide_mode: bool = os.environ.get("LVF_FOREST_GUIDE_MODE", "").lower() == "true"
-_gis_last_loaded: Optional[datetime.datetime] = None
-
-_root_ams:          bool = os.environ.get("LVF_ROOT_AMS", "").lower() == "true"
-_forest_guide_uri:  str  = os.environ.get("LVF_FOREST_GUIDE_URI", "")
-_root_ams_active:   bool = False
-
-if _forest_guide_uri and _root_ams:
-    if "://" in _forest_guide_uri:
-        log.warning(
-            "LVF_FOREST_GUIDE_URI=%r looks like a direct URL — U-NAPTR resolution skipped "
-            "(non-conformant per RFC 5222; acceptable for dev/testing only)",
-            _forest_guide_uri,
-        )
-    else:
-        log.info(
-            "LVF_FOREST_GUIDE_URI=%r is a DNS name — U-NAPTR resolution will be used on first use",
-            _forest_guide_uri,
-        )
-
-_server_uri:        str = os.environ.get("LVF_SERVER_URI",         "lostserver.example.com")
-_display_name_lang: str = os.environ.get("LVF_DISPLAY_NAME_LANG",  "en")
-_parent_uri:        str = os.environ.get("LVF_PARENT_URI",          "")
-_resolved_urls: dict[str, str] = {}  # cache: input URI → resolved base URL
-
-if _parent_uri:
-    if "://" in _parent_uri:
-        log.warning(
-            "LVF_PARENT_URI=%r looks like a direct URL — U-NAPTR resolution skipped "
-            "(non-conformant per RFC 5222; acceptable for dev/testing only)",
-            _parent_uri,
-        )
-    else:
-        log.info(
-            "LVF_PARENT_URI=%r is a DNS name — U-NAPTR resolution will be used on first request",
-            _parent_uri,
-        )
-
-_sync_children: list[str] = [
-    url.strip()
-    for url in os.environ.get("LVF_SYNC_CHILDREN", "").split(",")
-    if url.strip()
-]
 
 # Load shedding (spec §3.11.5) — both disabled (0) by default so existing
 # deployments are unaffected until explicitly tuned. Per-worker, not
@@ -232,71 +179,25 @@ _ADMIN_PIDF_LO: frozenset[str] = frozenset({
     "ca:country", "ca:A1", "ca:A2", "ca:A3", "ca:A4", "ca:A5",
 })
 
-_default_mapping_source_id: str = os.environ.get("LVF_DEFAULT_MAPPING_SOURCE_ID", "")
-
-_SERVER_START_TIME: str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-_schema: Optional[etree.XMLSchema] = None
-
-_event_loop: Optional[asyncio.AbstractEventLoop] = None
-
-# Long-running LoST-Sync retry tasks spawned by _startup_sync() (one per
-# configured child, plus parent-push and/or Forest-Guide-push). Each retries
-# indefinitely (exponential backoff up to _SYNC_BACKOFF_CAP seconds) while its
-# target is unreachable, so they must be cancelled explicitly on shutdown
-# (lifespan_shutdown()) rather than left to keep the event loop alive past
-# gunicorn's graceful_timeout.
-_background_sync_tasks: list[asyncio.Task] = []
-
-_child_coverage: list[dict] = []
-
-# Guards reassignment of the _child_coverage global (in-process). The list is
-# only ever swapped wholesale for a fresh list — never mutated in place once
-# published — so readers can take the current reference without locking and
-# always see a complete, consistent snapshot.
-_coverage_lock = threading.Lock()
-
-# Most-recently loaded operator-authored AMS provisioning entries (root-AMS
-# only). Cached by _load_ams_provisioning() so they can be re-asserted on top of
-# the dynamic coverage file after every reload (manual provisioning always wins).
-_ams_provisioning_cache: list[dict] = []
-
-# Single-leader election: exactly one worker process on a machine acquires this
-# lock and runs the singletons (SIP notifier + boot-time startup sync). The file
-# descriptor is held open for the process lifetime so the lock is not released.
-_leader_lock_fd: Optional[int] = None
-_is_leader: bool = False
-
-_ntp_client: Optional[NTPClient] = None
-
-
-def _load_schema() -> Optional[etree.XMLSchema]:
-    schema_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "schemas")
-    lost1_xsd = os.path.join(schema_dir, "lost1.xsd")
-    try:
-        schema_doc = etree.parse(lost1_xsd)
-        compiled = etree.XMLSchema(schema_doc)
-        log.info("XML schema loaded from %s", lost1_xsd)
-        return compiled
-    except Exception as exc:
-        log.warning(
-            "Could not load XML schema from %s: %s — schema validation disabled",
-            lost1_xsd, exc,
-        )
-        return None
+# LoST-Sync protocol state (retry tasks, backoff constants) is in
+# src.federation.sync; child coverage / AMS provisioning / leader-election
+# state is in src.federation.coverage (see _SYNC_ATTRS / _COVERAGE_ATTRS
+# above for their respective __getattr__ shim entries). Server lifecycle
+# (_routing_only, _schema/_load_schema, initialize, prewarm, lifespan_*) is
+# in src.app.lifecycle (see _LIFECYCLE_ATTRS above).
 
 
 def _validate_schema(body: bytes) -> Optional[str]:
-    if _schema is None:
+    if lifecycle._schema is None:
         return None
     try:
-        doc = etree.fromstring(body, _XML_PARSER)
+        doc = etree.fromstring(body, lost_xml._XML_PARSER)
     except etree.XMLSyntaxError as exc:
         log.error("Schema validation: XML parse failed: %s", exc)
         return "Malformed XML."
-    if _schema.validate(doc):
+    if lifecycle._schema.validate(doc):
         return None
-    error_log = _schema.error_log
+    error_log = lifecycle._schema.error_log
     if error_log:
         first = error_log[0]
         return f"{first.message} (line {first.line})"
@@ -317,593 +218,22 @@ def _resolve_service_urn(requested_urn: str) -> tuple[str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# GeoPackage helpers
+# GeoPackage row helpers, attribute index, and _load_gis_data/_watch_gpkg —
+# now in src.provisioning.gis.records / src.provisioning.gis.provisioning.
 # ---------------------------------------------------------------------------
 
-def _get(row: pd.Series, col: str) -> Optional[str]:
-    val = row.get(col)
-    if val is None or pd.isna(val):
-        return None
-    s = str(val).strip()
-    return s or None
 
-
-def _get_int(row: pd.Series, col: str) -> Optional[int]:
-    val = row.get(col)
-    if val is None or pd.isna(val):
-        return None
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
-
-
-def _geom_or_none(row: pd.Series):
-    g = row.get("geometry")
-    if g is None or g.is_empty:
-        return None
-    if g.has_z:
-        g = transform(lambda x, y, z=None: (x, y), g)
-    return g
-
-
-def _row_to_ssap(row: pd.Series) -> SSAPRecord:
-    return SSAPRecord(
-        country=_get(row, "Country"),
-        a1=_get(row, "A1"),
-        a2=_get(row, "A2"),
-        a3=_get(row, "A3"),
-        a4=_get(row, "A4"),
-        a5=_get(row, "A5"),
-        st_name=_get(row, "St_Name"),
-        st_premod=_get(row, "St_PreMod"),
-        st_predir=_get(row, "St_PreDir"),
-        st_pretyp=_get(row, "St_PreTyp"),
-        st_presep=_get(row, "St_PreSep"),
-        st_postyp=_get(row, "St_PosTyp"),
-        st_posdir=_get(row, "St_PosDir"),
-        st_posmod=_get(row, "St_PosMod"),
-        add_number=_get_int(row, "Add_Number"),
-        addnum_pre=_get(row, "AddNum_Pre"),
-        addnum_suf=_get(row, "AddNum_Suf"),
-        distmarker=_get(row, "DistMarker"),
-        site=_get(row, "Site"),
-        subsite=_get(row, "SubSite"),
-        structure=_get(row, "Structure"),
-        wing=_get(row, "Wing"),
-        floor=_get(row, "Floor"),
-        unitpretyp=_get(row, "UnitPreTyp"),
-        unitvalue=_get(row, "UnitValue"),
-        room=_get(row, "Room"),
-        section=_get(row, "Section"),
-        row=_get(row, "Row_"),
-        seat=_get(row, "Seat"),
-        locmarker=_get(row, "LocMarker"),
-        post_comm=_get(row, "Post_Comm"),
-        post_code=_get(row, "Post_Code"),
-        postcodeex=_get(row, "PostCodeEx"),
-        effective=_get(row, "Effective"),
-        expire=_get(row, "Expire"),
-        geometry=_geom_or_none(row),
+def _default_mapping_factory(service_urn: str) -> MappingElement:
+    return gis_records.build_default_mapping(
+        service_urn,
+        server_start_time=runtime_state._SERVER_START_TIME,
+        server_uri=runtime_state._server_uri,
+        default_mapping_source_id=runtime_state._default_mapping_source_id,
+        display_name_lang=runtime_state._display_name_lang,
     )
 
 
-def _row_to_rcl(row: pd.Series, fid: Optional[int] = None) -> RCLRecord:
-    parity_l = _get(row, "Parity_L")
-    parity_r = _get(row, "Parity_R")
-    valid_l  = _get(row, "Valid_L")
-    valid_r  = _get(row, "Valid_R")
-    geom = _geom_or_none(row)
-    if geom is not None and geom.geom_type == "MultiLineString":
-        geom = geom.geoms[0]
-    return RCLRecord(
-        country_l=_get(row, "Country_L"),
-        country_r=_get(row, "Country_R"),
-        a1_l=_get(row, "A1_L"),
-        a1_r=_get(row, "A1_R"),
-        a2_l=_get(row, "A2_L"),
-        a2_r=_get(row, "A2_R"),
-        a3_l=_get(row, "A3_L"),
-        a3_r=_get(row, "A3_R"),
-        a4_l=_get(row, "A4_L"),
-        a4_r=_get(row, "A4_R"),
-        a5_l=_get(row, "A5_L"),
-        a5_r=_get(row, "A5_R"),
-        st_name=_get(row, "St_Name"),
-        st_premod=_get(row, "St_PreMod"),
-        st_predir=_get(row, "St_PreDir"),
-        st_pretyp=_get(row, "St_PreTyp"),
-        st_presep=_get(row, "St_PreSep"),
-        st_postyp=_get(row, "St_PosTyp"),
-        st_posdir=_get(row, "St_PosDir"),
-        st_posmod=_get(row, "St_PosMod"),
-        fromaddr_l=_get_int(row, "FromAddr_L"),
-        toaddr_l=_get_int(row, "ToAddr_L"),
-        fromaddr_r=_get_int(row, "FromAddr_R"),
-        toaddr_r=_get_int(row, "ToAddr_R"),
-        parity_l=parity_l if parity_l in ("E", "O", "B", "Z") else None,
-        parity_r=parity_r if parity_r in ("E", "O", "B", "Z") else None,
-        valid_l=valid_l if valid_l in ("Y", "N") else None,
-        valid_r=valid_r if valid_r in ("Y", "N") else None,
-        adnumpre_l=_get(row, "AdNumPre_L"),
-        adnumpre_r=_get(row, "AdNumPre_R"),
-        postcomm_l=_get(row, "PostComm_L"),
-        postcomm_r=_get(row, "PostComm_R"),
-        postcode_l=_get(row, "PostCode_L"),
-        postcode_r=_get(row, "PostCode_R"),
-        effective=_get(row, "Effective"),
-        expire=_get(row, "Expire"),
-        geometry=geom,
-        fid=fid,
-        nguid=_get(row, "NGUID"),
-    )
-
-
-def _row_to_boundary(row: pd.Series) -> ServiceBoundary:
-    nguid = _get(row, "NGUID")
-    if not nguid:
-        raise ValueError(f"Boundary record at row {row.name!r} has a missing or empty NGUID field")
-    return ServiceBoundary(
-        service_urn=_get(row, "ServiceURN") or "",
-        effective=_get(row, "Effective"),
-        expires=_get(row, "Expire"),
-        last_updated=_get(row, "DateUpdate"),
-        source=_get(row, "Source"),
-        source_id=_get(row, "SourceId"),
-        nguid=nguid,
-        agency_id=_get(row, "Agency_ID"),
-        service_uri=_get(row, "ServiceURI"),
-        service_num=_get(row, "ServiceNum"),
-        display_name=_get(row, "DsplayName"),
-        geometry=_geom_or_none(row),
-    )
-
-
-def _build_default_mapping(service_urn: str) -> MappingElement:
-    return MappingElement(
-        service_urn=service_urn,
-        expires="NO-EXPIRATION",
-        last_updated=_SERVER_START_TIME,
-        source=_server_uri,
-        source_id=_default_mapping_source_id,
-        service_uri=None,
-        service_num=None,
-        display_name="VALIDATION RESULT ONLY",
-        display_name_lang=_display_name_lang,
-    )
-
-
-# ---------------------------------------------------------------------------
-# GIS cache — JSON serialization helpers
-# ---------------------------------------------------------------------------
-
-def _ssap_to_dict(r: SSAPRecord) -> dict:
-    d = r.model_dump(exclude={"geometry"})
-    d["geometry"] = r.geometry.wkt if r.geometry is not None else None
-    return d
-
-
-def _dict_to_ssap(d: dict) -> SSAPRecord:
-    from shapely.wkt import loads as _wkt_loads
-    geom_wkt = d.get("geometry")
-    return SSAPRecord(
-        **{k: v for k, v in d.items() if k != "geometry"},
-        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
-    )
-
-
-def _rcl_to_dict(r: RCLRecord) -> dict:
-    d = r.model_dump(exclude={"geometry"})
-    d["geometry"] = r.geometry.wkt if r.geometry is not None else None
-    return d
-
-
-def _dict_to_rcl(d: dict) -> RCLRecord:
-    from shapely.wkt import loads as _wkt_loads
-    geom_wkt = d.get("geometry")
-    return RCLRecord(
-        **{k: v for k, v in d.items() if k != "geometry"},
-        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
-    )
-
-
-def _boundary_to_dict(b: ServiceBoundary) -> dict:
-    d = b.model_dump(exclude={"geometry"})
-    d["geometry"] = b.geometry.wkt if b.geometry is not None else None
-    return d
-
-
-def _dict_to_boundary(d: dict) -> ServiceBoundary:
-    from shapely.wkt import loads as _wkt_loads
-    geom_wkt = d.get("geometry")
-    return ServiceBoundary(
-        **{k: v for k, v in d.items() if k != "geometry"},
-        geometry=_wkt_loads(geom_wkt) if geom_wkt else None,
-    )
-
-
-def _civic_entry_to_dict(e: CivicCoverageEntry) -> dict:
-    return {
-        "country":  e.country,
-        "a1":       e.a1,
-        "a2":       e.a2,
-        "a3":       e.a3,
-        "a4":       e.a4,
-        "a5":       e.a5,
-        "boundary": _boundary_to_dict(e.boundary) if e.boundary is not None else None,
-    }
-
-
-def _dict_to_civic_entry(d: dict) -> CivicCoverageEntry:
-    boundary_d = d.get("boundary")
-    return CivicCoverageEntry(
-        country=d["country"],
-        a1=d["a1"],
-        a2=d["a2"],
-        a3=d.get("a3"),
-        a4=d.get("a4"),
-        a5=d.get("a5"),
-        boundary=_dict_to_boundary(boundary_d) if boundary_d is not None else None,
-    )
-
-
-def _norm_key(v: Optional[str]) -> Optional[str]:
-    if not v:
-        return None
-    s = v.strip()
-    return s.upper() if s else None
-
-
-def _build_attribute_index() -> None:
-    global _ssap_index, _rcl_index
-    ssap_idx: dict[tuple, list] = {}
-    for r in _ssap:
-        key = (_norm_key(r.country), _norm_key(r.a1), _norm_key(r.a2))
-        ssap_idx.setdefault(key, []).append(r)
-    _ssap_index = ssap_idx
-
-    rcl_idx: dict[tuple, list] = {}
-    for r in _rcl:
-        l_key = (_norm_key(r.country_l), _norm_key(r.a1_l), _norm_key(r.a2_l))
-        r_key = (_norm_key(r.country_r), _norm_key(r.a1_r), _norm_key(r.a2_r))
-        rcl_idx.setdefault(l_key, []).append(r)
-        if r_key != l_key:
-            rcl_idx.setdefault(r_key, []).append(r)
-    _rcl_index = rcl_idx
-    log.debug(
-        "Attribute index built: %d SSAP buckets, %d RCL buckets",
-        len(_ssap_index), len(_rcl_index),
-    )
-
-
-def _candidates_for(address: CivicAddress) -> tuple[list, list]:
-    key = (_norm_key(address.country), _norm_key(address.a1), _norm_key(address.a2))
-    ssap_subset = _ssap_index.get(key)
-    rcl_subset  = _rcl_index.get(key)
-    if ssap_subset is None and rcl_subset is None:
-        return _ssap, _rcl
-    return (ssap_subset or [], rcl_subset or [])
-
-
-def _load_gis_data(gpkg_path: str) -> None:
-    global _ssap, _rcl, _boundaries, _geodetic_coverage, _civic_coverage, _gis_last_loaded
-
-    cache_path = os.path.splitext(gpkg_path)[0] + ".cache.json"
-    gpkg_mtime = os.path.getmtime(gpkg_path)
-
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if data.get("gpkg_mtime") == gpkg_mtime:
-                log.info("Cache hit — loading GIS data from JSON cache: %s", cache_path)
-                from shapely.wkt import loads as _wkt_loads
-                _ssap              = [_dict_to_ssap(d) for d in data["ssap"]]
-                _rcl               = [_dict_to_rcl(d)  for d in data["rcl"]]
-                _boundaries        = [_dict_to_boundary(d) for d in data["boundaries"]]
-                _civic_coverage    = [_dict_to_civic_entry(d) for d in data["civic_coverage"]]
-                _geodetic_coverage = {urn: _wkt_loads(wkt) for urn, wkt in data["geodetic_coverage"].items()}
-                _gis_last_loaded   = _ntp_client.get_current_time()
-                log.info(
-                    "Loaded from cache: %d SSAP, %d RCL, %d boundaries, "
-                    "%d civic coverage entries, %d geodetic URN(s)",
-                    len(_ssap), len(_rcl), len(_boundaries),
-                    len(_civic_coverage), len(_geodetic_coverage),
-                )
-                _build_attribute_index()
-                return
-            else:
-                log.info("Cache miss — GPKG mtime changed, rebuilding: %s", cache_path)
-        except Exception as exc:
-            log.warning(
-                "JSON cache load failed (%s) — falling back to GPKG and rebuilding cache", exc,
-            )
-    else:
-        log.info("Cache miss — no JSON cache found, building for the first time: %s", cache_path)
-
-    ssap_layer      = os.environ.get("LVF_SSAP_LAYER",     "SiteStructureAddressPoint")
-    rcl_layer       = os.environ.get("LVF_RCL_LAYER",      "RoadCenterLine")
-    boundary_layers = [
-        name.strip()
-        for name in os.environ.get("LVF_BOUNDARY_LAYERS", "PsapPolygon").split(",")
-        if name.strip()
-    ]
-
-    for layer_name, converter, store_name in [
-        (ssap_layer, _row_to_ssap, "SSAP"),
-        (rcl_layer,  _row_to_rcl,  "RCL"),
-    ]:
-        try:
-            gdf = gpd.read_file(gpkg_path, layer=layer_name, engine="pyogrio")
-            if store_name == "RCL":
-                records = [converter(row, idx) for idx, row in gdf.iterrows()]
-                _rcl = records
-            else:
-                records = [converter(row) for _, row in gdf.iterrows()]
-                _ssap = records
-            log.info("Loaded %d %s records from '%s'", len(records), store_name, layer_name)
-        except Exception as exc:
-            log.warning("Could not load %s layer '%s': %s", store_name, layer_name, exc)
-
-    _boundaries = []
-    for layer_name in boundary_layers:
-        try:
-            gdf = gpd.read_file(gpkg_path, layer=layer_name, engine="pyogrio")
-            records = [_row_to_boundary(row) for _, row in gdf.iterrows()]
-            _boundaries.extend(records)
-            log.info("Loaded %d boundary records from '%s'", len(records), layer_name)
-        except Exception as exc:
-            log.warning("Could not load boundary layer '%s': %s", layer_name, exc)
-
-    _derive_geodetic_coverage()
-    _derive_civic_coverage()
-    _build_attribute_index()
-    _gis_last_loaded = _ntp_client.get_current_time()
-
-    # Atomic write (temp file + os.replace) so concurrent workers never observe a
-    # half-written cache. Mirrors the pattern used by _save_child_coverage_list.
-    tmp_cache = cache_path + ".tmp"
-    try:
-        with open(tmp_cache, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "ssap":              [_ssap_to_dict(r) for r in _ssap],
-                    "rcl":               [_rcl_to_dict(r)  for r in _rcl],
-                    "boundaries":        [_boundary_to_dict(b) for b in _boundaries],
-                    "civic_coverage":    [_civic_entry_to_dict(e) for e in _civic_coverage],
-                    "geodetic_coverage": {urn: geom.wkt for urn, geom in _geodetic_coverage.items()},
-                    "gpkg_mtime":        gpkg_mtime,
-                },
-                f,
-            )
-        os.replace(tmp_cache, cache_path)
-        log.info("GIS data cached to JSON: %s", cache_path)
-    except Exception as exc:
-        log.warning("Could not write JSON cache: %s", exc)
-        try:
-            if os.path.exists(tmp_cache):
-                os.remove(tmp_cache)
-        except OSError:
-            pass
-
-
-def _watch_gpkg(gpkg_path: str) -> None:
-    global _reloading
-    interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
-    try:
-        baseline_mtime = os.path.getmtime(gpkg_path)
-    except OSError:
-        log.warning("GPKG watcher: cannot stat %s — watcher exiting", gpkg_path)
-        return
-
-    while True:
-        time.sleep(interval)
-        try:
-            current_mtime = os.path.getmtime(gpkg_path)
-        except OSError:
-            log.warning("GPKG watcher: cannot stat %s — skipping this poll", gpkg_path)
-            continue
-
-        if current_mtime > baseline_mtime:
-            log.info("New GPKG detected at %s — reloading GIS data", gpkg_path)
-            with _reloading_lock:
-                _reloading = True
-            try:
-                _load_gis_data(gpkg_path)
-                baseline_mtime = current_mtime
-                with _reloading_lock:
-                    _reloading = False
-                _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="success").inc()
-                log.info("GIS data reload complete — resuming normal service")
-                _element_state._notifier.set_state(ElementState.Normal, "GIS reload succeeded")
-                _service_state._notifier.set_state(ServiceState.Normal, "GIS reload succeeded")
-                if _root_ams:
-                    _load_ams_provisioning()
-                _maybe_schedule_repush()
-            except Exception as exc:
-                _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="failure").inc()
-                log.error(
-                    "GIS data reload failed — service remains unavailable", exc_info=True
-                )
-                _element_state._notifier.set_state(
-                    ElementState.ServiceDisruption, "GIS reload failed"
-                )
-                if _event_loop is not None and _event_loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        file_gis_dr(
-                            problem=GISProblem.GeneralProvisioning,
-                            severity=ProblemSeverity.Severe,
-                            detail=str(exc),
-                        ),
-                        _event_loop,
-                    )
-
-
-def initialize(gpkg_path: str | None = None) -> None:
-    """Load GIS data for use by handle_find_service(). Call once before the first request."""
-    global _schema, _routing_only, _ntp_client
-    _ntp_client = NTPClient()
-    if _ntp_client.server is not None:
-        log.info(
-            "NTP client configured: server=%s version=%d timeout=%.1fs",
-            _ntp_client.server, _ntp_client.version, _ntp_client.timeout,
-        )
-        _t = _ntp_client.get_current_time()
-        if _ntp_client.is_synchronized:
-            log.info("NTP synchronized: current time %s", _t.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        else:
-            log.warning("NTP sync failed — falling back to system clock for time-sensitive fields")
-    else:
-        log.info("NTP not configured (LVF_NTP_SERVER unset) — using system clock")
-
-    _schema = _load_schema()
-    if _schema is None:
-        log.warning("Operating without XML schema validation")
-
-    if _forest_guide_mode:
-        log.info(
-            "Forest Guide mode active (LVF_FOREST_GUIDE_MODE=true): "
-            "this node routes requests via redirect or notFound — no GIS validation"
-        )
-        if gpkg_path or os.environ.get("LVF_GPKG_PATH"):
-            log.warning(
-                "LVF_GPKG_PATH is set but ignored in Forest Guide mode — no GIS data will be loaded"
-            )
-        if os.environ.get("LVF_PARENT_URI"):
-            log.warning(
-                "LVF_PARENT_URI is set but ignored in Forest Guide mode — "
-                "Forest Guides have no parent (RFC 5582 §8)"
-            )
-        _routing_only = True
-        return
-
-    path = gpkg_path or os.environ.get("LVF_GPKG_PATH")
-    if path:
-        if not _default_mapping_source_id:
-            raise RuntimeError(
-                "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
-                "Recommended value: {00000000-0000-0000-0000-000000000000}"
-            )
-        _load_gis_data(path)
-        _routing_only = False
-    else:
-        _routing_only = True
-        log.info("Routing-only mode active: no GeoPackage path provided")
-
-    if _root_ams:
-        _load_ams_provisioning()
-    elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
-        log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
-
-
-def _derive_geodetic_coverage() -> None:
-    global _geodetic_coverage
-    from collections import defaultdict
-    by_urn: dict[str, list] = defaultdict(list)
-    for b in _boundaries:
-        if b.geometry is not None:
-            by_urn[b.service_urn].append(b.geometry)
-    _geodetic_coverage = {
-        urn: unary_union(geoms)
-        for urn, geoms in by_urn.items()
-        if geoms
-    }
-    log.info("Derived geodetic coverage region for %d service URN(s)", len(_geodetic_coverage))
-
-
-def _derive_civic_coverage() -> None:
-    global _civic_coverage
-
-    now = _ntp_client.get_current_time()
-    active_rcl = [r for r in _rcl if _is_temporally_active(r.effective, r.expire, now)]
-    active_boundaries = [b for b in _boundaries if _is_temporally_active(b.effective, b.expires, now)]
-
-    dedup: dict = {}
-
-    for record in active_rcl:
-        for side in ("L", "R"):
-            geom = record.geometry
-            if geom is None:
-                continue
-            point = response_assembly._rcl_representative_point(geom, side)
-            if point is None:
-                continue
-            containing = None
-            for b in active_boundaries:
-                if b.geometry is not None and b.geometry.contains(point):
-                    containing = b
-                    break
-            if containing is None:
-                continue
-            suffix = "_l" if side == "L" else "_r"
-
-            country = (getattr(record, f"country{suffix}") or "").strip() or None
-            a1      = (getattr(record, f"a1{suffix}") or "").strip() or None
-            a2      = (getattr(record, f"a2{suffix}") or "").strip() or None
-            if not all([country, a1, a2]):
-                continue
-            a3 = (getattr(record, f"a3{suffix}") or "").strip() or None
-            a4 = (getattr(record, f"a4{suffix}") or "").strip() or None
-            a5 = (getattr(record, f"a5{suffix}") or "").strip() or None
-
-            key = (country, a1, a2, a3, a4, a5, containing.display_name, containing.service_urn)
-            if key not in dedup:
-                dedup[key] = CivicCoverageEntry(
-                    country=country, a1=a1, a2=a2, a3=a3, a4=a4, a5=a5, boundary=containing,
-                )
-
-    _civic_coverage = list(dedup.values())
-    log.info("Derived civic coverage region: %d entries", len(_civic_coverage))
-
-
-def lookup_civic_coverage(
-    country: Optional[str],
-    a1: Optional[str],
-    a2: Optional[str],
-    a3: Optional[str] = None,
-    a4: Optional[str] = None,
-    a5: Optional[str] = None,
-) -> Optional[CivicCoverageEntry]:
-    if not all([country, a1, a2]):
-        return None
-
-    def norm(v): return v.upper() if v else None
-
-    c, s, co = norm(country), norm(a1), norm(a2)
-    a3n, a4n, a5n = norm(a3), norm(a4), norm(a5)
-
-    best: Optional[CivicCoverageEntry] = None
-    best_specificity = -1
-    conflict = False
-
-    for entry in _civic_coverage:
-        if norm(entry.country) != c or norm(entry.a1) != s or norm(entry.a2) != co:
-            continue
-        if entry.a3 is not None and norm(entry.a3) != a3n:
-            continue
-        if entry.a4 is not None and norm(entry.a4) != a4n:
-            continue
-        if entry.a5 is not None and norm(entry.a5) != a5n:
-            continue
-        specificity = (
-            (1 if entry.a3 is not None else 0) +
-            (1 if entry.a4 is not None else 0) +
-            (1 if entry.a5 is not None else 0)
-        )
-        if specificity > best_specificity:
-            best_specificity = specificity
-            best = entry
-            conflict = False
-        elif specificity == best_specificity:
-            best_nguid = best.boundary.nguid if best else None
-            entry_nguid = entry.boundary.nguid
-            if best_nguid is None or entry_nguid is None or best_nguid != entry_nguid:
-                conflict = True
-
-    if conflict:
-        return None
-    return best
-
+# lookup_civic_coverage() now lives in src.provisioning.gis.provisioning.
 
 # ---------------------------------------------------------------------------
 # XML parsing
@@ -911,37 +241,37 @@ def lookup_civic_coverage(
 
 def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.datetime]]:
     try:
-        root = etree.fromstring(body, _XML_PARSER)
+        root = etree.fromstring(body, lost_xml._XML_PARSER)
     except etree.XMLSyntaxError as exc:
         log.error("Request parse: XML syntax error: %s", exc)
         raise ValueError("Malformed XML.") from exc
 
-    if root.tag != f"{{{_NS_LOST}}}findService":
+    if root.tag != f"{{{lost_xml._NS_LOST}}}findService":
         local = root.tag.split("}")[-1] if "}" in root.tag else root.tag
         raise ValueError(
             f"Expected findService; received {local!r} — "
             "use POST /lost for listServices and listServicesByLocation"
         )
 
-    service_el = root.find(f"{{{_NS_LOST}}}service")
+    service_el = root.find(f"{{{lost_xml._NS_LOST}}}service")
     if service_el is None:
         raise ValueError("Missing 'service' element in findService request")
     service_urn = (service_el.text or "").strip()
     if not service_urn:
         raise ValueError("'service' element is empty")
 
-    civic_el = root.find(f".//{{{_NS_CA}}}civicAddress")
+    civic_el = root.find(f".//{{{lost_xml._NS_CA}}}civicAddress")
     if civic_el is None:
         raise ValueError("Missing 'civicAddress' element in findService request")
 
     fields: dict[str, str] = {}
     for child in civic_el:
-        ca_field = _CLARK_TO_FIELD.get(child.tag)
+        ca_field = gis_records.CLARK_TO_FIELD.get(child.tag)
         if ca_field is not None:
             fields[ca_field] = (child.text or "").strip()
 
     as_of: Optional[datetime.datetime] = None
-    as_of_el = root.find(f"{{{_NS_PLANNED}}}asOf")
+    as_of_el = root.find(f"{{{lost_xml._NS_PLANNED}}}asOf")
     if as_of_el is not None and as_of_el.text:
         try:
             text = as_of_el.text.strip()
@@ -966,8 +296,8 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
 def _parse_return_additional_location(body: bytes) -> str:
     _VALID = {"none", "similar", "complete", "any"}
     try:
-        root = etree.fromstring(body, _XML_PARSER)
-        val = root.get(f"{{{_NS_RLI}}}returnAdditionalLocation")
+        root = etree.fromstring(body, lost_xml._XML_PARSER)
+        val = root.get(f"{{{lost_xml._NS_RLI}}}returnAdditionalLocation")
         if val is None:
             return "complete"
         return val if val in _VALID else "complete"
@@ -977,7 +307,7 @@ def _parse_return_additional_location(body: bytes) -> str:
 
 def _parse_recursive(body: bytes) -> bool:
     try:
-        root = etree.fromstring(body, _XML_PARSER)
+        root = etree.fromstring(body, lost_xml._XML_PARSER)
         return root.get("recursive", "false").lower() == "true"
     except Exception:
         return False
@@ -989,7 +319,7 @@ def _extract_call_incident_ids(root: etree._Element) -> tuple[Optional[str], Opt
     extension element in any LoST request (namespace urn:emergency:xml:ns:lostExt:Ids).
     Returns (call_id, incident_tracking_id) — either or both may be None if absent.
     """
-    el = root.find(f".//{{{_NS_EXT_IDS}}}emergencyCallIncidentId")
+    el = root.find(f".//{{{lost_xml._NS_EXT_IDS}}}emergencyCallIncidentId")
     if el is None:
         return None, None
     return el.get("callId") or None, el.get("incidentTrackingId") or None
@@ -999,117 +329,11 @@ def _extract_call_incident_ids(root: etree._Element) -> tuple[Optional[str], Opt
 # XML serialization
 # ---------------------------------------------------------------------------
 
-def _mapping_element(parent: etree._Element, mapping, force_no_cache: bool = False) -> None:
-    m = etree.SubElement(parent, f"{{{_NS_LOST}}}mapping")
-    m.set("expires",     "NO-CACHE" if force_no_cache else (mapping.expires or "NO-EXPIRATION"))
-    m.set("lastUpdated", mapping.last_updated or
-          _ntp_client.get_current_time().strftime("%Y-%m-%dT%H:%M:%SZ"))
-    m.set("source",   mapping.source or _server_uri)
-    m.set("sourceId", mapping.source_id or "unknown")
-
-    if mapping.display_name:
-        dn = etree.SubElement(m, f"{{{_NS_LOST}}}displayName")
-        dn.set("{http://www.w3.org/XML/1998/namespace}lang",
-               mapping.display_name_lang or _display_name_lang)
-        dn.text = mapping.display_name
-
-    svc = etree.SubElement(m, f"{{{_NS_LOST}}}service")
-    svc.text = mapping.service_urn
-
-    if mapping.service_uri:
-        uri_el = etree.SubElement(m, f"{{{_NS_LOST}}}uri")
-        uri_el.text = mapping.service_uri
-
-    if mapping.service_num:
-        sn = etree.SubElement(m, f"{{{_NS_LOST}}}serviceNumber")
-        sn.text = mapping.service_num
-
-
-def _serialize_find_service_response(
-    resp,
-    as_of_used: Optional[datetime.datetime] = None,
-) -> etree._Element:
-    root = etree.Element(
-        f"{{{_NS_LOST}}}findServiceResponse",
-        nsmap=_RESPONSE_NSMAP,
-    )
-    for mapping in resp.mapping:
-        _mapping_element(root, mapping, force_no_cache=(as_of_used is not None))
-
-    if as_of_used is not None:
-        as_of_el = etree.SubElement(
-            root,
-            f"{{{_NS_PLANNED}}}asOf",
-            nsmap={"planned": _NS_PLANNED},
-        )
-        as_of_el.text = as_of_used.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    lv = resp.location_validation
-    lv_el = etree.SubElement(root, f"{{{_NS_LOST}}}locationValidation")
-
-    if lv.valid:
-        el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}valid")
-        el.text = " ".join(lv.valid)
-    if lv.invalid:
-        el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}invalid")
-        el.text = lv.invalid
-    if lv.unchecked:
-        el = etree.SubElement(lv_el, f"{{{_NS_LOST}}}unchecked")
-        el.text = " ".join(lv.unchecked)
-
-    if as_of_used is None:
-        planned_el = etree.SubElement(
-            lv_el,
-            f"{{{_NS_PLANNED}}}revalidateAfter",
-            nsmap={"planned": _NS_PLANNED},
-        )
-        planned_el.text = resp.revalidate_after or "NO-EXPIRATION"
-
-    if resp.complete_location_record is not None:
-        _serialize_complete_location(lv_el, resp.complete_location_record)
-
-    if resp.default_mapping_returned:
-        warnings_elem = etree.SubElement(root, f"{{{_NS_LOST}}}warnings")
-        dmr = etree.SubElement(warnings_elem, f"{{{_NS_LOST}}}defaultMappingReturned")
-        dmr.set("message",
-                "Mapping is present for RFC 5222 protocol compliance only. "
-                "No geographic authority for submitted address. "
-                "Do not use for provisioning decisions.")
-        dmr.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-
-    path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
-    via_el  = etree.SubElement(path_el, f"{{{_NS_LOST}}}via")
-    via_el.set("source", _server_uri)
-
-    return root
-
-
-def _serialize_redirect(resp) -> etree._Element:
-    root = etree.Element(f"{{{_NS_LOST}}}redirect", nsmap={None: _NS_LOST})
-    root.set("target", resp.target)
-    root.set("source", resp.source)
-    if resp.message:
-        root.set("message", resp.message)
-        root.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-    return root
-
-
-def _serialize_errors(resp) -> etree._Element:
-    root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-    root.set("source", _server_uri)
-    err = etree.SubElement(root, f"{{{_NS_LOST}}}{resp.type}")
-    message = {
-        "notFound":              getattr(resp, "message", None) or "No matching address record found",
-        "badRequest":            getattr(resp, "message", None) or "Request does not conform to the LoST findService schema",
-        "forbidden":             "This server is provisioned as a Location Validation Function (LVF). Only requests with validateLocation='true' are accepted.",
-        "locationInvalid":       getattr(resp, "message", None) or "Required element missing or empty",
-        "serviceNotImplemented": "Requested service URN has no provisioned boundary",
-    }.get(resp.type, "")
-    if message:
-        err.set("message", message)
-        err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-    return root
-
+# _mapping_element, _serialize_find_service_response, _serialize_redirect,
+# _serialize_errors, _serialize_complete_location, _complete_location_ssap,
+# _complete_location_rcl, _emit_complete_location, and _RESPONSE_NSMAP /
+# _RCL_SHARED_STREET / _RCL_SIDE_SPECIFIC_BASE / _ADMIN_FIELDS now live in
+# src.lost.wire.response_xml.
 
 def _to_xml_response(
     resp,
@@ -1117,139 +341,28 @@ def _to_xml_response(
     as_of_used: Optional[datetime.datetime] = None,
 ) -> Response:
     if resp.type == "locationValidation":
-        tree = _serialize_find_service_response(resp, as_of_used=as_of_used)
+        tree = response_xml._serialize_find_service_response(resp, as_of_used=as_of_used)
     elif resp.type == "redirect":
-        tree = _serialize_redirect(resp)
+        tree = response_xml._serialize_redirect(resp)
     elif resp.type == "locationValidationUnavailable":
         root = etree.Element(
-            f"{{{_NS_LOST}}}findServiceResponse",
-            nsmap=_RESPONSE_NSMAP,
+            f"{{{lost_xml._NS_LOST}}}findServiceResponse",
+            nsmap=response_xml._RESPONSE_NSMAP,
         )
-        w = etree.SubElement(root, f"{{{_NS_LOST}}}warnings")
-        w.set("source", _server_uri)
-        lvu = etree.SubElement(w, f"{{{_NS_LOST}}}locationValidationUnavailable")
+        w = etree.SubElement(root, f"{{{lost_xml._NS_LOST}}}warnings")
+        w.set("source", runtime_state._server_uri)
+        lvu = etree.SubElement(w, f"{{{lost_xml._NS_LOST}}}locationValidationUnavailable")
         lvu.set("message", getattr(resp, "message", "LVF temporarily cannot fulfill validation request"))
         lvu.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-        path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
-        via_el  = etree.SubElement(path_el, f"{{{_NS_LOST}}}via")
-        via_el.set("source", _server_uri)
+        path_el = etree.SubElement(root, f"{{{lost_xml._NS_LOST}}}path")
+        via_el  = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
+        via_el.set("source", runtime_state._server_uri)
         tree = root
     else:
-        tree = _serialize_errors(resp)
+        tree = response_xml._serialize_errors(resp)
 
     body = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", pretty_print=True)
     return Response(content=body, status_code=status, media_type="application/xml")
-
-
-def _serialize_complete_location(parent: etree._Element, data) -> None:
-    if data.layer == "SSAP":
-        _complete_location_ssap(parent, data)
-    else:
-        _complete_location_rcl(parent, data)
-
-
-def _complete_location_ssap(parent: etree._Element, data) -> None:
-    record = data.record
-    address = data.address
-    elements: list[tuple[str, str, str]] = []
-
-    for elem in ELEMENT_HIERARCHY:
-        if elem.always_unchecked:
-            continue
-        clark = _pidf_lo_to_clark(elem.pidf_lo)
-        field = elem.civic_address_field
-
-        if field == "hno":
-            val = record.add_number
-            if val is not None:
-                elements.append((clark, field, str(val)))
-            continue
-
-        ssap_attr = _SSAP_ATTR.get(field)
-        if ssap_attr is None:
-            continue
-        val = getattr(record, ssap_attr, None)
-        if val is not None:
-            elements.append((clark, field, str(val)))
-
-    if not elements:
-        return
-
-    if address is not None and all(
-        getattr(address, field, None) == gis_val for _, field, gis_val in elements
-    ):
-        return
-
-    _emit_complete_location(parent, elements)
-
-
-_RCL_SHARED_STREET: dict[str, str] = {
-    "rd":   "st_name",
-    "prm":  "st_premod",
-    "prd":  "st_predir",
-    "stp":  "st_pretyp",
-    "stps": "st_presep",
-    "sts":  "st_postyp",
-    "pod":  "st_posdir",
-    "pom":  "st_posmod",
-}
-
-_RCL_SIDE_SPECIFIC_BASE: dict[str, str] = {
-    "hnp": "adnumpre",
-    "pcn": "postcomm",
-    "pc":  "postcode",
-}
-
-_ADMIN_FIELDS: frozenset[str] = frozenset(("country", "a1", "a2", "a3", "a4", "a5"))
-
-
-def _complete_location_rcl(parent: etree._Element, data) -> None:
-    record = data.record
-    side = data.side or "L"
-    address = data.address
-    suffix = "_l" if side == "L" else "_r"
-    elements: list[tuple[str, str, str]] = []
-
-    for elem in ELEMENT_HIERARCHY:
-        if elem.always_unchecked:
-            continue
-        clark = _pidf_lo_to_clark(elem.pidf_lo)
-        field = elem.civic_address_field
-
-        if field in _ADMIN_FIELDS:
-            val = getattr(record, f"{field}{suffix}", None)
-        elif field == "hno":
-            val = address.hno if address is not None else None
-        elif field in _RCL_SHARED_STREET:
-            val = getattr(record, _RCL_SHARED_STREET[field], None)
-        elif field in _RCL_SIDE_SPECIFIC_BASE:
-            val = getattr(record, f"{_RCL_SIDE_SPECIFIC_BASE[field]}{suffix}", None)
-        else:
-            continue  # rcl_unchecked fields have no RCL record mapping
-
-        if val is not None:
-            elements.append((clark, field, str(val)))
-
-    if not elements:
-        return
-
-    if address is not None and all(
-        getattr(address, field, None) == gis_val for _, field, gis_val in elements
-    ):
-        return
-
-    _emit_complete_location(parent, elements)
-
-
-def _emit_complete_location(parent: etree._Element, elements: list[tuple[str, str, str]]) -> None:
-    cl = etree.SubElement(parent, f"{{{_NS_RLI}}}completeLocation", nsmap={"rli": _NS_RLI})
-    loc = etree.SubElement(cl, f"{{{_NS_LOST}}}location")
-    loc.set("id", "complete")
-    loc.set("profile", "civic")
-    ca_el = etree.SubElement(loc, f"{{{_NS_CA}}}civicAddress")
-    for clark, _, val in elements:
-        e = etree.SubElement(ca_el, clark)
-        e.text = val
 
 
 # ---------------------------------------------------------------------------
@@ -1263,1555 +376,27 @@ def _check_ooc_admin(address: CivicAddress, g2):
     a3 = address.a3 if invalid_field not in ("ca:A3", "ca:A4", "ca:A5") else None
     a4 = address.a4 if invalid_field not in ("ca:A4", "ca:A5") else None
     a5 = address.a5 if invalid_field != "ca:A5" else None
-    coverage = lookup_civic_coverage(
+    coverage = gis_provisioning.lookup_civic_coverage(
         address.country, address.a1, address.a2,
         a3, a4, a5,
     )
     if coverage is not None:
         return None
-    if _parent_uri:
-        return RedirectResponse(target=_parent_uri, source=_server_uri)
+    if runtime_state._parent_uri:
+        return RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri)
     return NotFoundResponse(
         message="Location is outside this LVF's coverage area and no parent LVF is configured"
     )
 
 
 # ---------------------------------------------------------------------------
-# Recursion helpers (RFC 5222 §10 recursive mode)
+# Federation logic (RFC 5222 §10 recursion, RFC 6739 LoST-Sync, AMS child
+# coverage) all moved to src/federation/ this session:
+#   - recursion (loop detection, Via headers, recursive POST) -> recursion.py
+#   - child coverage store, leader election, AMS provisioning -> coverage.py
+#   - mapping builders/parser, sync endpoint handlers, push/pull,
+#     startup sync, handle_sync() -> sync.py
 # ---------------------------------------------------------------------------
-
-def _has_loop(body: bytes) -> bool:
-    try:
-        root = etree.fromstring(body, _XML_PARSER)
-        path_el = root.find(f"{{{_NS_LOST}}}path")
-        if path_el is None:
-            return False
-        return any(
-            via.get("source") == _server_uri
-            for via in path_el.findall(f"{{{_NS_LOST}}}via")
-        )
-    except Exception:
-        return False
-
-
-def _add_via_to_request(body: bytes) -> bytes:
-    try:
-        root = etree.fromstring(body, _XML_PARSER)
-        path_el = root.find(f"{{{_NS_LOST}}}path")
-        if path_el is None:
-            path_el = etree.SubElement(root, f"{{{_NS_LOST}}}path")
-        via_el = etree.SubElement(path_el, f"{{{_NS_LOST}}}via")
-        via_el.set("source", _server_uri)
-        return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
-    except Exception:
-        return body
-
-
-def _prepend_via_to_response(response_body: bytes) -> bytes:
-    try:
-        root = etree.fromstring(response_body)
-        path_el = root.find(f".//{{{_NS_LOST}}}path")
-        if path_el is not None:
-            via_el = etree.Element(f"{{{_NS_LOST}}}via")
-            via_el.set("source", _server_uri)
-            via_el.tail = path_el.text
-            path_el.insert(0, via_el)
-        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-    except Exception:
-        return response_body
-
-
-def _make_errors_xml(error_type: str, message: str = "") -> bytes:
-    root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-    root.set("source", _server_uri)
-    err = etree.SubElement(root, f"{{{_NS_LOST}}}{error_type}")
-    err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-    if message:
-        err.text = message
-    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-
-
-def _resolve_lost_url(parent_uri: str) -> str:
-    """Return the HTTP base URL for parent_uri, resolving via U-NAPTR if needed.
-
-    Results are cached in _resolved_urls keyed by input, so each DNS lookup
-    happens at most once per process lifetime — including for multiple children.
-    """
-    if parent_uri in _resolved_urls:
-        return _resolved_urls[parent_uri]
-
-    if "://" in parent_uri:
-        _resolved_urls[parent_uri] = parent_uri.rstrip("/")
-        return _resolved_urls[parent_uri]
-
-    try:
-        answers = dns.resolver.resolve(parent_uri, "NAPTR")
-        candidates = []
-        for rr in answers:
-            flags   = rr.flags.decode()   if isinstance(rr.flags,   bytes) else rr.flags
-            service = rr.service.decode() if isinstance(rr.service, bytes) else rr.service
-            regexp  = rr.regexp.decode()  if isinstance(rr.regexp,  bytes) else rr.regexp
-            if service in ("LoST:https", "LoST:http") and flags.upper() == "U":
-                proto_rank = 0 if service == "LoST:https" else 1
-                candidates.append((rr.order, rr.preference, proto_rank, regexp))
-
-        if candidates:
-            candidates.sort(key=lambda c: (c[0], c[1], c[2]))
-            _, _, _, regexp = candidates[0]
-            delim = regexp[0]
-            parts = regexp.split(delim)
-            if len(parts) >= 3 and parts[2]:
-                _resolved_urls[parent_uri] = parts[2].rstrip("/")
-                log.info("U-NAPTR resolved %s → %s", parent_uri, _resolved_urls[parent_uri])
-                return _resolved_urls[parent_uri]
-            log.warning("U-NAPTR record for %s has unparseable regexp %r — falling back to http://", parent_uri, regexp)
-        else:
-            log.warning("U-NAPTR lookup for %s returned no LoST records — falling back to http://", parent_uri)
-    except Exception as exc:
-        log.warning("U-NAPTR lookup failed for %s (%s) — falling back to http://", parent_uri, exc)
-
-    _resolved_urls[parent_uri] = f"http://{parent_uri}"
-    return _resolved_urls[parent_uri]
-
-
-def _do_recurse_sync(request_body: bytes) -> bytes:
-    return _do_recurse_to_uri_sync(request_body, _resolve_lost_url(_parent_uri) + "/lost")
-
-
-async def _do_recurse_async(request_body: bytes) -> bytes:
-    return await _do_recurse_to_uri_async(request_body, _resolve_lost_url(_parent_uri) + "/lost")
-
-
-def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
-    if _has_loop(request_body):
-        return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
-    modified = _add_via_to_request(request_body)
-    _t0 = time.monotonic()
-    log.debug("Recursion (sync): POST %s", validate_uri)
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(
-                validate_uri,
-                content=modified,
-                headers={"Content-Type": "application/xml"},
-            )
-        elapsed = time.monotonic() - _t0
-        _metrics.recursion_duration_seconds.observe(elapsed)
-        _metrics.recursion_total.labels(outcome="success").inc()
-        log.debug(
-            "Recursion (sync): %s responded in %.3fs (status=%d)",
-            validate_uri, elapsed, resp.status_code,
-        )
-        if resp.status_code == 200:
-            try:
-                result = _prepend_via_to_response(resp.content)
-                etree.fromstring(result)
-                return result
-            except Exception:
-                return _make_errors_xml("serverError", "Target LVF returned unparseable XML")
-        return _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
-    except httpx.TimeoutException:
-        elapsed = time.monotonic() - _t0
-        _metrics.recursion_duration_seconds.observe(elapsed)
-        _metrics.recursion_total.labels(outcome="timeout").inc()
-        log.warning("Recursion (sync): %s timed out after %.3fs", validate_uri, elapsed)
-        return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
-    except Exception as exc:
-        elapsed = time.monotonic() - _t0
-        _metrics.recursion_duration_seconds.observe(elapsed)
-        _metrics.recursion_total.labels(outcome="error").inc()
-        log.error(
-            "Recursion (sync) to %s failed after %.3fs: %s",
-            validate_uri, elapsed, exc,
-        )
-        return _make_errors_xml("serverError", "An internal error occurred.")
-
-
-async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> bytes:
-    if _has_loop(request_body):
-        return _make_errors_xml("loop", "Request loop detected — this server has already processed this request")
-    modified = _add_via_to_request(request_body)
-    _t0 = time.monotonic()
-    log.debug("Recursion (async): POST %s", validate_uri)
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                validate_uri,
-                content=modified,
-                headers={"Content-Type": "application/xml"},
-            )
-        elapsed = time.monotonic() - _t0
-        _metrics.recursion_duration_seconds.observe(elapsed)
-        _metrics.recursion_total.labels(outcome="success").inc()
-        log.debug(
-            "Recursion (async): %s responded in %.3fs (status=%d)",
-            validate_uri, elapsed, resp.status_code,
-        )
-        if resp.status_code == 200:
-            try:
-                result = _prepend_via_to_response(resp.content)
-                etree.fromstring(result)
-                return result
-            except Exception:
-                err = _make_errors_xml("serverError", "Target LVF returned unparseable XML")
-                asyncio.create_task(file_lost_dr(
-                    query=LoSTQuery.findService,
-                    request_xml=request_body.decode("utf-8", errors="replace"),
-                    response_xml=resp.content.decode("utf-8", errors="replace"),
-                    problem=LoSTProblem.OtherLoST,
-                    severity=ProblemSeverity.Moderate,
-                ))
-                return err
-        err = _make_errors_xml("serverError", f"Target LVF returned HTTP {resp.status_code}")
-        asyncio.create_task(file_lost_dr(
-            query=LoSTQuery.findService,
-            request_xml=request_body.decode("utf-8", errors="replace"),
-            response_xml=f"HTTP {resp.status_code}",
-            problem=LoSTProblem.OtherLoST,
-            severity=ProblemSeverity.Moderate,
-        ))
-        return err
-    except httpx.TimeoutException:
-        elapsed = time.monotonic() - _t0
-        _metrics.recursion_duration_seconds.observe(elapsed)
-        _metrics.recursion_total.labels(outcome="timeout").inc()
-        log.warning("Recursion (async): %s timed out after %.3fs", validate_uri, elapsed)
-        return _make_errors_xml("serverTimeout", "Request to target LVF timed out")
-    except Exception as exc:
-        elapsed = time.monotonic() - _t0
-        _metrics.recursion_duration_seconds.observe(elapsed)
-        _metrics.recursion_total.labels(outcome="error").inc()
-        log.error(
-            "Recursion (async) to %s failed after %.3fs: %s",
-            validate_uri, elapsed, exc,
-        )
-        return _make_errors_xml("serverError", "An internal error occurred.")
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync (RFC 6739) — child coverage store
-# ---------------------------------------------------------------------------
-
-def _child_coverage_path() -> str:
-    filename = "fg_tree_coverage.json" if _forest_guide_mode else "lvf_child_coverage.json"
-    gpkg_path = os.environ.get("LVF_GPKG_PATH")
-    if gpkg_path:
-        return os.path.join(os.path.dirname(gpkg_path) or ".", filename)
-    return os.path.join("data", filename)
-
-
-def _read_child_coverage_file() -> list[dict]:
-    """Read and parse the coverage file into a FRESH list.
-
-    Returns an empty list if the file is absent, unreadable, or not a JSON array.
-    Does not touch any global — callers decide whether/how to publish the result.
-    """
-    path = _child_coverage_path()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
-        return []
-
-
-def _load_child_coverage() -> None:
-    global _child_coverage
-    path = _child_coverage_path()
-    if not os.path.exists(path):
-        return
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        fresh = data if isinstance(data, list) else []
-    except Exception as exc:
-        log.warning("LoST-Sync: could not load child coverage store from %s: %s", path, exc)
-        return
-    with _coverage_lock:
-        _child_coverage = fresh
-    log.info("LoST-Sync: loaded %d child coverage entries from %s", len(fresh), path)
-
-
-def _save_child_coverage_list(entries: list[dict]) -> None:
-    """Atomically persist `entries` to the coverage file (temp + os.replace)."""
-    path = _child_coverage_path()
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(entries, f, indent=2, default=str)
-        os.replace(tmp, path)
-    except Exception as exc:
-        log.warning("LoST-Sync: could not save child coverage store to %s: %s", path, exc)
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
-
-
-def _save_child_coverage() -> None:
-    _save_child_coverage_list(_child_coverage)
-
-
-@contextmanager
-def _coverage_file_lock():
-    """Exclusive cross-process lock guarding the read-modify-write of the coverage
-    file. The lock is taken on a dedicated `.lock` sidecar file (never the data
-    file, which is replaced via os.replace). On platforms without fcntl (Windows
-    dev), this is a no-op — multi-worker deployment targets POSIX/containers."""
-    if _fcntl is None:
-        yield
-        return
-    lock_path = _child_coverage_path() + ".lock"
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    _t0 = time.monotonic()
-    try:
-        _fcntl.flock(fd, _fcntl.LOCK_EX)
-        _wait = time.monotonic() - _t0
-        if _wait > 0.05:
-            log.debug("Coverage file lock: acquired after waiting %.3fs", _wait)
-        yield
-    finally:
-        try:
-            _fcntl.flock(fd, _fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
-
-
-def _with_coverage_write(apply_fn) -> bool:
-    """Serialize a read-modify-write of the coverage store across processes.
-
-    1. Acquire the exclusive cross-process file lock (blocking).
-    2. Reload the latest coverage from disk into a FRESH private list.
-    3. Call apply_fn(fresh_list) which performs the upsert/delete operations
-       against that private list (returns truthy when coverage changed).
-    4. On root-AMS nodes, re-assert operator provisioning on top (always wins).
-    5. Atomically save the fresh list.
-    6. Publish it as the new _child_coverage under _coverage_lock.
-
-    Returns whatever apply_fn returned.
-    """
-    global _child_coverage
-    with _coverage_file_lock():
-        fresh = _read_child_coverage_file()
-        result = apply_fn(fresh)
-        if _root_ams:
-            _reapply_ams_provisioning(fresh)
-        _save_child_coverage_list(fresh)
-        with _coverage_lock:
-            _child_coverage = fresh
-    return result
-
-
-def _reapply_ams_provisioning(target: list[dict]) -> None:
-    """Re-assert the cached operator-authored AMS provisioning entries on top of
-    `target` (matching/superseding by source_id), so manual provisioning always
-    wins after any reload of the dynamic coverage file. No-op when not root-AMS
-    or when no provisioning has been loaded."""
-    if not _root_ams or not _ams_provisioning_cache:
-        return
-    for entry in _ams_provisioning_cache:
-        source_id = entry.get("source_id", "")
-        for i, existing in enumerate(target):
-            if existing.get("source_id") == source_id:
-                target[i] = entry
-                break
-        else:
-            target.append(entry)
-
-
-def _watch_child_coverage() -> None:
-    """Poll the coverage file mtime so sibling workers converge on each other's
-    writes. Pure read-view refresh: never triggers an upstream push or startup
-    sync. On root-AMS nodes, re-asserts provisioning after each reload."""
-    global _child_coverage
-    interval = int(os.environ.get("LVF_COVERAGE_POLL_INTERVAL_SECONDS", "15"))
-    if interval <= 0:
-        return
-    path = _child_coverage_path()
-    try:
-        baseline = os.path.getmtime(path) if os.path.exists(path) else 0.0
-    except OSError:
-        baseline = 0.0
-
-    while True:
-        time.sleep(interval)
-        try:
-            current = os.path.getmtime(path) if os.path.exists(path) else 0.0
-        except OSError:
-            continue
-        if current != baseline:
-            baseline = current
-            fresh = _read_child_coverage_file()
-            if _root_ams:
-                _reapply_ams_provisioning(fresh)
-            with _coverage_lock:
-                _child_coverage = fresh
-            log.debug(
-                "LoST-Sync: coverage file changed — reloaded %d entries (read-view only)",
-                len(fresh),
-            )
-
-
-def _start_coverage_watcher() -> None:
-    """Start the coverage-file watcher thread (section 4), unless disabled."""
-    interval = int(os.environ.get("LVF_COVERAGE_POLL_INTERVAL_SECONDS", "15"))
-    if interval <= 0:
-        log.info("Coverage watcher disabled (LVF_COVERAGE_POLL_INTERVAL_SECONDS=0)")
-        return
-    threading.Thread(target=_watch_child_coverage, daemon=True).start()
-    log.info("Coverage watcher started (poll interval: %ds)", interval)
-
-
-def _leader_lock_path() -> str:
-    gpkg_path = os.environ.get("LVF_GPKG_PATH")
-    data_dir = (os.path.dirname(gpkg_path) or ".") if gpkg_path else "data"
-    return os.path.join(data_dir, ".lvf_leader.lock")
-
-
-def _acquire_leadership() -> bool:
-    """Try to become the single leader worker via a non-blocking exclusive file
-    lock. The leader runs the SIP notifier and boot-time startup sync; others
-    skip them. The lock fd is kept open for the process lifetime so the lock is
-    not released. On platforms without fcntl (Windows dev = single process),
-    this node is always the leader."""
-    global _leader_lock_fd, _is_leader
-    if _fcntl is None:
-        _is_leader = True
-        return True
-    path = _leader_lock_path()
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
-    except OSError as exc:
-        log.warning("Leader election: could not open %s (%s) — assuming leader", path, exc)
-        _is_leader = True
-        return True
-    try:
-        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-    except OSError:
-        os.close(fd)
-        _is_leader = False
-        return False
-    _leader_lock_fd = fd  # keep open for process lifetime — do not close/GC
-    _is_leader = True
-    return True
-
-
-def _parse_iso_timestamp(ts: str) -> Optional[datetime.datetime]:
-    if not ts:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _compare_timestamps(a: str, b: str) -> int:
-    ta = _parse_iso_timestamp(a)
-    tb = _parse_iso_timestamp(b)
-    if ta is None and tb is None:
-        return 0
-    if ta is None:
-        return -1
-    if tb is None:
-        return 1
-    if ta > tb:
-        return 1
-    if ta < tb:
-        return -1
-    return 0
-
-
-def _upsert_child_coverage(parsed: dict, target: Optional[list] = None) -> bool:
-    coverage = _child_coverage if target is None else target
-    source    = parsed.get("source", "")
-    source_id = parsed.get("source_id", "")
-    new_lu    = parsed.get("last_updated", "")
-
-    for i, entry in enumerate(coverage):
-        if entry.get("source") == source and entry.get("source_id") == source_id:
-            if _compare_timestamps(new_lu, entry.get("last_updated", "")) > 0:
-                coverage[i] = parsed
-                log.info(
-                    "LoST-Sync: updated child coverage entry source=%s sourceId=%s",
-                    source, source_id,
-                )
-                return True
-            else:
-                log.info(
-                    "LoST-Sync: received stale coverage for source=%s sourceId=%s — ignoring",
-                    source, source_id,
-                )
-                return False
-
-    coverage.append(parsed)
-    log.info(
-        "LoST-Sync: added new child coverage entry source=%s sourceId=%s profile=%s",
-        source, source_id, parsed.get("profile", ""),
-    )
-    return True
-
-
-def _lookup_child_coverage(
-    country: Optional[str],
-    a1: Optional[str],
-    a2: Optional[str],
-    a3: Optional[str] = None,
-    a4: Optional[str] = None,
-    a5: Optional[str] = None,
-) -> Optional[dict]:
-    def norm(v: Optional[str]) -> Optional[str]:
-        return v.upper() if v else None
-
-    c, s, co = norm(country), norm(a1), norm(a2)
-    if not c or not s or not co:
-        return None
-    a3n, a4n, a5n = norm(a3), norm(a4), norm(a5)
-
-    best_entry: Optional[dict] = None
-    best_specificity = -1
-
-    for entry in _child_coverage:
-        if entry.get("profile") != "civic":
-            continue
-        tuples = entry.get("civic_addresses") or []
-
-        entry_best = -1
-        for t in tuples:
-            tc  = norm(t.get("country"))
-            ts  = norm(t.get("a1"))
-            tco = norm(t.get("a2"))
-            ta3 = norm(t.get("a3"))
-            ta4 = norm(t.get("a4"))
-            ta5 = norm(t.get("a5"))
-
-            if tc != c or ts != s or tco != co:
-                continue
-            if ta3 is not None and ta3 != "*" and ta3 != a3n:
-                continue
-            if ta4 is not None and ta4 != "*" and ta4 != a4n:
-                continue
-            if ta5 is not None and ta5 != "*" and ta5 != a5n:
-                continue
-
-            spec = (
-                (1 if (ta3 is not None and ta3 != "*") else 0) +
-                (1 if (ta4 is not None and ta4 != "*") else 0) +
-                (1 if (ta5 is not None and ta5 != "*") else 0)
-            )
-            if spec > entry_best:
-                entry_best = spec
-
-        if entry_best > best_specificity:
-            best_specificity = entry_best
-            best_entry = entry
-
-    return best_entry
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync — GML serialization helpers
-# ---------------------------------------------------------------------------
-
-def _gml_add_ring(ring_el: etree._Element, coords) -> None:
-    for lon, lat in coords:
-        pos = etree.SubElement(ring_el, f"{{{_NS_GML}}}pos")
-        pos.text = f"{lat} {lon}"
-
-
-def _gml_polygon(polygon) -> etree._Element:
-    poly_el = etree.Element(
-        f"{{{_NS_GML}}}Polygon",
-        nsmap={"gml": _NS_GML},
-    )
-    poly_el.set("srsName", "urn:ogc:def::crs:EPSG::4326")
-    ext_el  = etree.SubElement(poly_el, f"{{{_NS_GML}}}exterior")
-    ring_el = etree.SubElement(ext_el,  f"{{{_NS_GML}}}LinearRing")
-    _gml_add_ring(ring_el, polygon.exterior.coords)
-    for interior in polygon.interiors:
-        int_el  = etree.SubElement(poly_el, f"{{{_NS_GML}}}interior")
-        iring   = etree.SubElement(int_el,  f"{{{_NS_GML}}}LinearRing")
-        _gml_add_ring(iring, interior.coords)
-    return poly_el
-
-
-def _shapely_to_gml(geom) -> etree._Element:
-    if geom.geom_type == "MultiPolygon":
-        mp = etree.Element(
-            f"{{{_NS_GML}}}MultiPolygon",
-            nsmap={"gml": _NS_GML},
-        )
-        mp.set("srsName", "urn:ogc:def::crs:EPSG::4326")
-        for polygon in geom.geoms:
-            pm = etree.SubElement(mp, f"{{{_NS_GML}}}polygonMember")
-            pm.append(_gml_polygon(polygon))
-        return mp
-    return _gml_polygon(geom)
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync — coverage region mapping builders
-# ---------------------------------------------------------------------------
-
-def _gis_last_updated_str() -> str:
-    return _gis_last_loaded.strftime("%Y-%m-%dT%H:%M:%SZ") if _gis_last_loaded else _SERVER_START_TIME
-
-
-def _build_civic_coverage_mapping_xml() -> Optional[str]:
-    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    if not src_id or not _civic_coverage:
-        return None
-
-    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
-    mapping_el.set("expires",     "NO-EXPIRATION")
-    mapping_el.set("lastUpdated", _gis_last_updated_str())
-    mapping_el.set("source",      _server_uri)
-    mapping_el.set("sourceId",    src_id)
-
-    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
-    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
-    dn.text = f"{_server_uri} civic coverage"
-
-    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
-    svc.text = "urn:service:sos"
-
-    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
-    sb.set("profile", "civic")
-
-    seen: set = set()
-    for entry in _civic_coverage:
-        key = (entry.country, entry.a1, entry.a2, entry.a3, entry.a4, entry.a5)
-        if key in seen:
-            continue
-        seen.add(key)
-        ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
-        _e = etree.SubElement(ca, f"{{{_NS_CA}}}country")
-        _e.text = entry.country
-        _e = etree.SubElement(ca, f"{{{_NS_CA}}}A1")
-        _e.text = entry.a1
-        _e = etree.SubElement(ca, f"{{{_NS_CA}}}A2")
-        _e.text = entry.a2
-        for field, val in (("A3", entry.a3), ("A4", entry.a4), ("A5", entry.a5)):
-            if val is not None and val != "*":
-                _e = etree.SubElement(ca, f"{{{_NS_CA}}}{field}")
-                _e.text = val
-
-    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
-
-    return etree.tostring(mapping_el, encoding="unicode")
-
-
-def _build_geodetic_coverage_mapping_xml() -> Optional[str]:
-    src_id = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-    if not src_id or not _geodetic_coverage:
-        return None
-
-    geom = _geodetic_coverage.get("urn:service:sos")
-    if geom is None:
-        geom = next(iter(_geodetic_coverage.values()))
-
-    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
-    mapping_el.set("expires",     "NO-EXPIRATION")
-    mapping_el.set("lastUpdated", _gis_last_updated_str())
-    mapping_el.set("source",      _server_uri)
-    mapping_el.set("sourceId",    src_id)
-
-    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
-    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
-    dn.text = f"{_server_uri} geodetic coverage"
-
-    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
-    svc.text = "urn:service:sos"
-
-    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
-    sb.set("profile", "geodetic-2d")
-
-    try:
-        gml_el = _shapely_to_gml(geom)
-        sb.append(gml_el)
-    except Exception as exc:
-        log.warning("LoST-Sync: could not serialize geodetic coverage to GML: %s", exc)
-        return None
-
-    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
-
-    return etree.tostring(mapping_el, encoding="unicode")
-
-
-# ---------------------------------------------------------------------------
-# Root AMS mode — provisioned coverage region for Forest Guide push
-# ---------------------------------------------------------------------------
-
-def _ams_provisioning_dir() -> str:
-    gpkg_path = os.environ.get("LVF_GPKG_PATH", "")
-    d = os.path.dirname(gpkg_path) if gpkg_path else ""
-    return d or "."
-
-
-def geojson_to_gml(geojson_feature: dict) -> etree._Element:
-    from shapely.geometry import shape as _shape, Polygon as _Polygon
-
-    geom_dict = geojson_feature.get("geometry", geojson_feature) if geojson_feature.get("type") == "Feature" else geojson_feature
-    geom = _shape(geom_dict)
-    if geom.geom_type == "MultiPolygon":
-        largest = max(geom.geoms, key=lambda p: p.area)
-        geom = _Polygon(largest.exterior)
-    return _gml_polygon(geom)
-
-
-def _validate_ams_civic_file(path: str) -> Optional[list]:
-    if not os.path.exists(path):
-        log.warning("AMS: ams_civic_coverage.json not found at %s", path)
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as exc:
-        log.error("AMS: ams_civic_coverage.json is not valid JSON: %s", exc)
-        return None
-    if not isinstance(data, list) or not data:
-        log.error("AMS: ams_civic_coverage.json must be a non-empty JSON array")
-        return None
-
-    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "lost_server"}
-    _ADDR_REQUIRED  = {"country", "a1", "a2"}
-
-    for i, entry in enumerate(data):
-        if not isinstance(entry, dict):
-            log.error("AMS: ams_civic_coverage.json entry %d is not an object", i)
-            return None
-        if "lost_server" not in entry and "child_uri" in entry:
-            log.warning(
-                'AMS: ams_civic_coverage.json entry %d uses deprecated "child_uri" — rename to "lost_server"', i
-            )
-            entry["lost_server"] = entry.pop("child_uri")
-        if "civic_addresses" not in entry and "civic_tuples" in entry:
-            log.warning(
-                'AMS: ams_civic_coverage.json entry %d uses deprecated "civic_tuples" — rename to "civic_addresses"', i
-            )
-            entry["civic_addresses"] = entry.pop("civic_tuples")
-        missing = _ENTRY_REQUIRED - entry.keys()
-        if missing:
-            log.error("AMS: ams_civic_coverage.json entry %d missing required key(s): %s", i, missing)
-            return None
-        if entry.get("profile") != "civic":
-            log.error('AMS: ams_civic_coverage.json entry %d has profile %r — expected "civic"', i, entry.get("profile"))
-            return None
-        addrs = entry.get("civic_addresses")
-        if not isinstance(addrs, list) or not addrs:
-            log.error("AMS: ams_civic_coverage.json entry %d must have a non-empty civic_addresses array", i)
-            return None
-        for j, t in enumerate(addrs):
-            if not isinstance(t, dict):
-                log.error("AMS: ams_civic_coverage.json entry %d civic_addresses[%d] is not an object", i, j)
-                return None
-            amissing = _ADDR_REQUIRED - t.keys()
-            if amissing:
-                log.error("AMS: ams_civic_coverage.json entry %d civic_addresses[%d] missing required key(s): %s", i, j, amissing)
-                return None
-    return data
-
-
-def _validate_ams_geodetic_file(path: str) -> Optional[list]:
-    from shapely.wkt import loads as _wkt_loads
-
-    if not os.path.exists(path):
-        log.warning("AMS: ams_geodetic_coverage.json not found at %s", path)
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as exc:
-        log.error("AMS: ams_geodetic_coverage.json is not valid JSON: %s", exc)
-        return None
-    if not isinstance(data, list) or not data:
-        log.error("AMS: ams_geodetic_coverage.json must be a non-empty JSON array")
-        return None
-
-    _ENTRY_REQUIRED = {"source", "source_id", "last_updated", "expires", "service", "profile", "lost_server"}
-
-    for i, entry in enumerate(data):
-        if not isinstance(entry, dict):
-            log.error("AMS: ams_geodetic_coverage.json entry %d is not an object", i)
-            return None
-        if "lost_server" not in entry and "child_uri" in entry:
-            log.warning(
-                'AMS: ams_geodetic_coverage.json entry %d uses deprecated "child_uri" — rename to "lost_server"', i
-            )
-            entry["lost_server"] = entry.pop("child_uri")
-        missing = _ENTRY_REQUIRED - entry.keys()
-        if missing:
-            log.error("AMS: ams_geodetic_coverage.json entry %d missing required key(s): %s", i, missing)
-            return None
-        if entry.get("profile") != "geodetic-2d":
-            log.error('AMS: ams_geodetic_coverage.json entry %d has profile %r — expected "geodetic-2d"', i, entry.get("profile"))
-            return None
-        wkt = entry.get("geodetic_geom_wkt")
-        if not wkt or not isinstance(wkt, str):
-            log.error("AMS: ams_geodetic_coverage.json entry %d missing or invalid geodetic_geom_wkt", i)
-            return None
-        try:
-            _wkt_loads(wkt)
-        except Exception as exc:
-            log.error("AMS: ams_geodetic_coverage.json entry %d geodetic_geom_wkt is not valid WKT: %s", i, exc)
-            return None
-    return data
-
-
-def _load_ams_provisioning() -> bool:
-    global _root_ams_active, _ams_provisioning_cache, _child_coverage
-
-    if not _forest_guide_uri:
-        log.warning(
-            "LVF_ROOT_AMS=true but LVF_FOREST_GUIDE_URI is not set — "
-            "FG push suppressed; programmatic push to LVF_PARENT_URI is also suppressed"
-        )
-        _root_ams_active = False
-        return False
-
-    base_dir = _ams_provisioning_dir()
-    civic_path    = os.path.join(base_dir, "ams_civic_coverage.json")
-    geodetic_path = os.path.join(base_dir, "ams_geodetic_coverage.json")
-
-    civic_entries = _validate_ams_civic_file(civic_path)
-    if civic_entries is None:
-        _root_ams_active = False
-        return False
-
-    geodetic_entries = _validate_ams_geodetic_file(geodetic_path)
-    if geodetic_entries is None:
-        _root_ams_active = False
-        return False
-
-    # Cache the entries so they can be re-asserted on top of the dynamic coverage
-    # file after every reload (manual provisioning always wins — section 6).
-    _ams_provisioning_cache = list(civic_entries + geodetic_entries)
-
-    # Merge onto a fresh copy and publish by swap (never mutate the live list in
-    # place) so lock-free readers always see a complete snapshot.
-    merged = list(_child_coverage)
-    for entry in _ams_provisioning_cache:
-        source    = entry.get("source", "")
-        source_id = entry.get("source_id", "")
-        for i, existing in enumerate(merged):
-            if existing.get("source_id") == source_id:
-                log.info(
-                    "AMS: provisioning entry supersedes cached entry source=%s sourceId=%s",
-                    source, source_id,
-                )
-                merged[i] = entry
-                break
-        else:
-            merged.append(entry)
-    with _coverage_lock:
-        _child_coverage = merged
-
-    _root_ams_active = True
-    civic_tuple_count = sum(len(e.get("civic_addresses") or []) for e in civic_entries)
-    log.info(
-        "AMS: provisioning files loaded (%d civic entry/entries, %d civic address(es), "
-        "%d geodetic entry/entries) — FG push active targeting %s",
-        len(civic_entries), civic_tuple_count, len(geodetic_entries), _forest_guide_uri,
-    )
-    return True
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync — GML → shapely helpers
-# ---------------------------------------------------------------------------
-
-def _gml_ring_coords(ring_el: etree._Element) -> list[tuple[float, float]]:
-    coords: list[tuple[float, float]] = []
-    for pos in ring_el.findall(f"{{{_NS_GML}}}pos"):
-        parts = (pos.text or "").split()
-        if len(parts) >= 2:
-            lat, lon = float(parts[0]), float(parts[1])
-            coords.append((lon, lat))
-    return coords
-
-
-def _gml_polygon_to_shapely(poly_el: etree._Element):
-    from shapely.geometry import Polygon as _Polygon
-    ext_ring = poly_el.find(f"{{{_NS_GML}}}exterior/{{{_NS_GML}}}LinearRing")
-    exterior = _gml_ring_coords(ext_ring) if ext_ring is not None else []
-    interiors = [
-        _gml_ring_coords(ir)
-        for int_el in poly_el.findall(f"{{{_NS_GML}}}interior")
-        for ir in [int_el.find(f"{{{_NS_GML}}}LinearRing")]
-        if ir is not None
-    ]
-    return _Polygon(exterior, interiors)
-
-
-def _gml_sb_to_shapely(sb_el: etree._Element):
-    from shapely.geometry import MultiPolygon as _MultiPolygon
-    mp_el = sb_el.find(f".//{{{_NS_GML}}}MultiPolygon")
-    if mp_el is not None:
-        polys = []
-        for pm_el in mp_el.findall(f"{{{_NS_GML}}}polygonMember"):
-            poly_el = pm_el.find(f"{{{_NS_GML}}}Polygon")
-            if poly_el is not None:
-                polys.append(_gml_polygon_to_shapely(poly_el))
-        return _MultiPolygon(polys)
-    poly_el = sb_el.find(f".//{{{_NS_GML}}}Polygon")
-    if poly_el is not None:
-        return _gml_polygon_to_shapely(poly_el)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync — mapping element parser
-# ---------------------------------------------------------------------------
-
-def _parse_sync_mapping(mapping_el: etree._Element, child_uri_hint: str = "") -> dict:
-    source    = mapping_el.get("source", "")
-    source_id = mapping_el.get("sourceId", "")
-    last_updated = mapping_el.get("lastUpdated", "")
-    expires      = mapping_el.get("expires", "NO-EXPIRATION")
-
-    service_el = mapping_el.find(f"{{{_NS_LOST}}}service")
-    service = (service_el.text or "").strip() if service_el is not None else "urn:service:sos"
-
-    dn_el = mapping_el.find(f"{{{_NS_LOST}}}displayName")
-    display_name = (dn_el.text or "").strip() if dn_el is not None else ""
-
-    sb_el = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
-    profile           = ""
-    civic_addresses   = None
-    geodetic_geom_wkt = None
-
-    if sb_el is not None:
-        profile = sb_el.get("profile", "")
-
-        if profile == "civic":
-            civic_addresses = []
-            for ca_el in sb_el.findall(f".//{{{_NS_CA}}}civicAddress"):
-                t: dict[str, Optional[str]] = {}
-                for field, tag in [
-                    ("country", "country"), ("a1", "A1"), ("a2", "A2"),
-                    ("a3", "A3"),           ("a4", "A4"), ("a5", "A5"),
-                ]:
-                    el = ca_el.find(f"{{{_NS_CA}}}{tag}")
-                    t[field] = el.text.strip() if (el is not None and el.text) else ("*" if field in ("a3", "a4", "a5") else None)
-                civic_addresses.append(t)
-
-        elif profile == "geodetic-2d":
-            try:
-                from shapely.wkt import dumps as _wkt_dumps
-                geom = _gml_sb_to_shapely(sb_el)
-                geodetic_geom_wkt = _wkt_dumps(geom) if geom is not None else None
-            except Exception:
-                geodetic_geom_wkt = None
-
-    uri_el = mapping_el.find(f"{{{_NS_LOST}}}uri")
-    if uri_el is not None and uri_el.text and uri_el.text.strip():
-        lost_server = uri_el.text.strip()
-    elif child_uri_hint:
-        lost_server = child_uri_hint
-    else:
-        if source and "://" not in source:
-            lost_server = f"http://{source}/lost"
-        elif source:
-            lost_server = source.rstrip("/") + "/lost"
-        else:
-            lost_server = ""
-
-    return {
-        "source":            source,
-        "source_id":         source_id,
-        "last_updated":      last_updated,
-        "expires":           expires,
-        "service":           service,
-        "display_name":      display_name,
-        "profile":           profile,
-        "civic_addresses":   civic_addresses,
-        "geodetic_geom_wkt": geodetic_geom_wkt,
-        "lost_server":       lost_server,
-    }
-
-
-def _child_entry_to_mapping_xml(entry: dict) -> Optional[str]:
-    profile = entry.get("profile", "")
-
-    mapping_el = etree.Element(f"{{{_NS_LOST}}}mapping")
-    mapping_el.set("expires",     entry.get("expires", "NO-EXPIRATION"))
-    mapping_el.set("lastUpdated", entry.get("last_updated", ""))
-    mapping_el.set("source",      entry.get("source", ""))
-    mapping_el.set("sourceId",    entry.get("source_id", ""))
-
-    dn = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}displayName")
-    dn.set("{http://www.w3.org/XML/1998/namespace}lang", _display_name_lang)
-    dn.text = entry.get("display_name") or f"{entry.get('source', '')} {profile} coverage"
-
-    svc = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}service")
-    svc.text = entry.get("service", "urn:service:sos")
-
-    sb = etree.SubElement(mapping_el, f"{{{_NS_LOST}}}serviceBoundary")
-    sb.set("profile", profile)
-
-    if profile == "civic":
-        for t in (entry.get("civic_addresses") or []):
-            ca = etree.SubElement(sb, f"{{{_NS_CA}}}civicAddress")
-            for field, tag in [
-                ("country", "country"), ("a1", "A1"), ("a2", "A2"),
-                ("a3", "A3"),           ("a4", "A4"), ("a5", "A5"),
-            ]:
-                val = t.get(field)
-                if val is not None and val != "*":
-                    el = etree.SubElement(ca, f"{{{_NS_CA}}}{tag}")
-                    el.text = val
-    elif profile == "geodetic-2d":
-        geom_wkt = entry.get("geodetic_geom_wkt")
-        if not geom_wkt:
-            return None
-        try:
-            from shapely.wkt import loads as _wkt_loads
-            geom = _wkt_loads(geom_wkt)
-            sb.append(_shapely_to_gml(geom))
-        except Exception as exc:
-            log.warning("LoST-Sync: could not reconstruct geodetic GML for child entry source=%s: %s",
-                        entry.get("source", ""), exc)
-            return None
-    else:
-        return None
-
-    etree.SubElement(mapping_el, f"{{{_NS_LOST}}}uri")
-    return etree.tostring(mapping_el, encoding="unicode")
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync — sync endpoint handlers
-# ---------------------------------------------------------------------------
-
-def _sync_error_response(error_type: str, message: str) -> Response:
-    root = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-    root.set("source", _server_uri)
-    err = etree.SubElement(root, f"{{{_NS_LOST}}}{error_type}")
-    err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-    err.text = message
-    body = etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-    return Response(content=body, status_code=200, media_type="application/lostsync+xml")
-
-
-async def _handle_push_mappings(root: etree._Element) -> Response:
-    mapping_els = root.findall(f"{{{_NS_LOST}}}mapping")
-    not_deleted: list[tuple[str, str]] = []
-    last_source_id = ""
-
-    # Parse all mappings up front (cheap, lock-free), then apply the same
-    # upsert/delete merge under the cross-process coverage write lock.
-    ops: list[tuple[bool, dict]] = []
-    for mapping_el in mapping_els:
-        sb_el     = mapping_el.find(f"{{{_NS_LOST}}}serviceBoundary")
-        is_delete = sb_el is None
-        parsed    = _parse_sync_mapping(mapping_el)
-        last_source_id = parsed["source_id"]
-        ops.append((is_delete, parsed))
-
-    def _apply(coverage: list[dict]) -> bool:
-        changed = False
-        for is_delete, parsed in ops:
-            source    = parsed["source"]
-            source_id = parsed["source_id"]
-            if is_delete:
-                found = False
-                for i, entry in enumerate(coverage):
-                    if entry.get("source") == source and entry.get("source_id") == source_id:
-                        coverage.pop(i)
-                        found = True
-                        changed = True
-                        log.info(
-                            "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
-                            source, source_id,
-                        )
-                        break
-                if not found:
-                    log.warning(
-                        "LoST-Sync: delete requested for unknown entry source=%s sourceId=%s",
-                        source, source_id,
-                    )
-                    not_deleted.append((source, source_id))
-            else:
-                if _upsert_child_coverage(parsed, coverage):
-                    changed = True
-        return changed
-
-    coverage_changed = _with_coverage_write(_apply)
-
-    if coverage_changed:
-        if _root_ams and _root_ams_active:
-            log.info(
-                "Coverage propagation triggered by child push from %s, pushing upstream to %s",
-                last_source_id, _forest_guide_uri,
-            )
-            asyncio.create_task(_push_coverage_to_fg())
-        elif not _root_ams and _parent_uri and not _forest_guide_mode:
-            log.info(
-                "Coverage propagation triggered by child push from %s, pushing upstream to %s",
-                last_source_id, _get_parent_sync_uri(),
-            )
-            asyncio.create_task(_push_coverage_to_parent())
-
-    if not_deleted:
-        root_err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})
-        root_err.set("source", _server_uri)
-        for src, sid in not_deleted:
-            nd = etree.SubElement(root_err, f"{{{_NS_LOST}}}notDeleted")
-            nd.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
-            nd.text = f"No mapping found for source={src!r} sourceId={sid!r}"
-        body = etree.tostring(root_err, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-        return Response(content=body, status_code=200, media_type="application/lostsync+xml")
-
-    body = etree.tostring(
-        etree.Element(f"{{{_NS_SYNC}}}pushMappingsResponse"),
-        xml_declaration=True, encoding="UTF-8",
-    )
-    return Response(content=body, status_code=200, media_type="application/lostsync+xml")
-
-
-async def _handle_get_mappings(root: etree._Element) -> Response:
-    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-    ams_source_ids = {s for s in (sync_source_id_civic, sync_source_id_geodetic) if s}
-
-    exists_el = root.find(f"{{{_NS_SYNC}}}exists")
-    mapping_xml_list: list[str] = []
-
-    if exists_el is None:
-        if not _root_ams:
-            if sync_source_id_civic:
-                civic_xml = _build_civic_coverage_mapping_xml()
-                if civic_xml:
-                    mapping_xml_list.append(civic_xml)
-            if sync_source_id_geodetic:
-                geo_xml = _build_geodetic_coverage_mapping_xml()
-                if geo_xml:
-                    mapping_xml_list.append(geo_xml)
-        own_count = len(mapping_xml_list)
-        for entry in _child_coverage:
-            if _root_ams and entry.get("source_id") not in ams_source_ids:
-                continue
-            xml = _child_entry_to_mapping_xml(entry)
-            if xml:
-                mapping_xml_list.append(xml)
-    else:
-        fingerprints: dict[str, str] = {}
-        for fp in exists_el.findall(f"{{{_NS_SYNC}}}mapping-fingerprint"):
-            sid = fp.get("sourceId")
-            lu  = fp.get("lastUpdated", "")
-            if sid:
-                fingerprints[sid] = lu
-
-        my_lu = _gis_last_updated_str()
-
-        if not _root_ams:
-            if sync_source_id_civic:
-                fp_lu = fingerprints.get(sync_source_id_civic)
-                if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
-                    civic_xml = _build_civic_coverage_mapping_xml()
-                    if civic_xml:
-                        mapping_xml_list.append(civic_xml)
-
-            if sync_source_id_geodetic:
-                fp_lu = fingerprints.get(sync_source_id_geodetic)
-                if fp_lu is None or _compare_timestamps(my_lu, fp_lu) > 0:
-                    geo_xml = _build_geodetic_coverage_mapping_xml()
-                    if geo_xml:
-                        mapping_xml_list.append(geo_xml)
-
-        own_count = len(mapping_xml_list)
-        for entry in _child_coverage:
-            if _root_ams and entry.get("source_id") not in ams_source_ids:
-                continue
-            fp_lu = fingerprints.get(entry.get("source_id", ""))
-            entry_lu = entry.get("last_updated", "")
-            if fp_lu is None or _compare_timestamps(entry_lu, fp_lu) > 0:
-                xml = _child_entry_to_mapping_xml(entry)
-                if xml:
-                    mapping_xml_list.append(xml)
-
-    log.debug(
-        "LoST-Sync: getMappingsResponse includes %d mapping(s) (%d own, %d child)",
-        len(mapping_xml_list), own_count, len(mapping_xml_list) - own_count,
-    )
-
-    resp_root = etree.Element(f"{{{_NS_SYNC}}}getMappingsResponse")
-    for xml_str in mapping_xml_list:
-        try:
-            resp_root.append(etree.fromstring(xml_str))
-        except Exception as exc:
-            log.warning("LoST-Sync: could not include mapping in getMappingsResponse: %s", exc)
-
-    body = etree.tostring(resp_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-    return Response(content=body, status_code=200, media_type="application/lostsync+xml")
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync — outbound push / pull
-# ---------------------------------------------------------------------------
-
-def _get_parent_sync_uri() -> str:
-    if not _parent_uri:
-        return ""
-    base = _resolve_lost_url(_parent_uri).rstrip("/")
-    if base.endswith("/validate") or base.endswith("/lost"):
-        base = base.rsplit("/", 1)[0]
-    return base + "/sync"
-
-
-def _get_fg_sync_uri() -> str:
-    if not _forest_guide_uri:
-        return ""
-    base = _resolve_lost_url(_forest_guide_uri).rstrip("/")
-    if base.endswith("/sync") or base.endswith("/lost"):
-        base = base.rsplit("/", 1)[0]
-    return base + "/sync"
-
-
-async def _push_coverage_to_parent() -> bool:
-    with _reloading_lock:
-        if _reloading:
-            log.warning("LoST-Sync: skipping push — GIS reload in progress")
-            return False
-
-    parent_sync_uri = _get_parent_sync_uri()
-    if not parent_sync_uri:
-        return False
-
-    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-
-    attempted = False
-    all_ok    = True
-
-    for label, mapping_getter, src_id in [
-        ("civic",    _build_civic_coverage_mapping_xml,    sync_source_id_civic),
-        ("geodetic", _build_geodetic_coverage_mapping_xml, sync_source_id_geodetic),
-    ]:
-        if not src_id:
-            continue
-
-        mapping_xml = mapping_getter()
-        if not mapping_xml:
-            continue
-
-        push_root = etree.Element(f"{{{_NS_SYNC}}}pushMappings")
-        try:
-            push_root.append(etree.fromstring(mapping_xml))
-        except Exception as exc:
-            log.warning("LoST-Sync: could not parse %s mapping for push: %s", label, exc)
-            all_ok = False
-            continue
-
-        push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-        log.info("LoST-Sync: pushing %s coverage to parent %s", label, parent_sync_uri)
-
-        attempted = True
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    parent_sync_uri,
-                    content=push_body,
-                    headers={"Content-Type": "application/lostsync+xml"},
-                )
-            if resp.status_code == 200:
-                try:
-                    resp_root = etree.fromstring(resp.content)
-                    if resp_root.tag == f"{{{_NS_SYNC}}}pushMappingsResponse":
-                        log.info(
-                            "LoST-Sync: successfully pushed %s coverage to parent %s",
-                            label, parent_sync_uri,
-                        )
-                    else:
-                        log.warning(
-                            "LoST-Sync: unexpected response pushing %s to parent: %s",
-                            label, resp_root.tag,
-                        )
-                        all_ok = False
-                except Exception:
-                    log.warning("LoST-Sync: parent returned unparseable XML when pushing %s", label)
-                    all_ok = False
-            else:
-                log.warning(
-                    "LoST-Sync: push %s to parent %s returned HTTP %d",
-                    label, parent_sync_uri, resp.status_code,
-                )
-                all_ok = False
-        except Exception as exc:
-            log.warning(
-                "LoST-Sync: failed to push %s coverage to parent %s: %s",
-                label, parent_sync_uri, exc,
-            )
-            all_ok = False
-
-    return attempted and all_ok
-
-
-async def _push_coverage_to_fg() -> bool:
-    if not _root_ams_active or not _forest_guide_uri:
-        return False
-
-    with _reloading_lock:
-        if _reloading:
-            log.warning("AMS: skipping FG push — GIS reload in progress")
-            return False
-
-    fg_sync_uri = _get_fg_sync_uri()
-
-    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-
-    attempted = False
-    all_ok    = True
-
-    for label, profile, src_id in [
-        ("civic",    "civic",       sync_source_id_civic),
-        ("geodetic", "geodetic-2d", sync_source_id_geodetic),
-    ]:
-        if not src_id:
-            continue
-
-        entry = next(
-            (e for e in _child_coverage
-             if e.get("source_id") == src_id and e.get("profile") == profile),
-            None,
-        )
-        if not entry:
-            log.warning("AMS: could not find %s coverage entry in child store for FG push (no data?)", label)
-            all_ok = False
-            continue
-        mapping_xml = _child_entry_to_mapping_xml(entry)
-        if not mapping_xml:
-            log.warning("AMS: could not build %s coverage mapping for FG push (no data?)", label)
-            all_ok = False
-            continue
-
-        push_root = etree.Element(f"{{{_NS_SYNC}}}pushMappings")
-        try:
-            push_root.append(etree.fromstring(mapping_xml))
-        except Exception as exc:
-            log.warning("AMS: could not parse %s mapping for FG push: %s", label, exc)
-            all_ok = False
-            continue
-
-        push_body = etree.tostring(push_root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-        log.info("AMS: pushing %s coverage to Forest Guide %s", label, _forest_guide_uri)
-
-        attempted = True
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    fg_sync_uri,
-                    content=push_body,
-                    headers={"Content-Type": "application/lostsync+xml"},
-                )
-            if resp.status_code == 200:
-                try:
-                    resp_root = etree.fromstring(resp.content)
-                    if resp_root.tag == f"{{{_NS_SYNC}}}pushMappingsResponse":
-                        log.info("AMS: successfully pushed %s coverage to Forest Guide %s", label, _forest_guide_uri)
-                    else:
-                        log.warning("AMS: unexpected response pushing %s to Forest Guide: %s", label, resp_root.tag)
-                        all_ok = False
-                except Exception:
-                    log.warning("AMS: Forest Guide returned unparseable XML when pushing %s", label)
-                    all_ok = False
-            else:
-                log.warning("AMS: push %s to Forest Guide %s returned HTTP %d", label, _forest_guide_uri, resp.status_code)
-                all_ok = False
-        except Exception as exc:
-            log.warning("AMS: failed to push %s coverage to Forest Guide %s: %s", label, _forest_guide_uri, exc)
-            all_ok = False
-
-    return attempted and all_ok
-
-
-async def _pull_from_child(child_entry: str) -> bool:
-    if "://" not in child_entry:
-        child_sync_url = _resolve_lost_url(child_entry).rstrip("/") + "/sync"
-    else:
-        child_sync_url = child_entry
-
-    with _reloading_lock:
-        if _reloading:
-            log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
-            return False
-
-    base = child_sync_url.rstrip("/")
-    child_lost_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/lost"
-
-    get_body = etree.tostring(
-        etree.Element(f"{{{_NS_SYNC}}}getMappingsRequest"),
-        xml_declaration=True, encoding="UTF-8",
-    )
-    log.info("LoST-Sync: sending getMappingsRequest to %s", child_sync_url)
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                child_sync_url,
-                content=get_body,
-                headers={"Content-Type": "application/lostsync+xml"},
-            )
-        if resp.status_code != 200:
-            log.warning(
-                "LoST-Sync: getMappingsRequest to %s returned HTTP %d",
-                child_sync_url, resp.status_code,
-            )
-            return False
-
-        try:
-            resp_root = etree.fromstring(resp.content)
-        except etree.XMLSyntaxError as exc:
-            log.warning(
-                "LoST-Sync: getMappingsResponse from %s has malformed XML: %s",
-                child_sync_url, exc,
-            )
-            return False
-
-        if resp_root.tag != f"{{{_NS_SYNC}}}getMappingsResponse":
-            log.warning(
-                "LoST-Sync: unexpected response element from %s: %s",
-                child_sync_url, resp_root.tag,
-            )
-            return False
-
-        parsed_list = [
-            _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
-            for mapping_el in resp_root.findall(f"{{{_NS_LOST}}}mapping")
-        ]
-        count = len(parsed_list)
-
-        if count > 0:
-            def _apply(coverage: list[dict]) -> bool:
-                for parsed in parsed_list:
-                    _upsert_child_coverage(parsed, coverage)
-                return True
-
-            _with_coverage_write(_apply)
-            log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
-        else:
-            log.info("LoST-Sync: no mappings received from %s", child_sync_url)
-        return True
-
-    except Exception as exc:
-        log.warning("LoST-Sync: failed to pull from %s: %s", child_sync_url, exc)
-        return False
-
-
-_SYNC_BACKOFF_INITIAL = 5   # seconds before first retry
-_SYNC_BACKOFF_CAP     = 60  # maximum seconds between retries
-
-
-async def _retry_sync_op(label: str, coro_fn) -> None:
-    """Call coro_fn() with exponential backoff until it returns True.
-
-    Backoff sequence: 5s, 10s, 20s, 40s, 60s, 60s, ...
-    A False return is treated as failure and triggers a retry, the same as an
-    exception would.  Exits immediately and silently on asyncio.CancelledError.
-    Logs a WARNING on each failed attempt with attempt number and next delay.
-    """
-    delay = _SYNC_BACKOFF_INITIAL
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            ok = await coro_fn()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log.warning(
-                "LoST-Sync: %s failed (attempt %d): %s — retrying in %ds",
-                label, attempt, exc, delay,
-            )
-        else:
-            if ok:
-                return
-            log.warning(
-                "LoST-Sync: %s failed (attempt %d) — retrying in %ds",
-                label, attempt, delay,
-            )
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, _SYNC_BACKOFF_CAP)
-
-
-async def _startup_sync() -> None:
-    """Launch independent retry tasks for each startup sync operation.
-
-    Child pulls run concurrently. The AMS Forest Guide push waits for all
-    child pulls to succeed before attempting, fixing the previous race where
-    FG push fired before child coverage was populated.
-    """
-    await asyncio.sleep(1)
-
-    # One event per child entry — set when that child's pull succeeds.
-    child_done_events: list[asyncio.Event] = []
-
-    for child_entry in _sync_children:
-        done = asyncio.Event()
-        child_done_events.append(done)
-
-        async def _child_task(entry=child_entry, event=done) -> None:
-            await _retry_sync_op(
-                f"pull from {entry}",
-                lambda e=entry: _pull_from_child(e),
-            )
-            event.set()
-
-        _background_sync_tasks.append(
-            asyncio.create_task(_child_task(), name=f"lvf-sync-pull-{child_entry}")
-        )
-
-    if not _root_ams and not _forest_guide_mode:
-        sync_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC",    "")
-        sync_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-        if (sync_civic or sync_geodetic) and _parent_uri:
-            _background_sync_tasks.append(
-                asyncio.create_task(
-                    _retry_sync_op("push to parent", _push_coverage_to_parent),
-                    name="lvf-sync-push-parent",
-                )
-            )
-
-    if _root_ams and _root_ams_active:
-        async def _fg_task() -> None:
-            for event in child_done_events:
-                await event.wait()
-            await _retry_sync_op("push to Forest Guide", _push_coverage_to_fg)
-
-        _background_sync_tasks.append(
-            asyncio.create_task(_fg_task(), name="lvf-sync-push-fg")
-        )
-
-
-def _maybe_schedule_repush() -> None:
-    loop = _event_loop
-    if loop is None or not loop.is_running():
-        log.warning("LoST-Sync: no running event loop — cannot schedule re-push after reload")
-        return
-
-    if _root_ams:
-        if _root_ams_active:
-            try:
-                asyncio.run_coroutine_threadsafe(_push_coverage_to_fg(), loop)
-                log.info("AMS: scheduled FG re-push after GIS reload")
-            except Exception as exc:
-                log.warning("AMS: could not schedule FG re-push: %s", exc)
-        return
-
-    sync_source_id_civic    = os.environ.get("LVF_SYNC_SOURCE_ID_CIVIC", "")
-    sync_source_id_geodetic = os.environ.get("LVF_SYNC_SOURCE_ID_GEODETIC", "")
-    if not (sync_source_id_civic or sync_source_id_geodetic) or not _parent_uri or _forest_guide_mode:
-        return
-    try:
-        asyncio.run_coroutine_threadsafe(_push_coverage_to_parent(), loop)
-        log.info("LoST-Sync: scheduled coverage re-push to parent after GIS reload")
-    except Exception as exc:
-        log.warning("LoST-Sync: could not schedule re-push: %s", exc)
-
 
 # ---------------------------------------------------------------------------
 # Programmatic entry point (for test harnesses — bypasses HTTP)
@@ -2826,13 +411,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     Call initialize() once before using this.
     """
     query_id = generate_query_id()
-    timestamp = _ntp_client.get_current_time()
+    timestamp = runtime_state._ntp_client.get_current_time()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             response_id=query_id,
             direction="outgoing",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -2845,16 +430,16 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     def _recurse_outgoing(request_body: bytes) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
             call_id=call_id,
             incident_id=incident_tracking_id,
         ))
-        result = _do_recurse_sync(request_body)
+        result = fed_recursion._do_recurse_sync(request_body)
         emit_log_event(make_response_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -2866,16 +451,16 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     def _recurse_to_uri_outgoing(request_body: bytes, uri: str) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
             call_id=call_id,
             incident_id=incident_tracking_id,
         ))
-        result = _do_recurse_to_uri_sync(request_body, uri)
+        result = fed_recursion._do_recurse_to_uri_sync(request_body, uri)
         emit_log_event(make_response_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -2884,8 +469,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         ))
         return result
 
-    with _reloading_lock:
-        if _reloading:
+    with gis_provisioning._reloading_lock:
+        if gis_provisioning._reloading:
             return _respond(_to_xml_response(
                 LocationValidationUnavailableResponse(
                     message="LVF is reloading GIS data — service will resume automatically"
@@ -2922,7 +507,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     recursive = _parse_recursive(xml_bytes)
 
-    _req_root = etree.fromstring(xml_bytes, _XML_PARSER)
+    _req_root = etree.fromstring(xml_bytes, lost_xml._XML_PARSER)
     call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
     ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
     if call_id or incident_tracking_id:
@@ -2940,11 +525,11 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if req.validate_location != "true":
         return _respond(_to_xml_response(ForbiddenResponse(), status=200).body)
 
-    if _forest_guide_mode:
+    if runtime_state._forest_guide_mode:
         effective_urn, _ = _resolve_service_urn(req.service_urn)
         if effective_urn.lower() != "urn:service:sos":
             return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200).body)
-        child_match = _lookup_child_coverage(
+        child_match = fed_coverage._lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
@@ -2952,7 +537,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
                 ).body)
             log.warning(
                 "Forest Guide: child coverage match found but lost_server is empty "
@@ -2964,8 +549,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             status=200,
         ).body)
 
-    if _child_coverage and _routing_only:
-        child_match = _lookup_child_coverage(
+    if fed_coverage._child_coverage and lifecycle._routing_only:
+        child_match = fed_coverage._lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
@@ -2975,7 +560,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                 if recursive:
                     return _respond(_recurse_to_uri_outgoing(xml_bytes, child_uri))
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
                 ).body)
             log.warning(
                 "LoST-Sync: child coverage match found but lost_server is empty "
@@ -2983,12 +568,12 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                 child_match.get("source", ""),
             )
 
-    if _routing_only:
-        if _parent_uri:
+    if lifecycle._routing_only:
+        if runtime_state._parent_uri:
             if recursive:
                 return _respond(_recurse_outgoing(xml_bytes))
             return _respond(_to_xml_response(
-                RedirectResponse(target=_parent_uri, source=_server_uri), status=200
+                RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri), status=200
             ).body)
         return _respond(_to_xml_response(
             LocationValidationUnavailableResponse(
@@ -2999,13 +584,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
-    now = _ntp_client.get_current_time()
+    now = runtime_state._ntp_client.get_current_time()
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
         now = as_of_raw
         as_of_used = as_of_raw
 
-    g0 = gate0.check(effective_urn, _boundaries, now)
+    g0 = gate0.check(effective_urn, gis_provisioning._boundaries, now)
     if g0 is not None:
         return _respond(_to_xml_response(g0, status=200).body)
 
@@ -3014,12 +599,12 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         return _respond(_to_xml_response(g1, status=200).body)
 
     matched_boundaries = [
-        b for b in _boundaries
+        b for b in gis_provisioning._boundaries
         if b.service_urn.lower() == effective_urn.lower()
         and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes)
-    _ssap_cand, _rcl_cand = _candidates_for(req.civic_address)
+    _ssap_cand, _rcl_cand = gis_provisioning._candidates_for(req.civic_address)
     g2 = gate2.run(req.civic_address, _ssap_cand, _rcl_cand, now)
 
     ooc = _check_ooc_admin(req.civic_address, g2)
@@ -3033,11 +618,11 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         matched_boundaries,
         service_urn=req.service_urn,
         address=req.civic_address,
-        civic_coverage_lookup=lookup_civic_coverage,
-        default_mapping_factory=_build_default_mapping,
+        civic_coverage_lookup=gis_provisioning.lookup_civic_coverage,
+        default_mapping_factory=_default_mapping_factory,
         return_additional_location=ral,
-        server_uri=_server_uri,
-        display_name_lang=_display_name_lang,
+        server_uri=runtime_state._server_uri,
+        display_name_lang=runtime_state._display_name_lang,
     )
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
@@ -3052,13 +637,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     """Async variant of handle_find_service — uses async HTTP for recursion calls."""
     query_id = generate_query_id()
-    timestamp = _ntp_client.get_current_time()
+    timestamp = runtime_state._ntp_client.get_current_time()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             response_id=query_id,
             direction="outgoing",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -3072,16 +657,16 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     async def _recurse_out(request_body: bytes) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
             call_id=call_id,
             incident_id=incident_tracking_id,
         ))
-        result = await _do_recurse_async(request_body)
+        result = await fed_recursion._do_recurse_async(request_body)
         emit_log_event(make_response_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -3093,16 +678,16 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     async def _recurse_to_uri_out(request_body: bytes, uri: str) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
             call_id=call_id,
             incident_id=incident_tracking_id,
         ))
-        result = await _do_recurse_to_uri_async(request_body, uri)
+        result = await fed_recursion._do_recurse_to_uri_async(request_body, uri)
         emit_log_event(make_response_event(
-            timestamp=_ntp_client.get_current_time(),
+            timestamp=runtime_state._ntp_client.get_current_time(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -3111,8 +696,8 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         ))
         return result
 
-    with _reloading_lock:
-        if _reloading:
+    with gis_provisioning._reloading_lock:
+        if gis_provisioning._reloading:
             return _respond(_to_xml_response(
                 LocationValidationUnavailableResponse(
                     message="LVF is busy loading newer GIS data — service will resume automatically"
@@ -3151,7 +736,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 
     recursive = _parse_recursive(xml_bytes)
 
-    _req_root = etree.fromstring(xml_bytes, _XML_PARSER)
+    _req_root = etree.fromstring(xml_bytes, lost_xml._XML_PARSER)
     call_id, incident_tracking_id = _extract_call_incident_ids(_req_root)
     ctx = RequestContext(call_id=call_id, incident_tracking_id=incident_tracking_id)
     if call_id or incident_tracking_id:
@@ -3170,11 +755,11 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     if req.validate_location != "true":
         return _respond(_to_xml_response(ForbiddenResponse(), status=200).body)
 
-    if _forest_guide_mode:
+    if runtime_state._forest_guide_mode:
         effective_urn, _ = _resolve_service_urn(req.service_urn)
         if effective_urn.lower() != "urn:service:sos":
             return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200).body)
-        child_match = _lookup_child_coverage(
+        child_match = fed_coverage._lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
@@ -3182,7 +767,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
                 ).body)
             log.warning(
                 "Forest Guide: child coverage match found but lost_server is empty "
@@ -3196,8 +781,8 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
-    if _child_coverage and _routing_only:
-        child_match = _lookup_child_coverage(
+    if fed_coverage._child_coverage and lifecycle._routing_only:
+        child_match = fed_coverage._lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
         )
@@ -3207,7 +792,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
                 if recursive:
                     return _respond(await _recurse_to_uri_out(xml_bytes, child_uri))
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=_server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
                 ).body)
             log.warning(
                 "LoST-Sync: child coverage match found but lost_server is empty "
@@ -3215,12 +800,12 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
                 child_match.get("source", ""),
             )
 
-    if _routing_only:
-        if _parent_uri:
+    if lifecycle._routing_only:
+        if runtime_state._parent_uri:
             if recursive:
                 return _respond(await _recurse_out(xml_bytes))
             return _respond(_to_xml_response(
-                RedirectResponse(target=_parent_uri, source=_server_uri), status=200
+                RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri), status=200
             ).body)
         return _respond(_to_xml_response(
             LocationValidationUnavailableResponse(
@@ -3229,13 +814,13 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             status=200,
         ).body)
 
-    now = _ntp_client.get_current_time()
+    now = runtime_state._ntp_client.get_current_time()
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
         now = as_of_raw
         as_of_used = as_of_raw
 
-    g0 = gate0.check(effective_urn, _boundaries, now)
+    g0 = gate0.check(effective_urn, gis_provisioning._boundaries, now)
     if g0 is not None:
         return _respond(_to_xml_response(g0, status=200).body)
 
@@ -3244,12 +829,12 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         return _respond(_to_xml_response(g1, status=200).body)
 
     matched_boundaries = [
-        b for b in _boundaries
+        b for b in gis_provisioning._boundaries
         if b.service_urn.lower() == effective_urn.lower()
         and _is_temporally_active(b.effective, b.expires, now)
     ]
     ral = _parse_return_additional_location(xml_bytes)
-    _ssap_cand, _rcl_cand = _candidates_for(req.civic_address)
+    _ssap_cand, _rcl_cand = gis_provisioning._candidates_for(req.civic_address)
     g2 = gate2.run(req.civic_address, _ssap_cand, _rcl_cand, now)
 
     ooc = _check_ooc_admin(req.civic_address, g2)
@@ -3263,11 +848,11 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         matched_boundaries,
         service_urn=req.service_urn,
         address=req.civic_address,
-        civic_coverage_lookup=lookup_civic_coverage,
-        default_mapping_factory=_build_default_mapping,
+        civic_coverage_lookup=gis_provisioning.lookup_civic_coverage,
+        default_mapping_factory=_default_mapping_factory,
         return_additional_location=ral,
-        server_uri=_server_uri,
-        display_name_lang=_display_name_lang,
+        server_uri=runtime_state._server_uri,
+        display_name_lang=runtime_state._display_name_lang,
     )
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
@@ -3283,196 +868,6 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     return _respond(response_bytes)
 
 
-# ---------------------------------------------------------------------------
-# FastAPI lifespan startup (extracted from server._lifespan)
-# ---------------------------------------------------------------------------
-
-def prewarm() -> None:
-    """Build the GIS JSON cache once before workers fork (section 10).
-
-    No-op in Forest Guide mode. Initializes the NTP client if needed, resolves
-    LVF_GPKG_PATH, and loads the GIS data once so the (now-atomic) cache and
-    attribute index exist before multiple workers start — they then hit the warm
-    cache instead of all cold-building the GPKG concurrently.
-    """
-    global _ntp_client
-    if _forest_guide_mode:
-        log.info("Pre-warm skipped (FG mode)")
-        return
-    if _ntp_client is None:
-        _ntp_client = NTPClient()
-    gpkg_path = os.environ.get("LVF_GPKG_PATH")
-    if gpkg_path and os.path.exists(gpkg_path):
-        _load_gis_data(gpkg_path)
-        log.info("Pre-warm complete")
-    else:
-        log.info("Pre-warm skipped (no GeoPackage file present — routing-only mode)")
-
-
-async def lifespan_startup() -> None:
-    """Run startup tasks — call from the FastAPI lifespan context manager."""
-    global _schema, _routing_only, _event_loop, _ntp_client
-    _ntp_client = NTPClient()
-    if _ntp_client.server is not None:
-        log.info(
-            "NTP client configured: server=%s version=%d timeout=%.1fs",
-            _ntp_client.server, _ntp_client.version, _ntp_client.timeout,
-        )
-        _t = _ntp_client.get_current_time()
-        if _ntp_client.is_synchronized:
-            log.info("NTP synchronized: current time %s", _t.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        else:
-            log.warning("NTP sync failed — falling back to system clock for time-sensitive fields")
-    else:
-        log.info("NTP not configured (LVF_NTP_SERVER unset) — using system clock")
-
-    _schema = _load_schema()
-    if _schema is None:
-        log.warning("Operating without XML schema validation")
-
-    _event_loop = asyncio.get_running_loop()
-
-    if _acquire_leadership():
-        log.info("Worker is the LVF leader — will run SIP notifier and startup sync")
-    else:
-        log.info("Worker is a non-leader — another worker runs SIP notifier and startup sync")
-
-    if _forest_guide_mode:
-        log.info(
-            "Forest Guide mode active (LVF_FOREST_GUIDE_MODE=true): "
-            "this node routes requests via redirect or notFound — no GIS validation"
-        )
-        gpkg_env = os.environ.get("LVF_GPKG_PATH")
-        if gpkg_env:
-            log.warning(
-                "LVF_GPKG_PATH=%r is set but ignored in Forest Guide mode — no GIS data will be loaded",
-                gpkg_env,
-            )
-        if os.environ.get("LVF_PARENT_URI"):
-            log.warning(
-                "LVF_PARENT_URI=%r is set but ignored in Forest Guide mode — "
-                "Forest Guides have no parent (RFC 5582 §8)",
-                os.environ["LVF_PARENT_URI"],
-            )
-        _routing_only = True
-        _load_child_coverage()
-        _start_coverage_watcher()
-        if _is_leader:
-            asyncio.create_task(_startup_sync())
-        else:
-            log.info("LoST-Sync: startup sync skipped on non-leader worker")
-        return
-
-    if _parent_uri and "://" not in _parent_uri:
-        _resolve_lost_url(_parent_uri)
-    if _forest_guide_uri and _root_ams and "://" not in _forest_guide_uri:
-        _resolve_lost_url(_forest_guide_uri)
-
-    gpkg_path = os.environ.get("LVF_GPKG_PATH")
-    gpkg_exists = gpkg_path and os.path.exists(gpkg_path)
-
-    if gpkg_exists:
-        if not _default_mapping_source_id:
-            raise RuntimeError(
-                "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
-                "Recommended value: {00000000-0000-0000-0000-000000000000}"
-            )
-        try:
-            _load_gis_data(gpkg_path)
-        except Exception as exc:
-            _metrics.reload_events_total.labels(trigger="startup", outcome="failure").inc()
-            log.error("GIS data load failed from %s: %s", gpkg_path, exc, exc_info=True)
-            raise
-        _metrics.reload_events_total.labels(trigger="startup", outcome="success").inc()
-        _routing_only = False
-        _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
-        _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")
-        poll_interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
-        if poll_interval > 0:
-            threading.Thread(
-                target=_watch_gpkg, args=(gpkg_path,), daemon=True
-            ).start()
-            log.info("GPKG watcher started (poll interval: %ds)", poll_interval)
-    else:
-        _routing_only = True
-        _element_state._notifier.set_state(
-            ElementState.ServiceDisruption,
-            "GIS data unavailable, operating in routing-only mode",
-        )
-        if gpkg_path:
-            log.info(
-                "Routing-only mode: LVF_GPKG_PATH is set but file not found at %s",
-                gpkg_path,
-            )
-        else:
-            log.info("Routing-only mode: LVF_GPKG_PATH is not configured")
-        if not _parent_uri and not _sync_children:
-            log.warning(
-                "Routing-only mode: neither LVF_PARENT_URI nor LVF_SYNC_CHILDREN is configured "
-                "— this node cannot answer or route requests"
-            )
-        elif not _root_ams and not _forest_guide_mode:
-            log.info(
-                "Routing-only mode: this node has no local GIS data and will forward all "
-                "requests upstream; verify LVF_GPKG_PATH if local validation was intended"
-            )
-
-    _load_child_coverage()
-
-    if _root_ams:
-        _load_ams_provisioning()
-    elif os.path.exists(os.path.join(_ams_provisioning_dir(), "ams_civic_coverage.json")):
-        log.debug("AMS provisioning files found but LVF_ROOT_AMS is not set — no behavior change")
-
-    _start_coverage_watcher()
-
-    if _is_leader:
-        asyncio.create_task(_startup_sync())
-    else:
-        log.info("LoST-Sync: startup sync skipped on non-leader worker")
-
-
-async def lifespan_shutdown() -> None:
-    """Run shutdown cleanup — call from the FastAPI lifespan context manager
-    after yield. Cancels the long-running LoST-Sync retry tasks spawned by
-    _startup_sync() (child pulls, parent push, Forest Guide push) so they
-    don't keep the event loop alive past gunicorn's graceful_timeout while
-    retrying an unreachable parent/child/Forest Guide."""
-    tasks = [t for t in _background_sync_tasks if not t.done()]
-    _background_sync_tasks.clear()
-    for t in tasks:
-        t.cancel()
-    for t in tasks:
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            log.warning("LoST-Sync: background sync task raised during shutdown: %s", exc)
-
-
-# ---------------------------------------------------------------------------
-# LoST-Sync HTTP handler (extracted from server.sync_endpoint)
-# ---------------------------------------------------------------------------
-
-async def handle_sync(body: bytes, client) -> Response:
-    """Handle an incoming LoST-Sync request body. Returns a Response directly."""
-    try:
-        root = etree.fromstring(body, _XML_PARSER)
-    except etree.XMLSyntaxError as exc:
-        log.error("Sync request: XML parse failed: %s", exc)
-        return _sync_error_response("badRequest", "Malformed XML.")
-
-    if root.tag == f"{{{_NS_SYNC}}}pushMappings":
-        log.info("LoST-Sync: received pushMappings from %s", client)
-        return await _handle_push_mappings(root)
-    elif root.tag == f"{{{_NS_SYNC}}}getMappingsRequest":
-        log.info("LoST-Sync: received getMappingsRequest from %s", client)
-        return await _handle_get_mappings(root)
-    else:
-        return _sync_error_response(
-            "badRequest",
-            f"Unexpected root element {root.tag!r}; "
-            "expected {urn:ietf:params:xml:ns:lostsync1}pushMappings "
-            "or {urn:ietf:params:xml:ns:lostsync1}getMappingsRequest",
-        )
+# prewarm, _on_gpkg_reload, lifespan_startup, lifespan_shutdown, initialize,
+# _setup_ntp_and_schema, _load_schema, _schema, and _routing_only now live in
+# src.app.lifecycle (see _LIFECYCLE_ATTRS above).
