@@ -319,6 +319,24 @@ async def civic_coverage_explain(
     }
 
 
+def _get_peer_cert(request: Request):
+    """Extract peer certificate from the ASGI connection scope.
+    Works under both uvicorn standalone and gunicorn+UvicornWorker."""
+    # Try uvicorn's ssl_object first (standalone uvicorn)
+    ssl_object = request.scope.get("ssl_object")
+    if ssl_object is not None:
+        return ssl_object.getpeercert()
+    # Fall back to transport (gunicorn + UvicornWorker)
+    transport = getattr(request.scope.get("_transport", None), "_ssl_protocol", None)
+    if transport is None:
+        # Try extensions path used by some uvicorn versions
+        extensions = request.scope.get("extensions", {})
+        tls = extensions.get("tls", {})
+        if tls:
+            return tls.get("peer_cert")
+    return None
+
+
 @app.post("/sync")
 async def sync_endpoint(request: Request) -> Response:
     """
@@ -327,8 +345,7 @@ async def sync_endpoint(request: Request) -> Response:
     Returns HTTP 200 for both success and protocol-level errors.
     """
     if os.environ.get("LVF_TLS_MODE", "disabled").lower() == "mtls":
-        ssl_object = request.scope.get("ssl_object")
-        peer_cert = ssl_object.getpeercert() if ssl_object is not None else None
+        peer_cert = _get_peer_cert(request)
         if not peer_cert:
             return Response(
                 content='{"error": "Client certificate required for /sync endpoint"}',
@@ -350,8 +367,7 @@ async def lost_endpoint(request: Request) -> Response:
     Content-Type: application/lost+xml.
     """
     if os.environ.get("LVF_TLS_MODE", "disabled").lower() == "mtls":
-        ssl_object = request.scope.get("ssl_object")
-        peer_cert = ssl_object.getpeercert() if ssl_object is not None else None
+        peer_cert = _get_peer_cert(request)
         if peer_cert:
             subject = dict(x[0] for x in peer_cert.get("subject", []))
             log.debug("LoST request with client cert: CN=%s", subject.get("commonName", "<unknown>"))
