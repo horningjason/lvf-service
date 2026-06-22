@@ -62,4 +62,7 @@ if _tls_mode in ("tls", "mtls"):
                 f"(got: {_ca!r})"
             )
         ca_certs = _ca
-        cert_reqs = ssl.CERT_OPTIONAL
+        # All endpoints require a valid client certificate in mtls mode,
+        # enforced at the TLS handshake — gunicorn rejects the connection
+        # before it reaches the app.
+        cert_reqs = ssl.CERT_REQUIRED

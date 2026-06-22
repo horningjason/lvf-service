@@ -60,7 +60,9 @@ def main() -> None:
                 )
                 sys.exit(1)
             kwargs["ssl_ca_certs"]  = ca_file
-            kwargs["ssl_cert_reqs"] = ssl.CERT_OPTIONAL
+            # All endpoints require a valid client certificate in mtls mode,
+            # enforced at the TLS handshake.
+            kwargs["ssl_cert_reqs"] = ssl.CERT_REQUIRED
 
     uvicorn.run(**kwargs)
 

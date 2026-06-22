@@ -243,7 +243,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SIP_PORT` | No | `5060` | SIP port for SUBSCRIBE/NOTIFY. Set to `0` to disable the SIP listener entirely |
 | `LVF_SIP_ALLOWED_SUBSCRIBERS` | No | — | Comma-separated SIP URIs permitted to subscribe (e.g. `sip:esrp.example.com`). When unset, all SUBSCRIBE requests are accepted (appropriate for ESInet trust model where network-level access control is assumed) |
 | **TLS** | | | |
-| `LVF_TLS_MODE` | No | `disabled` | Transport mode. `disabled` = HTTP only (default). `tls` = HTTPS with server certificate. `mtls` = HTTPS with mutual TLS; `/sync` requires a valid client certificate, `/lost` accepts but does not require one. |
+| `LVF_TLS_MODE` | No | `disabled` | Transport mode. `disabled` = HTTP only (default). `tls` = HTTPS with server certificate. `mtls` = HTTPS with mutual TLS; all endpoints require a valid client certificate, enforced at the TLS handshake by gunicorn (or uvicorn in single-process dev mode) before the request reaches the app. |
 | `LVF_TLS_CERT_FILE` | No | — | Path to the server certificate PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
 | `LVF_TLS_KEY_FILE` | No | — | Path to the server private key PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
 | `LVF_TLS_CA_FILE` | No | — | Path to the CA certificate bundle PEM file. Used to verify inbound client certificates (server-side mTLS) and outbound peer server certificates on calls to other LVF nodes (sync push/pull, recursion). Required when `LVF_TLS_MODE` is `mtls`. |
