@@ -61,8 +61,11 @@ if _tls_mode in ("tls", "mtls"):
                 f"LVF_TLS_CA_FILE must be set and the file must exist for mtls mode "
                 f"(got: {_ca!r})"
             )
-        ca_certs = _ca
-        # All endpoints require a valid client certificate in mtls mode,
-        # enforced at the TLS handshake — gunicorn rejects the connection
-        # before it reaches the app.
-        cert_reqs = ssl.CERT_REQUIRED
+        ca_certs = _ca  # keep for reference
+        # Build explicit SSL context so UvicornWorker uses CERT_REQUIRED
+        # (UvicornWorker defaults to CERT_NONE if cert_reqs is not honoured)
+        _ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        _ssl_ctx.load_cert_chain(_cert, _key)
+        _ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+        _ssl_ctx.load_verify_locations(_ca)
+        ssl_context = _ssl_ctx
