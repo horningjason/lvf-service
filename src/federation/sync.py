@@ -4,7 +4,7 @@ pushMappings/getMappingsRequest handling, and the push/pull background
 sync loop (startup sync, retry-with-backoff, opportunistic repush after
 GIS reload).
 
-Depends on src.runtime_state, src.provisioning.gis.provisioning,
+Depends on src.runtime_state, src.gis.provisioning,
 src.lost.wire.gml_xml, src.lost.wire.lost_xml, src.federation.recursion, and
 src.federation.coverage. No dependency on src.lost.find_service.
 """
@@ -25,7 +25,7 @@ from src.lost.wire import lost_xml
 from src import runtime_state
 from src.federation import coverage as fed_coverage
 from src.federation import recursion as fed_recursion
-from src.provisioning.gis import provisioning as gis_provisioning
+from src.gis import provisioning as gis_provisioning
 from src.utils import outbound_client_cert, outbound_ssl_context
 
 log = logging.getLogger(__name__)
@@ -439,10 +439,9 @@ def _get_fg_sync_uri() -> str:
 
 
 async def _push_coverage_to_parent() -> bool:
-    with gis_provisioning._reloading_lock:
-        if gis_provisioning._reloading:
-            log.warning("LoST-Sync: skipping push — GIS reload in progress")
-            return False
+    if gis_provisioning.is_reloading():
+        log.warning("LoST-Sync: skipping push — GIS reload in progress")
+        return False
 
     parent_sync_uri = _get_parent_sync_uri()
     if not parent_sync_uri:
@@ -521,10 +520,9 @@ async def _push_coverage_to_fg() -> bool:
     if not fed_coverage._root_ams_active or not runtime_state._forest_guide_uri:
         return False
 
-    with gis_provisioning._reloading_lock:
-        if gis_provisioning._reloading:
-            log.warning("AMS: skipping FG push — GIS reload in progress")
-            return False
+    if gis_provisioning.is_reloading():
+        log.warning("AMS: skipping FG push — GIS reload in progress")
+        return False
 
     fg_sync_uri = _get_fg_sync_uri()
 
@@ -602,10 +600,9 @@ async def _pull_from_child(child_entry: str) -> bool:
     else:
         child_sync_url = child_entry
 
-    with gis_provisioning._reloading_lock:
-        if gis_provisioning._reloading:
-            log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
-            return False
+    if gis_provisioning.is_reloading():
+        log.warning("LoST-Sync: skipping pull from %s — GIS reload in progress", child_sync_url)
+        return False
 
     base = child_sync_url.rstrip("/")
     child_lost_url = (base[: -len("/sync")] if base.endswith("/sync") else base) + "/lost"

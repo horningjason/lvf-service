@@ -18,14 +18,16 @@ from typing import Optional
 from fastapi import FastAPI, Request, Response
 from lxml import etree
 from starlette.middleware.base import BaseHTTPMiddleware
+from i3_fe_core.time.ntp import NtpClient
 
 import src.lost.find_service as _fs
+from src import runtime_state
 from src.lost.find_service import handle_find_service, initialize, _parent_uri, _server_uri, _validate_schema  # noqa: F401 — re-exported for tests
 from src.lost import list_services, list_services_by_location, get_service_boundary, load_shed
+from src.gis import provisioning as gis_provisioning
 from src.observability import metrics
-from src.notifications import element_state as _element_state
-from src.notifications import service_state as _service_state
 from src.validation.models import CivicCoverageEntry
+from src.core_components import build_core_components
 
 _NS_LOST = _fs._NS_LOST
 log = logging.getLogger(__name__)
@@ -78,6 +80,13 @@ async def _lifespan(app: FastAPI):
                     ca_file,
                 )
                 raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CA_FILE")
+
+    ntp_client = NtpClient(servers=app.state.core.settings.ntp_servers)
+    await ntp_client.start()
+    app.state.core.ntp_client = ntp_client
+    runtime_state._ntp_client = ntp_client
+    log.info("NTP client started: is_healthy=%s offset=%s", ntp_client.is_healthy, ntp_client.offset)
+
     await _fs.lifespan_startup()
     _maybe_start_sip()
     load_shed.start_recovery_watcher_if_needed()
@@ -85,8 +94,8 @@ async def _lifespan(app: FastAPI):
 
     # Shutdown — cancel every long-running background asyncio task this
     # lifespan started, so the process exits promptly under gunicorn instead
-    # of idling until graceful_timeout. Daemon threads (_watch_gpkg,
-    # _watch_child_coverage) exit on their own and need no action here.
+    # of idling until graceful_timeout. Daemon threads (the GIS dataset
+    # watcher, _watch_child_coverage) exit on their own and need no action here.
     sip_notifier = getattr(app.state, "sip_notifier", None)
     if sip_notifier is not None:
         try:
@@ -103,6 +112,12 @@ async def _lifespan(app: FastAPI):
         await _fs.lifespan_shutdown()
     except Exception as exc:
         log.warning("Shutdown: LoST-Sync background task cleanup raised: %s", exc)
+
+    if ntp_client is not None:
+        try:
+            await ntp_client.stop()
+        except Exception as exc:
+            log.warning("Shutdown: NTP client stop raised: %s", exc)
 
     log.info("LVF shutdown complete")
 
@@ -122,8 +137,13 @@ def _maybe_start_sip() -> None:
     if sip_port == 0:
         return
     sip_host = os.environ.get("LVF_SIP_HOST", "0.0.0.0").strip()
-    from src.notifications.sip_notifier import SIPNotifier
-    notifier = SIPNotifier(host=sip_host, port=sip_port)
+    from src.notify.sip_notifier import SipWireAdapter
+    notifier = SipWireAdapter(
+        runtime_state.element_notifier,
+        runtime_state.service_notifier,
+        host=sip_host,
+        port=sip_port,
+    )
     # Keep a reference so the notifier is not garbage-collected
     app.state.sip_notifier = notifier
     asyncio.ensure_future(notifier.start())
@@ -159,9 +179,24 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
+app.state.core = build_core_components()          # <-- add
+runtime_state.state_store      = app.state.core.state_store
+runtime_state.element_notifier = app.state.core.element_notifier
+runtime_state.service_notifier = app.state.core.service_notifier
+runtime_state.discrepancy      = app.state.core.discrepancy
+runtime_state.logging_client   = app.state.core.logging_client
 app.add_middleware(LimitBodySize)
 app.add_middleware(MetricsMiddleware)
 app.mount("/metrics", metrics.metrics_app())
+
+if os.environ.get("LVF_ENABLE_DR_SERVICE", "true").strip().lower() == "true":
+    # §3.7 MUST: "Each database, service, and agency MUST provide a
+    # Discrepancy Reporting web service." Mounted as a sub-app (same pattern
+    # as /metrics) since make_discrepancy_routes() returns raw Starlette
+    # Route objects, not FastAPI path operations.
+    from starlette.applications import Starlette
+    from i3_fe_core.discrepancy import make_discrepancy_routes
+    app.mount("/dr", Starlette(routes=make_discrepancy_routes(app.state.core.discrepancy)))
 
 
 @app.get("/health")
@@ -174,8 +209,8 @@ async def health():
         "civic_coverage_entries": len(_fs._civic_coverage),
         "ssap_index_buckets": len(_fs._ssap_index),
         "rcl_index_buckets":  len(_fs._rcl_index),
-        "element_state": _element_state.get_state().value,
-        "service_state": _service_state.get_state().value,
+        "element_state": runtime_state.state_store.get_element_state().state.value,
+        "service_state": runtime_state.state_store.get_service_state().state.value,
     }
 
 
@@ -184,7 +219,7 @@ async def ready(response: Response):
     """Readiness probe (distinct from /health liveness). Load balancers should
     check this: it reports 503 while GIS data is unavailable so traffic is not
     routed to a worker that cannot validate yet."""
-    reloading = _fs._reloading
+    reloading = gis_provisioning.is_reloading()
     ssap_n = len(_fs._ssap)
     rcl_n = len(_fs._rcl)
 

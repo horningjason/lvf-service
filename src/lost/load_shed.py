@@ -25,9 +25,9 @@ import time
 from typing import Optional
 
 import src.lost.find_service as _fs
+from src import runtime_state
 from src.observability import metrics as _metrics
-from src.notifications import service_state as _service_state
-from src.notifications.service_state import ServiceState
+from i3_fe_core.state.store import ServiceState
 
 log = logging.getLogger(__name__)
 
@@ -194,10 +194,10 @@ def _record_shed_for_service_state(reason: str) -> None:
         streak_start = _streak_start
 
     if (
-        _service_state.get_state() != ServiceState.Partial
+        runtime_state.state_store.get_service_state().state != ServiceState.PARTIAL
         and (now - streak_start) >= _SERVICE_STATE_TRIP_SECONDS
     ):
-        _service_state.set_state(ServiceState.Partial, _partial_reason(reason))
+        runtime_state.service_notifier.set_state(ServiceState.PARTIAL, _partial_reason(reason))
 
 
 async def _watch_service_state_recovery() -> None:
@@ -214,12 +214,12 @@ async def _watch_service_state_recovery() -> None:
         if last is None:
             continue
         if (
-            _service_state.get_state() == ServiceState.Partial
+            runtime_state.state_store.get_service_state().state == ServiceState.PARTIAL
             and (time.monotonic() - last) >= _SERVICE_STATE_CLEAR_SECONDS
         ):
             with _streak_lock:
                 _streak_start = None
-            _service_state.set_state(ServiceState.Normal, "Load shedding stopped")
+            runtime_state.service_notifier.set_state(ServiceState.NORMAL, "Load shedding stopped")
 
 
 def start_recovery_watcher_if_needed() -> None:

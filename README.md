@@ -397,43 +397,63 @@ this) — no operator action needed beyond the default in `.env.example`.
 
 ```
 src/                        Application source
-  server.py                 FastAPI thin router — app, lifespan, HTTP endpoints
+  server.py                 FastAPI app — lifespan, HTTP endpoints, core wiring
+  core_components.py        Builds the CoreComponents container from i3-fe-core (NTP, state,
+                            logging, SIP, discrepancy), configured from env
+  runtime_state.py          Process-wide state; mirrors the shared core notifiers + discrepancy
+                            component for deep call sites
   utils.py                  Shared utilities
-  ntp.py                    NTP client — syncs time via ntplib, falls back to system clock
-  metrics.py                Prometheus counters/histograms, multiprocess /metrics ASGI app
+  app/
+    lifecycle.py            Startup/shutdown orchestration (GIS load, sync, background tasks)
+    role.py                 Node-role resolution (leaf / routing-only / Forest Guide / Root AMS)
   lost/                     LoST protocol handlers (RFC 5222)
-    find_service.py         Core LVF logic: GIS loading, gate orchestration,
-                            XML helpers, LoST-Sync, handle_find_service()
-    list_services.py        listServices — returns provisioned URNs, optional child-filter
-    list_services_by_location.py  listServicesByLocation — geodetic-2d and civic profiles
+    find_service.py         Core LVF logic: gate orchestration, handle_find_service()
+    list_services.py        listServices — provisioned URNs, optional child-filter
+    list_services_by_location.py  listServicesByLocation — geodetic-2d and civic
     get_service_boundary.py getServiceBoundary stub (notFound)
-    load_shed.py             Load shedding (§3.11.5) and ServiceState debounce (§3.11.6)
+    load_shed.py            Load shedding (§3.11.5) and ServiceState debounce (§3.11.6)
+    wire/                   LoST/GML XML serialization + response assembly
   validation/               Three-gate algorithm
-    gate0.py                Gate 0 — service URN / boundary check
-    gate1.py                Gate 1 — structural conformance check
-    gate2.py                Gate 2 — progressive filter (SSAP then RCL)
+    gate0.py / gate1.py / gate2.py   Gates 0–2 (URN/boundary, structural, progressive filter)
     response_assembly.py    <mapping> selection and response XML construction
-    models.py               Data models: SSAPRecord, RCLRecord, FilterState, etc.
-  logging_events/           Structured log event types
-    log_events.py           LostQueryLogEvent, LostResponseLogEvent dataclasses
-    logger.py               emit_log_event() helper
-  notifications/            ElementState and ServiceState change notifiers (NENA-STA-010.3.1 §10.12–13)
-  discrepancy/              Discrepancy report generation and submission (NENA-STA-010.3.1 §3.7)
+    models.py               SSAPRecord, RCLRecord, FilterState, etc.
+  federation/               Multi-node coordination
+    sync.py                 LoST-Sync push/pull (RFC 6739)
+    recursion.py            recursive="true" forwarding
+    coverage.py             Child coverage store + routing lookup
+  gis/
+    provisioning.py         GeoPackage loading + coverage lookups
+    records.py              SSAPRecord/RCLRecord row/dict conversion, civicAddress helpers
+  discrepancy/
+    discrepancy_report.py   LVF LoST/GIS problem enums; builds core DiscrepancyReports (§3.7)
+  notify/
+    sip_notifier.py         SipWireAdapter — SIP UDP/TCP wire over core's SipNotifier (§2.4)
+  observability/
+    metrics.py              Prometheus counters/histograms, multiprocess /metrics ASGI app
+  logging/
+    log_events.py           i3 LogEvent types (LostQueryLogEvent, LostResponseLogEvent)
+    logger.py                emit_log_event() helper (§4.12)
 schemas/                    XSD files for XML schema validation
 main.py                     Single-process launcher (dev) — `python main.py`
 prewarm.py                  Builds the GIS cache once before workers fork
 gunicorn.conf.py            Gunicorn config — workers, timeout, TLS (multi-worker launch)
-data/                   GeoPackage data files and runtime state
+data/                       GeoPackage data files and runtime state
   child_lvf_data.gpkg         Sample data — Burleigh, McLean, Mercer, Morton, Oliver counties
   lvf_child_coverage.json     Child coverage store (written at runtime; do not edit manually)
   ams_civic_coverage.json     Root AMS civic coverage declaration (operator-provisioned)
-  ams_geodetic_coverage.json     Root AMS geodetic boundary declaration (operator-provisioned)
-tests/                  Test XML inputs and regression infrastructure
-  regression/
-    golden/             Expected output files (committed)
-    runner.py           Test runner
-    seed.py             Golden file seeder
+  ams_geodetic_coverage.json  Root AMS geodetic boundary declaration (operator-provisioned)
+tests/                      Test XML inputs and regression infrastructure
+  smoke/                      Dev smoke tests against a live instance (dr_smoke.py — DR /dr, sip_smoke.py — SIP SUBSCRIBE)
+  regression/golden/          Expected output files (committed)
+  regression/runner.py        Test runner
+  regression/seed.py          Golden file seeder
 ```
+
+> **Shared core.** Cross-cutting i3 concerns — NTP/timestamps, ElementState/ServiceState,
+> LogEvent logging, SIP SUBSCRIBE/NOTIFY, and Discrepancy Reporting — are **not** in this repo.
+> They come from the pinned **`i3-fe-core`** library (`requirements.txt`) and are wired in via
+> `core_components.py`. LVF keeps its own FastAPI app and all LoST/GIS domain logic. See
+> `CLAUDE.md` → *Architecture — Shared i3 Core* for the full picture.
 
 ---
 

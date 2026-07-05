@@ -1,7 +1,7 @@
 """
 Shared LoST/PIDF-LO XML namespace constants and the safe XML parser config.
 
-Used across src/lost/, src/provisioning/gis/, and src/federation/. No logic belongs
+Used across src/lost/, src/gis/, and src/federation/. No logic belongs
 here, only constants.
 """
 

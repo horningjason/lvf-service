@@ -50,4 +50,7 @@ CLAUDE.md
 
 # References
 references/**/*.pdf
-references/**/*.txtdata/*.cache.json
+references/**/*.txt
+
+# Cache generated at startup
+data/*.cache.json

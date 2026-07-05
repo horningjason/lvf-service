@@ -20,15 +20,15 @@ def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     server supports.  If absent, return all service URNs this server knows.
     """
     import src.lost.find_service as _fs
-    from src.observability.logging_events.logger import emit_log_event, make_query_event, make_response_event
-    from src.observability.logging_events.log_events import generate_query_id
+    from src.logging.logger import emit_log_event, make_query_event, make_response_event
+    from src.logging.log_events import generate_query_id
 
     query_id = generate_query_id()
-    timestamp = _fs._ntp_client.get_current_time()
+    timestamp = _fs.now()
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
-            timestamp=_fs._ntp_client.get_current_time(),
+            timestamp=_fs.now(),
             response_id=query_id,
             direction="outgoing",
             response_adapter=result.decode("utf-8", errors="replace"),

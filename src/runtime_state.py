@@ -31,7 +31,7 @@ if not _src_logger.handlers:
     _src_logger.addHandler(_h)
     _src_logger.propagate = False  # uvicorn's handler lives on "uvicorn", not root — prevent double-logging
 
-from src.ntp import NTPClient
+from i3_fe_core.time.ntp import NtpClient
 
 log = logging.getLogger(__name__)
 
@@ -81,4 +81,20 @@ _SERVER_START_TIME: str = datetime.datetime.now(datetime.timezone.utc).strftime(
 
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
-_ntp_client: Optional[NTPClient] = None
+_ntp_client: Optional[NtpClient] = None
+
+state_store = None
+element_notifier = None
+service_notifier = None
+discrepancy = None
+logging_client = None
+
+
+def now() -> datetime.datetime:
+    """Current UTC time, corrected by the NTP client's measured offset
+    (NENA-STA-010.3f-2021 §4.3.2.4). Falls back to the host clock when no
+    NTP sample is available yet or NTP is unconfigured."""
+    base = datetime.datetime.now(datetime.timezone.utc)
+    if _ntp_client is not None and _ntp_client.offset is not None:
+        base += datetime.timedelta(seconds=_ntp_client.offset)
+    return base

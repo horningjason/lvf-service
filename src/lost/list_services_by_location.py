@@ -28,20 +28,20 @@ async def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     """
     import src.lost.find_service as _fs
     from src.utils import _is_temporally_active
-    from src.observability.logging_events.logger import emit_log_event, make_query_event, make_response_event
-    from src.observability.logging_events.log_events import generate_query_id
+    from src.logging.logger import emit_log_event, make_query_event, make_response_event
+    from src.logging.log_events import generate_query_id
 
     server_uri = _fs._server_uri
     parent_uri = _fs._parent_uri
 
     query_id = generate_query_id()
-    timestamp = _fs._ntp_client.get_current_time()
+    timestamp = _fs.now()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
-            timestamp=_fs._ntp_client.get_current_time(),
+            timestamp=_fs.now(),
             response_id=query_id,
             direction="outgoing",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -55,7 +55,7 @@ async def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     async def _forward_outgoing(body: bytes, target: str) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=_fs._ntp_client.get_current_time(),
+            timestamp=_fs.now(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=body.decode("utf-8", errors="replace"),
@@ -64,7 +64,7 @@ async def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
         ))
         result = await _forward(body, target, server_uri)
         emit_log_event(make_response_event(
-            timestamp=_fs._ntp_client.get_current_time(),
+            timestamp=_fs.now(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -166,7 +166,7 @@ async def handle(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
         return _respond(_list_response([], location_id, server_uri))
 
     # ── GIS mode ─────────────────────────────────────────────────────────────
-    now = _fs._ntp_client.get_current_time()
+    now = _fs.now()
 
     if profile_used == "geodetic-2d":
         found_urns: set[str] = {

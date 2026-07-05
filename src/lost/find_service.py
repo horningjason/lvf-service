@@ -6,7 +6,7 @@ Extracted from server.py so that server.py can be a thin FastAPI router.
 All public symbols needed by tests (handle_find_service, initialize,
 _parent_uri, _server_uri) are defined here and re-exported by server.py.
 
-GIS loading lives in src/provisioning/gis/; recursion, AMS child coverage, and LoST-Sync
+GIS loading lives in src/gis/; recursion, AMS child coverage, and LoST-Sync
 now live in src/federation/. This file's __getattr__ forwards legacy
 find_service.<name> attribute access for those to keep server.py and
 src/lost/list_services*.py working unmodified.
@@ -35,11 +35,11 @@ import datetime
 from fastapi import Response
 from lxml import etree
 
-from src.observability.logging_events.logger import emit_log_event, make_query_event, make_response_event
-from src.observability.logging_events.log_events import generate_query_id
-from src.provisioning.discrepancy.discrepancy_report import file_lost_dr, LoSTProblem, LoSTQuery
-from src.provisioning.gis import provisioning as gis_provisioning
-from src.provisioning.gis import records as gis_records
+from src.logging.logger import emit_log_event, make_query_event, make_response_event
+from src.logging.log_events import generate_query_id
+from src.discrepancy.discrepancy_report import file_lost_dr, LoSTProblem, LoSTQuery
+from src.gis import provisioning as gis_provisioning
+from src.gis import records as gis_records
 from src.federation import recursion as fed_recursion
 from src.federation import coverage as fed_coverage
 from src.federation import sync as fed_sync
@@ -61,22 +61,22 @@ from src.validation.models import (
 
 log = logging.getLogger(__name__)
 
-# GIS data (loaded at startup) now lives in src.provisioning.gis.provisioning. Forward
+# GIS data (loaded at startup) now lives in src.gis.provisioning. Forward
 # find_service.<name> attribute access for these names there, since
 # src/server.py and src/lost/list_services*.py read them that way.
 _GIS_STATE_ATTRS: frozenset[str] = frozenset({
     "_ssap", "_rcl", "_boundaries", "_geodetic_coverage", "_civic_coverage",
-    "_ssap_index", "_rcl_index", "_reloading", "_reloading_lock", "_gis_last_loaded",
+    "_ssap_index", "_rcl_index", "_gis_last_loaded",
 })
 
 # Shared runtime singletons/config now live in src.runtime_state. Forward
 # find_service.<name> attribute access for these there too, since
-# src/server.py, src/lost/list_services*.py, and src/provisioning/discrepancy/
+# src/server.py, src/lost/list_services*.py, and src/discrepancy/
 # discrepancy_report.py all read these as find_service.<name>.
 _RUNTIME_STATE_ATTRS: frozenset[str] = frozenset({
     "_src_logger", "_server_uri", "_display_name_lang", "_parent_uri",
     "_sync_children", "_default_mapping_source_id", "_SERVER_START_TIME",
-    "_event_loop", "_ntp_client", "_forest_guide_mode",
+    "_event_loop", "_ntp_client", "_forest_guide_mode", "now",
 })
 
 # XML namespace constants and the safe XML parser config now live in
@@ -164,8 +164,8 @@ class RequestContext(NamedTuple):
 
 # ---------------------------------------------------------------------------
 # GIS field mapping (CLARK_TO_FIELD, PIDF_PREFIX_NS, SSAP_ATTR,
-# pidf_lo_to_clark) and row/dict conversion are in src.provisioning.gis.records; the GIS
-# data store itself is in src.provisioning.gis.provisioning (see _GIS_STATE_ATTRS above).
+# pidf_lo_to_clark) and row/dict conversion are in src.gis.records; the GIS
+# data store itself is in src.gis.provisioning (see _GIS_STATE_ATTRS above).
 # ---------------------------------------------------------------------------
 
 # Load shedding (spec §3.11.5) — both disabled (0) by default so existing
@@ -218,8 +218,8 @@ def _resolve_service_urn(requested_urn: str) -> tuple[str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# GeoPackage row helpers, attribute index, and _load_gis_data/_watch_gpkg —
-# now in src.provisioning.gis.records / src.provisioning.gis.provisioning.
+# GeoPackage row helpers, attribute index, and dataset load/watch —
+# now in src.gis.records / src.gis.provisioning.
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +233,7 @@ def _default_mapping_factory(service_urn: str) -> MappingElement:
     )
 
 
-# lookup_civic_coverage() now lives in src.provisioning.gis.provisioning.
+# lookup_civic_coverage() now lives in src.gis.provisioning.
 
 # ---------------------------------------------------------------------------
 # XML parsing
@@ -411,13 +411,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     Call initialize() once before using this.
     """
     query_id = generate_query_id()
-    timestamp = runtime_state._ntp_client.get_current_time()
+    timestamp = runtime_state.now()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             response_id=query_id,
             direction="outgoing",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -430,7 +430,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     def _recurse_outgoing(request_body: bytes) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
@@ -439,7 +439,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         ))
         result = fed_recursion._do_recurse_sync(request_body)
         emit_log_event(make_response_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -451,7 +451,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     def _recurse_to_uri_outgoing(request_body: bytes, uri: str) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
@@ -460,7 +460,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         ))
         result = fed_recursion._do_recurse_to_uri_sync(request_body, uri)
         emit_log_event(make_response_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -469,14 +469,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         ))
         return result
 
-    with gis_provisioning._reloading_lock:
-        if gis_provisioning._reloading:
-            return _respond(_to_xml_response(
-                LocationValidationUnavailableResponse(
-                    message="LVF is reloading GIS data — service will resume automatically"
-                ),
-                status=200,
-            ).body)
+    if gis_provisioning.is_reloading():
+        return _respond(_to_xml_response(
+            LocationValidationUnavailableResponse(
+                message="LVF is reloading GIS data — service will resume automatically"
+            ),
+            status=200,
+        ).body)
 
     schema_error = _validate_schema(xml_bytes)
     if schema_error is not None:
@@ -584,7 +583,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
 
-    now = runtime_state._ntp_client.get_current_time()
+    now = runtime_state.now()
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
         now = as_of_raw
@@ -637,13 +636,13 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str] = None) -> bytes:
     """Async variant of handle_find_service — uses async HTTP for recursion calls."""
     query_id = generate_query_id()
-    timestamp = runtime_state._ntp_client.get_current_time()
+    timestamp = runtime_state.now()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             response_id=query_id,
             direction="outgoing",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -657,7 +656,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     async def _recurse_out(request_body: bytes) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
@@ -666,7 +665,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         ))
         result = await fed_recursion._do_recurse_async(request_body)
         emit_log_event(make_response_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -678,7 +677,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     async def _recurse_to_uri_out(request_body: bytes, uri: str) -> bytes:
         out_qid = generate_query_id()
         emit_log_event(make_query_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             query_id=out_qid,
             direction="outgoing",
             query_adapter=request_body.decode("utf-8", errors="replace"),
@@ -687,7 +686,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         ))
         result = await fed_recursion._do_recurse_to_uri_async(request_body, uri)
         emit_log_event(make_response_event(
-            timestamp=runtime_state._ntp_client.get_current_time(),
+            timestamp=runtime_state.now(),
             response_id=out_qid,
             direction="incoming",
             response_adapter=result.decode("utf-8", errors="replace"),
@@ -696,14 +695,13 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         ))
         return result
 
-    with gis_provisioning._reloading_lock:
-        if gis_provisioning._reloading:
-            return _respond(_to_xml_response(
-                LocationValidationUnavailableResponse(
-                    message="LVF is busy loading newer GIS data — service will resume automatically"
-                ),
-                status=200,
-            ).body)
+    if gis_provisioning.is_reloading():
+        return _respond(_to_xml_response(
+            LocationValidationUnavailableResponse(
+                message="LVF is busy loading newer GIS data — service will resume automatically"
+            ),
+            status=200,
+        ).body)
 
     schema_error = _validate_schema(xml_bytes)
     if schema_error is not None:
@@ -814,7 +812,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             status=200,
         ).body)
 
-    now = runtime_state._ntp_client.get_current_time()
+    now = runtime_state.now()
     as_of_used: Optional[datetime.datetime] = None
     if as_of_raw is not None and as_of_raw > now:
         now = as_of_raw

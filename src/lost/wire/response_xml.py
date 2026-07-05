@@ -15,7 +15,7 @@ from lxml import etree
 
 from src.lost.wire import lost_xml
 from src import runtime_state
-from src.provisioning.gis import records as gis_records
+from src.gis import records as gis_records
 from src.validation.models import ELEMENT_HIERARCHY
 
 _RESPONSE_NSMAP: dict = {
@@ -31,7 +31,7 @@ def _mapping_element(parent: etree._Element, mapping, force_no_cache: bool = Fal
     m = etree.SubElement(parent, f"{{{lost_xml._NS_LOST}}}mapping")
     m.set("expires",     "NO-CACHE" if force_no_cache else (mapping.expires or "NO-EXPIRATION"))
     m.set("lastUpdated", mapping.last_updated or
-          runtime_state._ntp_client.get_current_time().strftime("%Y-%m-%dT%H:%M:%SZ"))
+          runtime_state.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
     m.set("source",   mapping.source or runtime_state._server_uri)
     m.set("sourceId", mapping.source_id or "unknown")
 

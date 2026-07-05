@@ -3,8 +3,8 @@ GIS row conversion, PIDF-LO <-> GIS field mapping, and JSON cache
 (de)serialization helpers.
 
 Extracted from src/lost/find_service.py as part of the GIS-code extraction
-into src/provisioning/gis/. Public API (no leading underscore) — used by
-src/provisioning/gis/provisioning.py and src/lost/find_service.py.
+into src/gis/. Public API (no leading underscore) — used by
+src/gis/provisioning.py and src/lost/find_service.py.
 """
 
 from __future__ import annotations

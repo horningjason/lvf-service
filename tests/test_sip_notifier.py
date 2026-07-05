@@ -1,11 +1,18 @@
-"""Tests for SIPNotifier SUBSCRIBE/NOTIFY handling."""
+"""Tests for SipWireAdapter — the sipmessage wire layer around
+i3_fe_core.notify.SipNotifier.
+
+Subscription registry, expiry, the rate-filter/watchdog, event-package
+validation, and the SUBSCRIBE accept/reject decision are core's
+responsibility and are covered by i3-fe-core's own test suite. These tests
+exercise only what the wire adapter itself owns: SIP parsing/serialization,
+the To-tag/WireContext bookkeeping, and NOTIFY transmission.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import time
 from typing import List
 from unittest.mock import patch
 
@@ -13,20 +20,43 @@ import pytest
 
 from sipmessage import Message, Request, Response
 
-from src.notifications.sip_notifier import (
-    SIPNotifier,
-    _Subscription,
-    _EVENT_ELEMENT,
-    _EVENT_SERVICE,
-    _CT_ELEMENT,
-    _CT_SERVICE,
+from i3_fe_core.config.identity import ElementIdentity
+from i3_fe_core.state.store import ElementState, InProcessStateStore, ServiceState
+from i3_fe_core.state.element_state import (
+    EVENT_PACKAGE_NAME as EVENT_ELEMENT,
+    ElementStateNotifier,
 )
+from i3_fe_core.state.service_state import EVENT_PACKAGE_NAME as EVENT_SERVICE, ServiceStateNotifier
+
+from src.notify.sip_notifier import SipWireAdapter
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Fixtures / helpers ──────────────────────────────────────────────────────
+
+def _make_notifiers():
+    identity = ElementIdentity(element_id="lvf.example.com", agency_id="example.com", service_name="LVF")
+    store = InProcessStateStore()
+    element_notifier = ElementStateNotifier(identity, store, min_notify_interval=0.0)
+    service_notifier = ServiceStateNotifier(
+        service="lvf.example.com",
+        name="LVF",
+        domain="lvf.example.com",
+        service_id="lvf.example.com",
+        store=store,
+        min_notify_interval=0.0,
+        supports_security_posture=False,
+    )
+    return element_notifier, service_notifier
+
+
+def _make_adapter() -> SipWireAdapter:
+    """Create a SipWireAdapter without binding any sockets."""
+    element_notifier, service_notifier = _make_notifiers()
+    return SipWireAdapter(element_notifier, service_notifier, host="127.0.0.1", port=15060)
+
 
 def _make_subscribe(
-    event: str = _EVENT_ELEMENT,
+    event: str = EVENT_ELEMENT,
     expires: int = 3600,
     from_uri: str = "sip:esrp@192.168.1.1",
     to_uri: str = "sip:lvf.example.com",
@@ -48,136 +78,53 @@ def _make_subscribe(
     ).encode()
 
 
-def _make_notifier() -> SIPNotifier:
-    """Create a SIPNotifier without binding any sockets."""
-    return SIPNotifier(host="127.0.0.1", port=15060)
-
-
-def _inject_sub(
-    notifier: SIPNotifier,
-    call_id: str = "injected@host",
-    event_type: str = _EVENT_ELEMENT,
-    expires_in: float = 3600,
-    last_notified: float = 0.0,
-    min_interval: float = 0.0,
-) -> _Subscription:
-    sub = _Subscription(
-        call_id=call_id,
-        from_addr="<sip:esrp@192.168.1.1>;tag=sub-tag",
-        to_addr_with_tag="<sip:lvf.example.com>;tag=server-tag",
-        contact_uri="sip:esrp@192.168.1.1:5060",
-        event_type=event_type,
-        expires_at=time.monotonic() + expires_in,
-        min_interval=min_interval,
-        last_notified=last_notified,
-        notify_cseq=1,
-        transport="UDP",
-        remote_host="192.168.1.1",
-        remote_port=5060,
-    )
-    notifier._subscriptions[call_id] = sub
-    return sub
+async def _send(adapter: SipWireAdapter, data: bytes, send_fn=lambda _: None) -> None:
+    await adapter._handle_message(data, ("192.168.1.1", 5060), send_fn, "UDP")
+    await asyncio.sleep(0)
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 class TestSubscribeHandling:
     def test_subscribe_accepted_returns_200(self):
-        """Valid SUBSCRIBE returns 200 OK."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         responses: List[bytes] = []
 
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
-
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(),
-                ("192.168.1.1", 5060),
-                responses.append,
-                "UDP",
-            )
-
-        asyncio.run(run())
+        asyncio.run(_send(adapter, _make_subscribe(), responses.append))
 
         assert responses, "Expected a response"
         resp = Message.parse(responses[0])
         assert isinstance(resp, Response)
         assert resp.code == 200
 
-    def test_subscribe_creates_subscription(self):
-        """Successful SUBSCRIBE stores a subscription entry."""
-        notifier = _make_notifier()
-
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
-
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(call_id="create-test@host"),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-
-        asyncio.run(run())
-
-        assert "create-test@host" in notifier._subscriptions
-        sub = notifier._subscriptions["create-test@host"]
-        assert sub.event_type == _EVENT_ELEMENT
-
     def test_subscribe_immediate_notify_sent(self):
-        """Immediate NOTIFY with current state is sent after successful SUBSCRIBE."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
+        adapter._transmit = mock_transmit
 
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
+        asyncio.run(_send(adapter, _make_subscribe()))
 
         assert notifies, "Expected an immediate NOTIFY"
         notify = Message.parse(notifies[0])
         assert isinstance(notify, Request)
         assert notify.method == "NOTIFY"
-        assert notify.headers.get("Event") == _EVENT_ELEMENT
+        assert notify.headers.get("Event") == EVENT_ELEMENT
         assert notify.headers.get("Subscription-State", "").startswith("active")
 
     def test_subscribe_notify_body_is_valid_json(self):
-        """Immediate NOTIFY body is valid JSON with state fields."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
+        adapter._transmit = mock_transmit
 
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
+        asyncio.run(_send(adapter, _make_subscribe()))
 
         assert notifies
         notify = Message.parse(notifies[0])
@@ -186,136 +133,99 @@ class TestSubscribeHandling:
         assert "state" in payload
 
     def test_subscribe_to_tag_added_in_200(self):
-        """200 OK for SUBSCRIBE includes a To tag."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         responses: List[bytes] = []
 
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
-
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(),
-                ("192.168.1.1", 5060),
-                responses.append,
-                "UDP",
-            )
-
-        asyncio.run(run())
+        asyncio.run(_send(adapter, _make_subscribe(), responses.append))
 
         resp = Message.parse(responses[0])
         assert resp.to_address is not None
         assert resp.to_address.parameters.get("tag") is not None, "To tag must be present in 200 OK"
 
     def test_subscribe_service_state_event(self):
-        """ServiceState SUBSCRIBE is accepted and NOTIFY has correct content-type."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
+        adapter._transmit = mock_transmit
 
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(event=_EVENT_SERVICE),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
+        asyncio.run(_send(adapter, _make_subscribe(event=EVENT_SERVICE)))
 
         assert notifies
         notify = Message.parse(notifies[0])
-        assert notify.headers.get("Event") == _EVENT_SERVICE
+        assert notify.headers.get("Event") == EVENT_SERVICE
         ct = str(notify.content_type) if notify.content_type else ""
         assert "ServiceState" in ct
 
-    def test_resubscribe_updates_expiry(self):
-        """Re-SUBSCRIBE with same Call-ID refreshes expiry without creating duplicate."""
-        notifier = _make_notifier()
-
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
+    def test_resubscribe_reuses_to_tag(self):
+        """Re-SUBSCRIBE with the same Call-ID keeps the previously assigned To tag."""
+        adapter = _make_adapter()
+        responses: List[bytes] = []
 
         async def run():
-            # First subscribe
-            await notifier._handle_message(
-                _make_subscribe(call_id="resub@host"),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            # Re-subscribe
-            await notifier._handle_message(
-                _make_subscribe(expires=7200, call_id="resub@host"),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
+            await _send(adapter, _make_subscribe(call_id="resub@host"), responses.append)
+            await _send(adapter, _make_subscribe(expires=7200, call_id="resub@host"), responses.append)
 
         asyncio.run(run())
 
-        assert len(notifier._subscriptions) == 1
-        sub = notifier._subscriptions["resub@host"]
-        # expires_at should reflect the longer 7200s value
-        assert sub.expires_at > time.monotonic() + 6000
+        assert len(responses) == 2
+        tag1 = Message.parse(responses[0]).to_address.parameters.get("tag")
+        tag2 = Message.parse(responses[1]).to_address.parameters.get("tag")
+        assert tag1 == tag2
+
+    def test_interval_too_brief_returns_423_with_min_expires(self):
+        adapter = _make_adapter()
+        responses: List[bytes] = []
+
+        asyncio.run(_send(adapter, _make_subscribe(expires=5), responses.append))
+
+        assert responses
+        resp = Message.parse(responses[0])
+        assert resp.code == 423
+        assert resp.headers.get("Min-Expires") is not None
+
+    def test_bad_event_returns_489(self):
+        adapter = _make_adapter()
+        responses: List[bytes] = []
+
+        asyncio.run(_send(adapter, _make_subscribe(event="unknown-package"), responses.append))
+
+        assert responses
+        resp = Message.parse(responses[0])
+        assert resp.code == 489
 
 
 class TestSubscribeAccessControl:
-    def test_unauthorized_from_returns_603(self):
-        """SUBSCRIBE from non-allowed URI returns 603 Decline."""
-        notifier = _make_notifier()
+    def test_unauthorized_subscriber_returns_403(self):
+        adapter = _make_adapter()
         responses: List[bytes] = []
 
         async def run():
             with patch.dict(
                 os.environ,
-                {"LVF_SIP_ALLOWED_SUBSCRIBERS": "sip:allowed@example.com"},
+                {"LVF_SIP_ALLOWED_SUBSCRIBERS": "sip:allowed@example.com:5060"},
             ):
-                await notifier._handle_message(
-                    _make_subscribe(from_uri="sip:rejected@192.168.1.1"),
-                    ("192.168.1.1", 5060),
-                    responses.append,
-                    "UDP",
-                )
+                await _send(adapter, _make_subscribe(contact="sip:rejected@192.168.1.1:5060"), responses.append)
 
         asyncio.run(run())
 
         assert responses
         resp = Message.parse(responses[0])
         assert isinstance(resp, Response)
-        assert resp.code == 603
+        assert resp.code == 403
 
-    def test_authorized_from_returns_200(self):
-        """SUBSCRIBE from an allowed URI returns 200 OK."""
-        notifier = _make_notifier()
+    def test_authorized_subscriber_returns_200(self):
+        adapter = _make_adapter()
         responses: List[bytes] = []
-
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
 
         async def run():
             with patch.dict(
                 os.environ,
-                {"LVF_SIP_ALLOWED_SUBSCRIBERS": "sip:esrp@192.168.1.1"},
+                {"LVF_SIP_ALLOWED_SUBSCRIBERS": "sip:esrp@192.168.1.1:5060"},
             ):
-                await notifier._handle_message(
-                    _make_subscribe(from_uri="sip:esrp@192.168.1.1"),
-                    ("192.168.1.1", 5060),
-                    responses.append,
-                    "UDP",
-                )
+                await _send(adapter, _make_subscribe(contact="sip:esrp@192.168.1.1:5060"), responses.append)
 
         asyncio.run(run())
 
@@ -324,24 +234,13 @@ class TestSubscribeAccessControl:
         assert resp.code == 200
 
     def test_no_allowed_list_accepts_all(self):
-        """When LVF_SIP_ALLOWED_SUBSCRIBERS is unset, all SUBSCRIBE requests are accepted."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         responses: List[bytes] = []
-
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
         env = {k: v for k, v in os.environ.items() if k != "LVF_SIP_ALLOWED_SUBSCRIBERS"}
 
         async def run():
             with patch.dict(os.environ, env, clear=True):
-                await notifier._handle_message(
-                    _make_subscribe(from_uri="sip:anyone@anywhere.example"),
-                    ("192.168.1.1", 5060),
-                    responses.append,
-                    "UDP",
-                )
+                await _send(adapter, _make_subscribe(contact="sip:anyone@anywhere.example"), responses.append)
 
         asyncio.run(run())
 
@@ -351,69 +250,35 @@ class TestSubscribeAccessControl:
 
 
 class TestUnsubscribe:
-    def test_expires_0_removes_subscription(self):
-        """SUBSCRIBE with Expires: 0 removes the subscription and returns 200."""
-        notifier = _make_notifier()
-        notifies: List[bytes] = []
+    def test_expires_0_removes_wire_context_and_returns_200(self):
+        adapter = _make_adapter()
         unsub_responses: List[bytes] = []
 
-        async def mock_transmit(data, sub):
-            notifies.append(data)
-
-        notifier._transmit = mock_transmit
-
         async def run():
-            await notifier._handle_message(
-                _make_subscribe(call_id="unsub@host"),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
-
-            await notifier._handle_message(
-                _make_subscribe(expires=0, call_id="unsub@host"),
-                ("192.168.1.1", 5060),
-                unsub_responses.append,
-                "UDP",
-            )
-            await asyncio.sleep(0)
+            await _send(adapter, _make_subscribe(call_id="unsub@host"))
+            await _send(adapter, _make_subscribe(expires=0, call_id="unsub@host"), unsub_responses.append)
 
         asyncio.run(run())
 
-        assert "unsub@host" not in notifier._subscriptions, "Subscription must be removed"
+        assert "unsub@host" not in adapter._wire, "Wire context must be removed"
         assert unsub_responses
         resp = Message.parse(unsub_responses[0])
         assert resp.code == 200
         assert resp.expires == 0
 
     def test_expires_0_sends_terminated_notify(self):
-        """Unsubscribe triggers a final NOTIFY with Subscription-State: terminated."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
+        adapter._transmit = mock_transmit
 
         async def run():
-            await notifier._handle_message(
-                _make_subscribe(call_id="term@host"),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
+            await _send(adapter, _make_subscribe(call_id="term@host"))
             notifies.clear()  # discard initial NOTIFY
-
-            await notifier._handle_message(
-                _make_subscribe(expires=0, call_id="term@host"),
-                ("192.168.1.1", 5060),
-                lambda _: None,
-                "UDP",
-            )
-            await asyncio.sleep(0)
+            await _send(adapter, _make_subscribe(expires=0, call_id="term@host"))
 
         asyncio.run(run())
 
@@ -423,221 +288,71 @@ class TestUnsubscribe:
         ]
         assert terminated, "Expected a terminated NOTIFY after unsubscribe"
 
-    def test_expires_0_unknown_call_id_returns_481(self):
-        """Unsubscribe for an unknown Call-ID returns 481 Subscription Does Not Exist."""
-        notifier = _make_notifier()
-        responses: List[bytes] = []
-
-        async def run():
-            await notifier._handle_message(
-                _make_subscribe(expires=0, call_id="unknown@host"),
-                ("192.168.1.1", 5060),
-                responses.append,
-                "UDP",
-            )
-
-        asyncio.run(run())
-
-        assert responses
-        resp = Message.parse(responses[0])
-        assert resp.code == 481
-
 
 class TestNotifyOnStateChange:
     def test_element_state_change_triggers_notify(self):
-        """State change fires NOTIFY to active element-state subscribers."""
-        notifier = _make_notifier()
+        """The wire adapter floors min_notify_interval at 1.0s (decision 5), so
+        the watchdog/coalescing timer — not an immediate send — delivers this
+        NOTIFY; the initial subscribe NOTIFY already consumed the rate window."""
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
-        _inject_sub(notifier, event_type=_EVENT_ELEMENT)
-
-        body = {"elementId": "test.lvf.example", "state": "ServiceDisruption", "reason": "test"}
+        adapter._transmit = mock_transmit
 
         async def run():
-            await notifier._on_element_state_change(body)
-            await asyncio.sleep(0)
+            await _send(adapter, _make_subscribe(event=EVENT_ELEMENT, call_id="elem@host"))
+            notifies.clear()
+            adapter._element_notifier.set_state(ElementState.SERVICE_DISRUPTION, "test")
+            await asyncio.sleep(1.1)
 
         asyncio.run(run())
 
         assert notifies, "Expected NOTIFY after state change"
         notify = Message.parse(notifies[0])
-        assert notify.method == "NOTIFY"
         payload = json.loads(notify.body)
         assert payload["state"] == "ServiceDisruption"
 
     def test_service_state_change_triggers_notify(self):
-        """ServiceState change fires NOTIFY to service-state subscribers."""
-        notifier = _make_notifier()
+        """See test_element_state_change_triggers_notify: the 1.0s min-interval
+        floor means this NOTIFY comes from the watchdog timer, not immediately."""
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
-        _inject_sub(notifier, event_type=_EVENT_SERVICE, call_id="svc@host")
-
-        body = {
-            "service": "LVF",
-            "name": "LVF",
-            "serviceId": "test.lvf.example",
-            "serviceState": {"state": "Down", "reason": "maintenance"},
-        }
+        adapter._transmit = mock_transmit
 
         async def run():
-            await notifier._on_service_state_change(body)
-            await asyncio.sleep(0)
+            await _send(adapter, _make_subscribe(event=EVENT_SERVICE, call_id="svc@host"))
+            notifies.clear()
+            adapter._service_notifier.set_state(ServiceState.OVERLOADED, "maintenance")
+            await asyncio.sleep(1.1)
 
         asyncio.run(run())
 
         assert notifies
         payload = json.loads(Message.parse(notifies[0]).body)
-        assert payload["serviceState"]["state"] == "Down"
+        assert payload["serviceState"]["state"] == "Overloaded"
 
     def test_element_change_does_not_notify_service_subscribers(self):
-        """Element-state change does not notify service-state subscribers."""
-        notifier = _make_notifier()
+        adapter = _make_adapter()
         notifies: List[bytes] = []
 
-        async def mock_transmit(data, sub):
+        async def mock_transmit(data, ctx):
             notifies.append(data)
 
-        notifier._transmit = mock_transmit
-        _inject_sub(notifier, event_type=_EVENT_SERVICE, call_id="svc-only@host")
-
-        body = {"elementId": "test", "state": "Down", "reason": ""}
+        adapter._transmit = mock_transmit
 
         async def run():
-            await notifier._on_element_state_change(body)
+            await _send(adapter, _make_subscribe(event=EVENT_SERVICE, call_id="svc-only@host"))
+            notifies.clear()
+            adapter._element_notifier.set_state(ElementState.SERVICE_DISRUPTION, "test")
             await asyncio.sleep(0)
 
         asyncio.run(run())
 
         assert not notifies, "Service-state subscriber must not receive element-state NOTIFY"
-
-
-class TestExpiredSubscriptions:
-    def test_expired_subscription_not_notified(self):
-        """Expired subscriptions do not receive NOTIFY."""
-        notifier = _make_notifier()
-        notifies: List[bytes] = []
-
-        async def mock_transmit(data, sub):
-            notifies.append(data)
-
-        notifier._transmit = mock_transmit
-        _inject_sub(notifier, call_id="expired@host", expires_in=-10)  # already expired
-
-        body = {"elementId": "test", "state": "Down", "reason": ""}
-
-        async def run():
-            await notifier._on_element_state_change(body)
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
-
-        assert not notifies, "Expired subscription must not be notified"
-
-    def test_cleanup_removes_expired_subscriptions(self):
-        """Background cleanup removes subscriptions past their expiry."""
-        notifier = _make_notifier()
-        _inject_sub(notifier, call_id="will-expire@host", expires_in=-1)
-        _inject_sub(notifier, call_id="still-active@host", expires_in=3600)
-
-        async def run():
-            now = time.monotonic()
-            expired = [k for k, v in notifier._subscriptions.items() if now >= v.expires_at]
-            for k in expired:
-                del notifier._subscriptions[k]
-
-        asyncio.run(run())
-
-        assert "will-expire@host" not in notifier._subscriptions
-        assert "still-active@host" in notifier._subscriptions
-
-
-class TestRFC6446MinInterval:
-    def test_second_notify_within_min_interval_deferred(self):
-        """State change within subscriber min_interval is deferred, not dropped."""
-        notifier = _make_notifier()
-        notifies: List[bytes] = []
-
-        async def mock_transmit(data, sub):
-            notifies.append(data)
-
-        notifier._transmit = mock_transmit
-        sub = _inject_sub(
-            notifier,
-            call_id="rate-limited@host",
-            min_interval=5.0,
-            last_notified=time.monotonic(),  # just notified
-        )
-
-        body = {"elementId": "test", "state": "ServiceDisruption", "reason": "test"}
-
-        async def run():
-            await notifier._on_element_state_change(body)
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
-
-        assert not notifies, "Should not send NOTIFY within min_interval"
-        assert sub.pending_notify is True, "Deferred NOTIFY should be scheduled"
-
-    def test_notify_sent_when_interval_has_elapsed(self):
-        """State change after min_interval has elapsed sends NOTIFY immediately."""
-        notifier = _make_notifier()
-        notifies: List[bytes] = []
-
-        async def mock_transmit(data, sub):
-            notifies.append(data)
-
-        notifier._transmit = mock_transmit
-        _inject_sub(
-            notifier,
-            call_id="not-rate-limited@host",
-            min_interval=2.0,
-            last_notified=time.monotonic() - 10.0,  # well past the interval
-        )
-
-        body = {"elementId": "test", "state": "Overloaded", "reason": "test"}
-
-        async def run():
-            await notifier._on_element_state_change(body)
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
-
-        assert notifies, "NOTIFY should be sent when interval has elapsed"
-        payload = json.loads(Message.parse(notifies[0]).body)
-        assert payload["state"] == "Overloaded"
-
-    def test_no_duplicate_pending_scheduled(self):
-        """Two rapid state changes schedule only one deferred NOTIFY."""
-        notifier = _make_notifier()
-
-        async def mock_transmit(data, sub):
-            pass
-
-        notifier._transmit = mock_transmit
-        sub = _inject_sub(
-            notifier,
-            call_id="double-fire@host",
-            min_interval=5.0,
-            last_notified=time.monotonic(),
-        )
-
-        body = {"elementId": "test", "state": "Down", "reason": ""}
-
-        async def run():
-            await notifier._on_element_state_change(body)
-            await notifier._on_element_state_change(body)
-            await asyncio.sleep(0)
-
-        asyncio.run(run())
-
-        assert sub.pending_notify is True
-        # Only one deferred scheduled — verified by pending_notify still True (not reset)

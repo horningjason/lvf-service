@@ -25,14 +25,11 @@ from lxml import etree
 
 from src import runtime_state
 from src.observability import metrics as _metrics
-from src.notifications import element_state as _element_state
-from src.notifications import service_state as _service_state
-from src.notifications.element_state import ElementState
-from src.notifications.service_state import ServiceState
-from src.ntp import NTPClient
+from i3_fe_core.state.store import ElementState, ServiceState
 from src.app import role as role_mod
 from src.app.role import NodeRole
-from src.provisioning.gis import provisioning as gis_provisioning
+from src.discrepancy.discrepancy_report import GISProblem, ProblemSeverity, file_gis_dr
+from src.gis import provisioning as gis_provisioning
 from src.federation import recursion as fed_recursion
 from src.federation import coverage as fed_coverage
 from src.federation import sync as fed_sync
@@ -61,23 +58,10 @@ def _load_schema() -> Optional[etree.XMLSchema]:
 
 
 def _setup_ntp_and_schema() -> None:
-    """Initialize the NTP client and load the XML schema. Shared by
-    initialize() and lifespan_startup() — was duplicated verbatim in both."""
+    """Load the XML schema. Shared by initialize() and lifespan_startup() —
+    was duplicated verbatim in both. NTP client setup now lives in
+    src.server._lifespan() (the core NtpClient requires an async start())."""
     global _schema
-    runtime_state._ntp_client = NTPClient()
-    if runtime_state._ntp_client.server is not None:
-        log.info(
-            "NTP client configured: server=%s version=%d timeout=%.1fs",
-            runtime_state._ntp_client.server, runtime_state._ntp_client.version, runtime_state._ntp_client.timeout,
-        )
-        _t = runtime_state._ntp_client.get_current_time()
-        if runtime_state._ntp_client.is_synchronized:
-            log.info("NTP synchronized: current time %s", _t.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        else:
-            log.warning("NTP sync failed — falling back to system clock for time-sensitive fields")
-    else:
-        log.info("NTP not configured (LVF_NTP_SERVER unset) — using system clock")
-
     _schema = _load_schema()
     if _schema is None:
         log.warning("Operating without XML schema validation")
@@ -127,7 +111,7 @@ def initialize(gpkg_path: str | None = None) -> None:
                 "LVF_DEFAULT_MAPPING_SOURCE_ID is required but not set. "
                 "Recommended value: {00000000-0000-0000-0000-000000000000}"
             )
-        gis_provisioning.load(path, runtime_state._ntp_client.get_current_time())
+        gis_provisioning.load(path, runtime_state.now())
         _routing_only = False
     else:
         _routing_only = True
@@ -151,24 +135,46 @@ def prewarm() -> None:
     attribute index exist before multiple workers start — they then hit the warm
     cache instead of all cold-building the GPKG concurrently.
     """
-    if runtime_state._ntp_client is None:
-        runtime_state._ntp_client = NTPClient()
     gpkg_path = os.environ.get("LVF_GPKG_PATH")
     if gpkg_path and os.path.exists(gpkg_path):
-        gis_provisioning.load(gpkg_path, runtime_state._ntp_client.get_current_time())
+        gis_provisioning.load(gpkg_path, runtime_state.now())
         log.info("Pre-warm complete")
     else:
         log.info("Pre-warm skipped (no GeoPackage file present — routing-only mode)")
 
 
-def _on_gpkg_reload() -> None:
-    """on_reload callback passed to gis_provisioning._watch_gpkg() — runs the
-    AMS/repush follow-up that used to live inline in _watch_gpkg's success
-    path. GIS code only signals "a reload happened"; this decides what that
-    means for AMS provisioning and LoST-Sync repush scheduling."""
+def _on_gpkg_reload_success() -> None:
+    """on_success callback passed to gis_provisioning.watch() — restores
+    Normal state, records the reload metric, and runs the AMS/repush
+    follow-up. GIS code only signals "a reload succeeded"; this decides what
+    that means for element/service state, metrics, AMS provisioning, and
+    LoST-Sync repush scheduling."""
+    _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="success").inc()
+    log.info("GIS data reload complete — resuming normal service")
+    runtime_state.element_notifier.set_state(ElementState.NORMAL, "GIS reload succeeded")
+    runtime_state.service_notifier.set_state(ServiceState.NORMAL, "GIS reload succeeded")
     if runtime_state._root_ams:
         fed_coverage._load_ams_provisioning()
     fed_sync._maybe_schedule_repush()
+
+
+def _on_gpkg_reload_failure(exc: Exception) -> None:
+    """on_failure callback passed to gis_provisioning.watch() — sets
+    ServiceDisruption state, records the reload metric, and files a GIS
+    discrepancy report on the running event loop."""
+    _metrics.reload_events_total.labels(trigger="gpkg_watcher", outcome="failure").inc()
+    log.error("GIS data reload failed — service remains unavailable", exc_info=exc)
+    runtime_state.element_notifier.set_state(ElementState.SERVICE_DISRUPTION, "GIS reload failed")
+    event_loop = runtime_state._event_loop
+    if event_loop is not None and event_loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            file_gis_dr(
+                problem=GISProblem.GeneralProvisioning,
+                severity=ProblemSeverity.Severe,
+                detail=str(exc),
+            ),
+            event_loop,
+        )
 
 
 async def lifespan_startup() -> None:
@@ -222,32 +228,31 @@ async def lifespan_startup() -> None:
                 "Recommended value: {00000000-0000-0000-0000-000000000000}"
             )
         try:
-            gis_provisioning.load(gpkg_path, runtime_state._ntp_client.get_current_time())
+            gis_provisioning.load(gpkg_path, runtime_state.now())
         except Exception as exc:
             _metrics.reload_events_total.labels(trigger="startup", outcome="failure").inc()
             log.error("GIS data load failed from %s: %s", gpkg_path, exc, exc_info=True)
             raise
         _metrics.reload_events_total.labels(trigger="startup", outcome="success").inc()
         _routing_only = False
-        _element_state._notifier.set_state(ElementState.Normal, "GIS data loaded")
-        _service_state._notifier.set_state(ServiceState.Normal, "GIS data loaded")
+        runtime_state.element_notifier.set_state(ElementState.NORMAL, "GIS data loaded")
+        runtime_state.service_notifier.set_state(ServiceState.NORMAL, "GIS data loaded")
         poll_interval = int(os.environ.get("LVF_GPKG_POLL_INTERVAL_SECONDS", "60"))
         if poll_interval > 0:
             threading.Thread(
-                target=gis_provisioning._watch_gpkg,
+                target=gis_provisioning.watch,
                 args=(
-                    gpkg_path,
-                    lambda: runtime_state._ntp_client.get_current_time(),
-                    _on_gpkg_reload,
-                    lambda: runtime_state._event_loop,
+                    runtime_state.now,
+                    _on_gpkg_reload_success,
+                    _on_gpkg_reload_failure,
                 ),
                 daemon=True,
             ).start()
             log.info("GPKG watcher started (poll interval: %ds)", poll_interval)
     else:
         _routing_only = True
-        _element_state._notifier.set_state(
-            ElementState.ServiceDisruption,
+        runtime_state.element_notifier.set_state(
+            ElementState.SERVICE_DISRUPTION,
             "GIS data unavailable, operating in routing-only mode",
         )
         if gpkg_path:

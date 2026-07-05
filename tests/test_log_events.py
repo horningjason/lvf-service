@@ -1,7 +1,6 @@
 """Tests for LostQueryLogEvent / LostResponseLogEvent wiring (NENA-STA-010.3.1 §4.12.3)."""
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 
@@ -46,23 +45,16 @@ def test_query_and_response_events_emitted(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    # src/lost/find_service.py sets propagate = False on the "src" logger (an
-    # ancestor of this one, intentional — prevents double-logging under
-    # uvicorn), so caplog.at_level() alone never sees records emitted here —
-    # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.observability.logging_events.logger")
-    logger_obj.addHandler(caplog.handler)
-    logger_obj.setLevel(logging.INFO)
-    try:
+    # Logging now delegates to core's LoggingClient (i3_fe_core.logging.logging_client),
+    # which emits via its own module logger.
+    with caplog.at_level(logging.INFO, logger="i3_fe_core.logging.logging_client"):
         _fs.handle_find_service(_XML_VALID)
-    finally:
-        logger_obj.removeHandler(caplog.handler)
 
-    events = [r for r in caplog.records if r.message.startswith("log_event ")]
-    assert len(events) == 2, f"Expected 2 log_event records, got {len(events)}: {[r.message for r in events]}"
+    events = [r for r in caplog.records if r.message.startswith("LogEvent: ")]
+    assert len(events) == 2, f"Expected 2 LogEvent records, got {len(events)}: {[r.message for r in events]}"
 
-    query_evt = json.loads(events[0].message[len("log_event "):])
-    resp_evt  = json.loads(events[1].message[len("log_event "):])
+    query_evt = json.loads(events[0].message[len("LogEvent: "):])
+    resp_evt  = json.loads(events[1].message[len("LogEvent: "):])
 
     assert query_evt["logEventType"] == "LostQueryLogEvent"
     assert query_evt["direction"] == "incoming"
@@ -78,23 +70,16 @@ def test_malformed_request_sets_malformed_query(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    # src/lost/find_service.py sets propagate = False on the "src" logger (an
-    # ancestor of this one, intentional — prevents double-logging under
-    # uvicorn), so caplog.at_level() alone never sees records emitted here —
-    # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.observability.logging_events.logger")
-    logger_obj.addHandler(caplog.handler)
-    logger_obj.setLevel(logging.INFO)
-    try:
+    # Logging now delegates to core's LoggingClient (i3_fe_core.logging.logging_client),
+    # which emits via its own module logger.
+    with caplog.at_level(logging.INFO, logger="i3_fe_core.logging.logging_client"):
         _fs.handle_find_service(_XML_MALFORMED)
-    finally:
-        logger_obj.removeHandler(caplog.handler)
 
-    events = [r for r in caplog.records if r.message.startswith("log_event ")]
+    events = [r for r in caplog.records if r.message.startswith("LogEvent: ")]
     assert len(events) == 2
 
-    query_evt = json.loads(events[0].message[len("log_event "):])
-    resp_evt  = json.loads(events[1].message[len("log_event "):])
+    query_evt = json.loads(events[0].message[len("LogEvent: "):])
+    resp_evt  = json.loads(events[1].message[len("LogEvent: "):])
 
     assert query_evt["malformedQuery"] is not None
     assert resp_evt["responseStatus"] == "400"
@@ -105,22 +90,15 @@ def test_call_incident_ids_propagated_to_events(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    # src/lost/find_service.py sets propagate = False on the "src" logger (an
-    # ancestor of this one, intentional — prevents double-logging under
-    # uvicorn), so caplog.at_level() alone never sees records emitted here —
-    # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.observability.logging_events.logger")
-    logger_obj.addHandler(caplog.handler)
-    logger_obj.setLevel(logging.INFO)
-    try:
+    # Logging now delegates to core's LoggingClient (i3_fe_core.logging.logging_client),
+    # which emits via its own module logger.
+    with caplog.at_level(logging.INFO, logger="i3_fe_core.logging.logging_client"):
         _fs.handle_find_service(_XML_WITH_IDS)
-    finally:
-        logger_obj.removeHandler(caplog.handler)
 
-    events = [r for r in caplog.records if r.message.startswith("log_event ")]
+    events = [r for r in caplog.records if r.message.startswith("LogEvent: ")]
     assert events, "No log events emitted"
 
-    query_evt = json.loads(events[0].message[len("log_event "):])
+    query_evt = json.loads(events[0].message[len("LogEvent: "):])
     assert query_evt.get("callId") == "call-99"
     assert query_evt.get("incidentId") == "inc-42"
 
@@ -130,34 +108,27 @@ def test_camel_case_keys_in_json(monkeypatch, caplog):
     _setup(monkeypatch)
     import src.lost.find_service as _fs
 
-    with caplog.at_level(logging.INFO, logger="src.observability.logging_events.logger"):
+    with caplog.at_level(logging.INFO, logger="i3_fe_core.logging.logging_client"):
         _fs.handle_find_service(_XML_VALID)
 
     for record in caplog.records:
-        if not record.message.startswith("log_event "):
+        if not record.message.startswith("LogEvent: "):
             continue
-        evt = json.loads(record.message[len("log_event "):])
+        evt = json.loads(record.message[len("LogEvent: "):])
         for key in evt:
             assert "_" not in key, f"Key {key!r} contains underscore — expected camelCase"
 
 
-def test_agency_id_warning_when_unset(monkeypatch, caplog):
-    """A WARNING is logged at module load time when LVF_AGENCY_ID is not set."""
-    monkeypatch.delenv("LVF_AGENCY_ID", raising=False)
-    # Suppress load_dotenv during reload so .env doesn't repopulate LVF_AGENCY_ID.
-    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
-    import src.observability.logging_events.logger as logger_mod
+def test_agency_id_stamped_from_identity(monkeypatch, caplog):
+    """agencyId on emitted events comes from core's ElementIdentity, not the event kwargs."""
+    _setup(monkeypatch)
+    import src.lost.find_service as _fs
+    from src import runtime_state
 
-    # src/lost/find_service.py sets propagate = False on the "src" logger (an
-    # ancestor of this one, intentional — prevents double-logging under
-    # uvicorn), so caplog.at_level() alone never sees records emitted here —
-    # attach caplog's handler directly to this logger instead.
-    logger_obj = logging.getLogger("src.observability.logging_events.logger")
-    logger_obj.addHandler(caplog.handler)
-    logger_obj.setLevel(logging.WARNING)
-    try:
-        reloaded = importlib.reload(logger_mod)
-    finally:
-        logger_obj.removeHandler(caplog.handler)
-    assert reloaded._agency_id == ""
-    assert any("LVF_AGENCY_ID" in r.message for r in caplog.records if r.levelno == logging.WARNING)
+    with caplog.at_level(logging.INFO, logger="i3_fe_core.logging.logging_client"):
+        _fs.handle_find_service(_XML_VALID)
+
+    events = [r for r in caplog.records if r.message.startswith("LogEvent: ")]
+    assert events, "No log events emitted"
+    evt = json.loads(events[0].message[len("LogEvent: "):])
+    assert evt["agencyId"] == runtime_state.logging_client._identity.agency_id

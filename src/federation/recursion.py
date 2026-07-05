@@ -19,7 +19,7 @@ from lxml import etree
 from src.lost.wire import lost_xml
 from src.observability import metrics as _metrics
 from src import runtime_state
-from src.provisioning.discrepancy.discrepancy_report import (
+from src.discrepancy.discrepancy_report import (
     file_lost_dr,
     LoSTProblem, LoSTQuery, ProblemSeverity,
 )
