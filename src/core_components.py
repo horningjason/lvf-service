@@ -1,9 +1,10 @@
 """LVF-owned container for i3-fe-core components.
 
-Holds the ElementIdentity + CoreSettings built from LVF's environment, and
-will hold the core component instances (NtpClient, notifiers, StateStore,
-LoggingClient, SipNotifier, DiscrepancyReporting) as later stages land them.
-Hung on app.state so handlers reach it via request.app.state.core.
+Holds the ElementIdentity + CoreSettings built from LVF's environment,
+plus the core component instances built here (StateStore, notifiers,
+DiscrepancyReporting, LoggingClient). ntp_client and sip_notifier are
+populated separately in server.py (the latter leader-gated in multi-worker
+mode). Hung on app.state so handlers reach it via request.app.state.core.
 """
 from __future__ import annotations
 
@@ -36,8 +37,7 @@ class CoreComponents:
 
 def _build_dr_contact_jcard() -> list:
     """RFC 7095 jCard for the DR contact fields (§3.7.1), built from
-    LVF_DR_CONTACT_NAME / LVF_DR_CONTACT_EMAIL with the same fallbacks as the
-    legacy _build_jcard() in discrepancy_report.py."""
+    LVF_DR_CONTACT_NAME / LVF_DR_CONTACT_EMAIL."""
     contact_name  = os.environ.get("LVF_DR_CONTACT_NAME", "")
     contact_email = os.environ.get("LVF_DR_CONTACT_EMAIL", "")
 

@@ -1,6 +1,6 @@
 """SIP wire adapter for ElementState and ServiceState NOTIFY delivery.
 
-Implements only the sipmessage wire layer per NENA-STA-010.3.1 §2.4.1 and
+Implements only the sipmessage wire layer per NENA-STA-010.3f-2021 §2.4.1 and
 §2.4.2: UDP/TCP listeners, SIP message parsing/serialization, and datagram
 transmission. Subscription registry, expiry, the rate-filter/watchdog timer,
 event-package validation, and the SUBSCRIBE accept/reject decision all live
@@ -32,7 +32,6 @@ from i3_fe_core.state.element_state import (
     ElementStateNotifier,
 )
 from i3_fe_core.state.service_state import (
-    EVENT_PACKAGE_NAME as _SERVICE_EVENT_PACKAGE,
     NOTIFY_MIME_TYPE as _SERVICE_MIME_TYPE,
     ServiceStateNotifier,
 )

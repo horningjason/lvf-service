@@ -1,4 +1,4 @@
-"""LVF discrepancy report generation per NENA-STA-010.3.1 §4.9, §3.7.1, §3.7.5, §3.7.11.
+"""LVF discrepancy report generation per NENA-STA-010.3f-2021 §4.9, §3.7.1, §3.7.5, §3.7.11.
 
 Report submission — the §3.7.1 reporting prolog (discrepancyReportId, jCard,
 agent id), the §2.3 submittal timestamp, and the §3.7 SHOULD-level rate limit

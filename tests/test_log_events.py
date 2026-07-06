@@ -1,4 +1,4 @@
-"""Tests for LostQueryLogEvent / LostResponseLogEvent wiring (NENA-STA-010.3.1 §4.12.3)."""
+"""Tests for LostQueryLogEvent / LostResponseLogEvent wiring (NENA-STA-010.3f-2021 §4.12.3)."""
 from __future__ import annotations
 
 import json

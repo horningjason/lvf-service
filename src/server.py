@@ -179,7 +179,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
-app.state.core = build_core_components()          # <-- add
+app.state.core = build_core_components()
 runtime_state.state_store      = app.state.core.state_store
 runtime_state.element_notifier = app.state.core.element_notifier
 runtime_state.service_notifier = app.state.core.service_notifier

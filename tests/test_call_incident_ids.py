@@ -1,4 +1,4 @@
-"""Tests for the Call/Incident Identifier LoST extension (NENA-STA-010.3.1 §3.4.10.4)."""
+"""Tests for the Call/Incident Identifier LoST extension (NENA-STA-010.3f-2021 §3.4.10.4)."""
 from __future__ import annotations
 
 import logging

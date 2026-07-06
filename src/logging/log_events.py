@@ -10,7 +10,7 @@ from i3_fe_core.logging.logevent import LogEventPrologue
 
 
 def generate_query_id() -> str:
-    """Return a globally unique LoST query ID per NENA-STA-010.3.1 §4.12.3.7."""
+    """Return a globally unique LoST query ID per NENA-STA-010.3f-2021 §4.12.3.7."""
     return f"urn:emergency:uid:queryid:{uuid.uuid4()}"
 
 

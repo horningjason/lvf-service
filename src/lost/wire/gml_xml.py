@@ -1,6 +1,6 @@
 """
-Pure geometry <-> GML XML conversion helpers (RFC 4646's GML profile as
-used by LoST-Sync coverage mappings, NENA-INF-027 AMS provisioning files).
+Pure geometry <-> GML XML conversion helpers (the GML profile used by
+LoST-Sync coverage mappings, NENA-INF-027 AMS provisioning files).
 
 No GIS data access, no LoST-protocol business logic — just shapely <-> GML
 serialization/parsing. Used directly by src/federation/coverage.py and

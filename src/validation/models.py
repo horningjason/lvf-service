@@ -47,7 +47,7 @@ class CivicAddress(BaseModel):
     prm:  Optional[str] = None      # cae:PRM
     prd:  Optional[str] = None      # ca:PRD
     stp:  Optional[str] = None      # cae:STP
-    stps: Optional[str] = None      # cdx2:STPS
+    stps: Optional[str] = None      # cdx1:STPS (legacy nenaCivicAddr.xsd)
     sts:  Optional[str] = None      # ca:STS
     pod:  Optional[str] = None      # ca:POD
     pom:  Optional[str] = None      # cae:POM

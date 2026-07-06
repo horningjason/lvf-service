@@ -1,7 +1,7 @@
 # LVF — Location Validation Function
 
 This repository contains an open reference implementation of the NG9-1-1 Location Validation Function (LVF) 
-as specified in `LVF_Algorithm_Specification_v75.docx`. Validates civic PIDF-LO addresses against provisioned
+as specified in `references/LVF_Algorithm_Specification_v75.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222). The implementation can be configured to run as a child, parent, 
 root AMS or forest guide.  When operating in forest guide mode, the service is only configured to support
 queries relevant to LVF and location validation.
@@ -196,7 +196,7 @@ Copy `.env.example` to `.env` and configure:
 |---|---|---|---|
 | **Server Identity** | | | |
 | `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI in `<path>` and `<errors source>` |
-| `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3.1 §4.12.3.1). A WARNING is logged at startup if unset |
+| `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3f-2021 §4.12.3.1). A WARNING is logged at startup if unset |
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
 | `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
 | **Process Management** | | | |
@@ -227,13 +227,12 @@ Copy `.env.example` to `.env` and configure:
 | **Forest Guide Mode** | | | |
 | `LVF_FOREST_GUIDE_MODE` | No | `false` | When `true`, this node operates as a Forest Guide: GIS validation is skipped, all requests are redirected to the matching child LVF, and `LVF_PARENT_URI` is ignored |
 | **NTP** | | | |
-| `LVF_NTP_SERVER` | No | — | Hostname of the NTP server. When unset, NTP is disabled and the system clock is used. When set, time-sensitive fields use NTP; query failures log a WARNING and fall back to the system clock |
-| `LVF_NTP_VERSION` | No | `3` | NTP protocol version (only used when `LVF_NTP_SERVER` is set) |
-| `LVF_NTP_TIMEOUT` | No | `5.0` | NTP query timeout in seconds (only used when `LVF_NTP_SERVER` is set) |
+| `LVF_NTP_SERVER` | No | `pool.ntp.org` | Hostname of the NTP server. Core's `NtpClient` always starts at startup (logs `is_healthy`/`offset`); time-sensitive fields use NTP-derived time and query failures fall back to the system clock |
 | **i3 Logging** | | | |
 | `LVF_LOGGING_SERVICE_URI` | No | — | URI of an i3 Logging Service to POST LogEvents to. When unset, events are emitted to Python standard logging only |
 | **Discrepancy Reporting** | | | |
-| `LVF_DR_ENDPOINT` | No | — | HTTP endpoint to POST Discrepancy Reports to (responding agency's `/Reports` service). When unset, DRs are logged locally only (NENA-STA-010.3.1 §3.7.1) |
+| `LVF_ENABLE_DR_SERVICE` | No | `true` | Mounts core's §3.7 Discrepancy Reporting responding web service at `/dr`. Set to non-`true` to disable |
+| `LVF_DR_ENDPOINT` | No | — | HTTP endpoint to POST Discrepancy Reports to (responding agency's `/Reports` service). When unset, DRs are logged locally only (NENA-STA-010.3f-2021 §3.7.1) |
 | `LVF_DR_RESOLUTION_URI` | No | — | URI this LVF exposes for receiving DR resolution callbacks. Used as `resolutionUri` in the DR body. Required for conformant submission |
 | `LVF_DR_CONTACT_NAME` | No | `LVF Administrator` | Contact name in the DR jCard (`reportingContactJcard`). A WARNING is logged at startup if unset |
 | `LVF_DR_CONTACT_EMAIL` | No | — | Contact email in the DR jCard. A WARNING is logged at startup if unset |
@@ -318,7 +317,7 @@ Root AMS nodes require two files in the same directory as the GeoPackage. Annota
 
 When `LVF_SIP_HOST`/`LVF_SIP_PORT` are configured (and `LVF_SIP_PORT` is non-zero), the LVF
 exposes a SIP endpoint that accepts SUBSCRIBE requests for the `emergency-ElementState` and
-`emergency-ServiceState` event packages per NENA-STA-010.3.1 §2.4.1 and §2.4.2. The LVF
+`emergency-ServiceState` event packages per NENA-STA-010.3f-2021 §2.4.1 and §2.4.2. The LVF
 sends SIP NOTIFY to all active subscribers whenever its element or service state changes.
 
 This is the i3-required notifier-side interface that allows ESInet elements (ESRPs, monitoring
@@ -462,7 +461,7 @@ tests/                      Test XML inputs and regression infrastructure
 - NENA-STA-004.2-2024 — CLDXF-US element definitions
 - NENA-STA-006.3-2026 — GIS layer definitions and field names
 - NENA-INF-027.1-2018 — LVF evaluation logic and hierarchy
-- NENA-STA-010.3.1-2026 — i3 Standard, LVF LoST requirements
+- NENA-STA-010.3f-2021 — i3 Standard, LVF LoST requirements
 - RFC 5222 — LoST protocol
 - RFC 5139 — PIDF-LO civic address schema
 - RFC 6848 — PIDF-LO civic address extensions
