@@ -136,7 +136,9 @@ python prewarm.py
 LVF_WORKERS=4 gunicorn -c gunicorn.conf.py src.server:app
 ```
 
-> **The Forest Guide must run single-worker** (`LVF_WORKERS=1`).
+> The Forest Guide does no GIS validation, so multi-worker gives it no CPU-parallelism
+> benefit, but it is supported — coverage-store locking and leader election (below) apply
+> uniformly regardless of node role.
 >
 > In production, multi-worker runs inside the Docker stack (Linux containers) — that is the
 > supported environment for gunicorn / `LVF_WORKERS`.
@@ -200,7 +202,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
 | `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
 | **Process Management** | | | |
-| `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a **Forest Guide must use `1`**. Ignored by `python main.py` (always single-process). Multi-worker requires **Linux/Docker** — gunicorn is POSIX-only and does not run on Windows |
+| `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a Forest Guide gets no CPU-parallelism benefit from more than 1 (no GIS validation) but multi-worker is supported there too. Ignored by `python main.py` (always single-process). Multi-worker requires **Linux/Docker** — gunicorn is POSIX-only and does not run on Windows |
 | `LVF_WORKER_TIMEOUT` | No | `120` | Gunicorn worker timeout in seconds (read by `gunicorn.conf.py`) |
 | `LVF_COVERAGE_POLL_INTERVAL_SECONDS` | No | `15` | How often (seconds) each worker polls the child-coverage file so siblings converge on each other's LoST-Sync writes. Silent read-only refresh — never triggers a push or startup sync. Set to `0` to disable |
 | `LVF_MAX_CONCURRENT_REQUESTS` | No | `0` | Load shedding (§3.11.5): per-worker in-flight cap on `POST /lost` only. `0` = unlimited. Shed requests return HTTP `429`, not a LoST element. Per-worker, not cross-worker accurate — scales with `LVF_WORKERS` |

@@ -15,8 +15,9 @@ services:
     environment:
       # Per-machine multi-worker. A leaf/child node may run multiple workers;
       # a good starting point is roughly the number of CPU cores, then measure.
-      # NOTE: a Forest Guide node MUST run single-worker — set LVF_WORKERS=1 on
-      # any service running with LVF_FOREST_GUIDE_MODE=true.
+      # A Forest Guide (LVF_FOREST_GUIDE_MODE=true) supports multi-worker too —
+      # coverage-store locking and leader election are role-agnostic — but gets
+      # no CPU-parallelism benefit from it (no GIS validation to parallelize).
       LVF_WORKERS: "2"
       # TLS config - see docs
       # LVF_TLS_MODE:

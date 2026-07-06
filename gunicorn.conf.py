@@ -7,7 +7,10 @@ Worker count is controlled by LVF_WORKERS (default 1 == today's single-process
 behavior). TLS handling mirrors main.py exactly so HTTPS/mTLS work identically
 whether you launch via `python main.py` (dev) or gunicorn (production).
 
-The Forest Guide must run single-worker (LVF_WORKERS=1).
+Multi-worker is supported for every node role, including the Forest Guide
+(coverage-store locking and leader election are role-agnostic) — though the
+Forest Guide does no GIS validation, so extra workers buy it no CPU-parallelism
+benefit the way they do for a leaf/child node.
 """
 
 import os
