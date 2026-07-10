@@ -28,6 +28,8 @@ from src.gis import provisioning as gis_provisioning
 from src.observability import metrics
 from src.validation.models import CivicCoverageEntry
 from src.core_components import build_core_components
+from src.logging.log_events import generate_query_id
+from src.logging.logger import emit_log_event, make_query_event, make_response_event
 
 _NS_LOST = _fs._NS_LOST
 log = logging.getLogger(__name__)
@@ -178,6 +180,18 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    """RFC 5222 §13 MUST: LoST responses use Cache-Control: no-cache to
+    disable HTTP-level caching, including by caches configured to return
+    stale responses. Applied to /lost only (the LoST protocol endpoint)."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if request.scope["path"] == "/lost":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="LVF Service", lifespan=_lifespan)
 app.state.core = build_core_components()
 runtime_state.state_store      = app.state.core.state_store
@@ -187,6 +201,7 @@ runtime_state.discrepancy      = app.state.core.discrepancy
 runtime_state.logging_client   = app.state.core.logging_client
 app.add_middleware(LimitBodySize)
 app.add_middleware(MetricsMiddleware)
+app.add_middleware(NoCacheMiddleware)
 app.mount("/metrics", metrics.metrics_app())
 
 if os.environ.get("LVF_ENABLE_DR_SERVICE", "true").strip().lower() == "true":
@@ -196,7 +211,31 @@ if os.environ.get("LVF_ENABLE_DR_SERVICE", "true").strip().lower() == "true":
     # Route objects, not FastAPI path operations.
     from starlette.applications import Starlette
     from i3_fe_core.discrepancy import make_discrepancy_routes
-    app.mount("/dr", Starlette(routes=make_discrepancy_routes(app.state.core.discrepancy)))
+    from i3_fe_core.web_service.versions import build_version_entry, make_versions_route
+
+    _lvf_version_major = int(os.environ.get("LVF_VERSION_MAJOR", "1"))
+    _lvf_version_minor = int(os.environ.get("LVF_VERSION_MINOR", "0"))
+    _lvf_build_fingerprint = os.environ.get("LVF_BUILD_FINGERPRINT", "lvf-service-dev")
+
+    _dr_routes = make_discrepancy_routes(app.state.core.discrepancy)
+    # §4 MUST: "Each Web Service MUST implement an entry point called
+    # 'Versions'." Mounted alongside the DR routes on the same sub-app,
+    # so it resolves at .../dr/Versions. requiredAlgorithms is present but
+    # empty until JWS signing keys are provisioned (§5.10) — presence is
+    # stable across that transition, only the array's contents change.
+    _dr_routes.append(
+        make_versions_route(
+            fingerprint_provider=_lvf_build_fingerprint,
+            versions_provider=[
+                build_version_entry(
+                    _lvf_version_major,
+                    _lvf_version_minor,
+                    service_info={"requiredAlgorithms": []},
+                )
+            ],
+        )
+    )
+    app.mount("/dr", Starlette(routes=_dr_routes))
 
 
 @app.get("/health")
@@ -435,7 +474,25 @@ async def lost_endpoint(request: Request) -> Response:
         elif root.tag == f"{{{_NS_LOST}}}listServicesByLocation":
             result = await list_services_by_location.handle(body, client_addr=client_addr)
         elif root.tag == f"{{{_NS_LOST}}}getServiceBoundary":
+            _gsb_query_id = generate_query_id()
+            _gsb_call_id, _gsb_incident_id = _fs._extract_call_incident_ids(root)
+            emit_log_event(make_query_event(
+                timestamp=runtime_state.now(),
+                query_id=_gsb_query_id,
+                direction="incoming",
+                query_adapter=body.decode("utf-8", errors="replace"),
+                call_id=_gsb_call_id,
+                incident_id=_gsb_incident_id,
+            ))
             result = get_service_boundary.build_response(_fs._server_uri)
+            emit_log_event(make_response_event(
+                timestamp=runtime_state.now(),
+                response_id=_gsb_query_id,
+                direction="outgoing",
+                response_adapter=result.decode("utf-8", errors="replace"),
+                call_id=_gsb_call_id,
+                incident_id=_gsb_incident_id,
+            ))
         else:
             metrics.lost_errors_total.labels(error_type="badRequest").inc()
             err = etree.Element(f"{{{_NS_LOST}}}errors", nsmap={None: _NS_LOST})

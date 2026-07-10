@@ -163,10 +163,16 @@ class ValidationRequest(BaseModel):
     service_urn maps to the <service> element in the LoST request.
     Expected to be urn:service:sos or urn:service:test.sos per NENA-STA-010 §3.2.
     validate_location mirrors the validateLocation attribute on <findService>.
+    location_id mirrors the id attribute of the <location> element that
+    wrapped the submitted civicAddress (RFC 5222 §7) — returned in the
+    response's <locationUsed id="..."/>. Defaults to "loc" (matching
+    listServicesByLocation's fallback) when the request's <location> has
+    no id attribute.
     """
     service_urn:       str
     civic_address:     CivicAddress
     validate_location: str = "false"
+    location_id:       str = "loc"
 
 
 # ---------------------------------------------------------------------------

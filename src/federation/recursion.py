@@ -57,20 +57,6 @@ def _add_via_to_request(body: bytes) -> bytes:
         return body
 
 
-def _prepend_via_to_response(response_body: bytes) -> bytes:
-    try:
-        root = etree.fromstring(response_body)
-        path_el = root.find(f".//{{{lost_xml._NS_LOST}}}path")
-        if path_el is not None:
-            via_el = etree.Element(f"{{{lost_xml._NS_LOST}}}via")
-            via_el.set("source", runtime_state._server_uri)
-            via_el.tail = path_el.text
-            path_el.insert(0, via_el)
-        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-    except Exception:
-        return response_body
-
-
 def _make_errors_xml(error_type: str, message: str = "") -> bytes:
     root = etree.Element(f"{{{lost_xml._NS_LOST}}}errors", nsmap={None: lost_xml._NS_LOST})
     root.set("source", runtime_state._server_uri)
@@ -143,7 +129,10 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
             resp = client.post(
                 validate_uri,
                 content=modified,
-                headers={"Content-Type": "application/xml"},
+                headers={
+                    "Content-Type": "application/lost+xml",
+                    "Cache-Control": "no-cache",
+                },
             )
         elapsed = time.monotonic() - _t0
         _metrics.recursion_duration_seconds.observe(elapsed)
@@ -154,7 +143,7 @@ def _do_recurse_to_uri_sync(request_body: bytes, validate_uri: str) -> bytes:
         )
         if resp.status_code == 200:
             try:
-                result = _prepend_via_to_response(resp.content)
+                result = resp.content
                 etree.fromstring(result)
                 return result
             except Exception:
@@ -188,7 +177,10 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
             resp = await client.post(
                 validate_uri,
                 content=modified,
-                headers={"Content-Type": "application/xml"},
+                headers={
+                    "Content-Type": "application/lost+xml",
+                    "Cache-Control": "no-cache",
+                },
             )
         elapsed = time.monotonic() - _t0
         _metrics.recursion_duration_seconds.observe(elapsed)
@@ -199,7 +191,7 @@ async def _do_recurse_to_uri_async(request_body: bytes, validate_uri: str) -> by
         )
         if resp.status_code == 200:
             try:
-                result = _prepend_via_to_response(resp.content)
+                result = resp.content
                 etree.fromstring(result)
                 return result
             except Exception:

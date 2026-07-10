@@ -27,6 +27,8 @@ from src.federation import coverage as fed_coverage
 from src.federation import recursion as fed_recursion
 from src.gis import provisioning as gis_provisioning
 from src.utils import outbound_client_cert, outbound_ssl_context
+from src.logging.log_events import generate_query_id
+from src.logging.logger import emit_log_event, make_query_event, make_response_event
 
 log = logging.getLogger(__name__)
 
@@ -476,6 +478,13 @@ async def _push_coverage_to_parent() -> bool:
         log.info("LoST-Sync: pushing %s coverage to parent %s", label, parent_sync_uri)
 
         attempted = True
+        _push_query_id = generate_query_id()
+        emit_log_event(make_query_event(
+            timestamp=runtime_state.now(),
+            query_id=_push_query_id,
+            direction="outgoing",
+            query_adapter=push_body.decode("utf-8", errors="replace"),
+        ))
         try:
             async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context(), cert=outbound_client_cert()) as client:
                 resp = await client.post(
@@ -483,6 +492,13 @@ async def _push_coverage_to_parent() -> bool:
                     content=push_body,
                     headers={"Content-Type": "application/lostsync+xml"},
                 )
+            emit_log_event(make_response_event(
+                timestamp=runtime_state.now(),
+                response_id=_push_query_id,
+                direction="incoming",
+                response_adapter=resp.content.decode("utf-8", errors="replace"),
+                response_status=str(resp.status_code),
+            ))
             if resp.status_code == 200:
                 try:
                     resp_root = etree.fromstring(resp.content)
@@ -566,6 +582,13 @@ async def _push_coverage_to_fg() -> bool:
         log.info("AMS: pushing %s coverage to Forest Guide %s", label, runtime_state._forest_guide_uri)
 
         attempted = True
+        _fg_query_id = generate_query_id()
+        emit_log_event(make_query_event(
+            timestamp=runtime_state.now(),
+            query_id=_fg_query_id,
+            direction="outgoing",
+            query_adapter=push_body.decode("utf-8", errors="replace"),
+        ))
         try:
             async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context(), cert=outbound_client_cert()) as client:
                 resp = await client.post(
@@ -573,6 +596,13 @@ async def _push_coverage_to_fg() -> bool:
                     content=push_body,
                     headers={"Content-Type": "application/lostsync+xml"},
                 )
+            emit_log_event(make_response_event(
+                timestamp=runtime_state.now(),
+                response_id=_fg_query_id,
+                direction="incoming",
+                response_adapter=resp.content.decode("utf-8", errors="replace"),
+                response_status=str(resp.status_code),
+            ))
             if resp.status_code == 200:
                 try:
                     resp_root = etree.fromstring(resp.content)
@@ -613,6 +643,13 @@ async def _pull_from_child(child_entry: str) -> bool:
     )
     log.info("LoST-Sync: sending getMappingsRequest to %s", child_sync_url)
 
+    _pull_query_id = generate_query_id()
+    emit_log_event(make_query_event(
+        timestamp=runtime_state.now(),
+        query_id=_pull_query_id,
+        direction="outgoing",
+        query_adapter=get_body.decode("utf-8", errors="replace"),
+    ))
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context(), cert=outbound_client_cert()) as client:
             resp = await client.post(
@@ -620,6 +657,13 @@ async def _pull_from_child(child_entry: str) -> bool:
                 content=get_body,
                 headers={"Content-Type": "application/lostsync+xml"},
             )
+        emit_log_event(make_response_event(
+            timestamp=runtime_state.now(),
+            response_id=_pull_query_id,
+            direction="incoming",
+            response_adapter=resp.content.decode("utf-8", errors="replace"),
+            response_status=str(resp.status_code),
+        ))
         if resp.status_code != 200:
             log.warning(
                 "LoST-Sync: getMappingsRequest to %s returned HTTP %d",
@@ -789,16 +833,32 @@ async def handle_sync(body: bytes, client) -> Response:
         log.error("Sync request: XML parse failed: %s", exc)
         return _sync_error_response("badRequest", "Malformed XML.")
 
+    _sync_query_id = generate_query_id()
+    emit_log_event(make_query_event(
+        timestamp=runtime_state.now(),
+        query_id=_sync_query_id,
+        direction="incoming",
+        query_adapter=body.decode("utf-8", errors="replace"),
+    ))
+
     if root.tag == f"{{{lost_xml._NS_SYNC}}}pushMappings":
         log.info("LoST-Sync: received pushMappings from %s", client)
-        return await _handle_push_mappings(root)
+        response = await _handle_push_mappings(root)
     elif root.tag == f"{{{lost_xml._NS_SYNC}}}getMappingsRequest":
         log.info("LoST-Sync: received getMappingsRequest from %s", client)
-        return await _handle_get_mappings(root)
+        response = await _handle_get_mappings(root)
     else:
-        return _sync_error_response(
+        response = _sync_error_response(
             "badRequest",
             f"Unexpected root element {root.tag!r}; "
             "expected {urn:ietf:params:xml:ns:lostsync1}pushMappings "
             "or {urn:ietf:params:xml:ns:lostsync1}getMappingsRequest",
         )
+
+    emit_log_event(make_response_event(
+        timestamp=runtime_state.now(),
+        response_id=_sync_query_id,
+        direction="outgoing",
+        response_adapter=response.body.decode("utf-8", errors="replace"),
+    ))
+    return response

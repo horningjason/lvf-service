@@ -124,10 +124,13 @@ def test_recursive_call_returns_lost_response():
         f"Expected a LoST namespace element, got {root.tag}"
 
 
-def test_recursive_response_prepends_our_via():
+def test_recursive_response_appends_our_via_after_upstream():
     """
     When the parent returns a findServiceResponse, our server's <via> appears
-    first in the response <path>.
+    LAST in the response <path> — RFC 5222 §6: the authoritative server (the
+    parent, here) copies the request's upstream vias verbatim and appends its
+    own after them. This server, as the recursing/forwarding node, does not
+    modify the response's <path> on the way back.
 
     Requires: parent LVF running at LVF_PARENT_URI/lost AND the parent
     returns a findServiceResponse (i.e. it has data for the submitted address
@@ -141,7 +144,7 @@ def test_recursive_response_prepends_our_via():
         outcome = root.tag.split("}")[-1]
         pytest.skip(
             f"Parent returned <{outcome}> instead of <findServiceResponse> — "
-            "cannot verify <via> prepending. This is expected if the parent also "
+            "cannot verify <via> ordering. This is expected if the parent also "
             "redirects or returns an error for Cass County."
         )
 
@@ -150,9 +153,9 @@ def test_recursive_response_prepends_our_via():
 
     vias = path_el.findall(f"{{{_NS_LOST}}}via")
     assert len(vias) >= 1, "<path> must contain at least one <via>"
-    assert vias[0].get("source") == _server_uri, (
-        f"First <via> must identify this server ({_server_uri}), "
-        f"got '{vias[0].get('source')}'"
+    assert vias[-1].get("source") == _server_uri, (
+        f"Last <via> must identify this server ({_server_uri}), "
+        f"got '{vias[-1].get('source')}'"
     )
 
 
@@ -199,10 +202,12 @@ def test_recursive_known_address_returns_valid():
     )
 
 
-def test_recursive_known_address_via_prepended():
+def test_recursive_known_address_via_appended():
     """
-    1522 8th Street North, Fargo — our <via> must be the first element in
-    the forwarded response <path>.
+    1522 8th Street North, Fargo — our <via> must be the LAST element in
+    the forwarded response <path> (RFC 5222 §6 — see
+    test_recursive_response_appends_our_via_after_upstream for the full
+    rationale).
 
     Requires: parent LVF running and provisioned with Cass County GIS data.
     """
@@ -219,9 +224,9 @@ def test_recursive_known_address_via_prepended():
 
     vias = path_el.findall(f"{{{_NS_LOST}}}via")
     assert len(vias) >= 1, "<path> must contain at least one <via>"
-    assert vias[0].get("source") == _server_uri, (
-        f"First <via> must be this server ({_server_uri}), "
-        f"got '{vias[0].get('source')}'"
+    assert vias[-1].get("source") == _server_uri, (
+        f"Last <via> must be this server ({_server_uri}), "
+        f"got '{vias[-1].get('source')}'"
     )
 
 

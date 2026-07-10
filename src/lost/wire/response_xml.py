@@ -56,6 +56,8 @@ def _mapping_element(parent: etree._Element, mapping, force_no_cache: bool = Fal
 def _serialize_find_service_response(
     resp,
     as_of_used: Optional[datetime.datetime] = None,
+    upstream_vias: Optional[list[str]] = None,
+    location_id: Optional[str] = None,
 ) -> etree._Element:
     root = etree.Element(
         f"{{{lost_xml._NS_LOST}}}findServiceResponse",
@@ -105,9 +107,21 @@ def _serialize_find_service_response(
                 "Do not use for provisioning decisions.")
         dmr.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
 
+    # RFC 5222 §6: copy the request's upstream vias into the response,
+    # then append this server's own via — see the worked example in
+    # §8.2.1, where the response path contains both.
     path_el = etree.SubElement(root, f"{{{lost_xml._NS_LOST}}}path")
-    via_el  = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
+    for via_source in (upstream_vias or []):
+        v = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
+        v.set("source", via_source)
+    via_el = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
     via_el.set("source", runtime_state._server_uri)
+
+    # RFC 5222 §7: identify which submitted <location> was used to
+    # answer — mirrors list_services_by_location.py's existing
+    # _list_response, which emits this the same way.
+    lu = etree.SubElement(root, f"{{{lost_xml._NS_LOST}}}locationUsed")
+    lu.set("id", location_id or "loc")
 
     return root
 

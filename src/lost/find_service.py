@@ -264,6 +264,18 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
     if civic_el is None:
         raise ValueError("Missing 'civicAddress' element in findService request")
 
+    # RFC 5222 §7: locate the wrapping <location id="..."/> so its id can be
+    # echoed back in the response's <locationUsed>. Walk up from the
+    # civicAddress element (found via a descendant search above) to find the
+    # nearest ancestor <location> element.
+    location_id = "loc"
+    _loc_el = civic_el
+    while _loc_el is not None:
+        if _loc_el.tag == f"{{{lost_xml._NS_LOST}}}location":
+            location_id = _loc_el.get("id", "loc") or "loc"
+            break
+        _loc_el = _loc_el.getparent()
+
     fields: dict[str, str] = {}
     for child in civic_el:
         ca_field = gis_records.CLARK_TO_FIELD.get(child.tag)
@@ -290,6 +302,7 @@ def _parse_request(body: bytes) -> tuple[ValidationRequest, Optional[datetime.da
         service_urn=service_urn,
         civic_address=CivicAddress(**fields),
         validate_location=validate_location,
+        location_id=location_id,
     ), as_of
 
 
@@ -325,6 +338,29 @@ def _extract_call_incident_ids(root: etree._Element) -> tuple[Optional[str], Opt
     return el.get("callId") or None, el.get("incidentTrackingId") or None
 
 
+def _extract_path_vias_safe(xml_bytes: bytes) -> list[str]:
+    """Best-effort extraction of upstream <path><via source="..."/>
+    values from a raw request, for copying into an authoritative
+    response's own <path> per RFC 5222 §6. Never raises — malformed or
+    path-less XML yields an empty list. Parses independently of the
+    request-parsing done elsewhere in handle_find_service /
+    handle_find_service_async so it is safe to call before any other
+    validation (e.g. the GIS-reloading fast path, which returns before
+    schema validation)."""
+    try:
+        root = etree.fromstring(xml_bytes, lost_xml._XML_PARSER)
+    except Exception:
+        return []
+    path_el = root.find(f"{{{lost_xml._NS_LOST}}}path")
+    if path_el is None:
+        return []
+    return [
+        via.get("source", "")
+        for via in path_el.findall(f"{{{lost_xml._NS_LOST}}}via")
+        if via.get("source")
+    ]
+
+
 # ---------------------------------------------------------------------------
 # XML serialization
 # ---------------------------------------------------------------------------
@@ -339,9 +375,22 @@ def _to_xml_response(
     resp,
     status: int,
     as_of_used: Optional[datetime.datetime] = None,
+    upstream_vias: Optional[list[str]] = None,
+    location_id: Optional[str] = None,
 ) -> Response:
+    """upstream_vias, when given, are the request's <path><via source=.../>
+    values in order — copied into the response's own <path> ahead of this
+    server's via, per RFC 5222 §6 ("the authoritative server copies the
+    <path> element verbatim into the response"; see the §8.2.1 worked
+    example, where the response path contains both the resolving server's
+    via and the authoritative server's own via). Ignored for response
+    types that carry no <path> (redirect, errors) — harmless to pass
+    unconditionally from every call site."""
     if resp.type == "locationValidation":
-        tree = response_xml._serialize_find_service_response(resp, as_of_used=as_of_used)
+        tree = response_xml._serialize_find_service_response(
+            resp, as_of_used=as_of_used, upstream_vias=upstream_vias,
+            location_id=location_id,
+        )
     elif resp.type == "redirect":
         tree = response_xml._serialize_redirect(resp)
     elif resp.type == "locationValidationUnavailable":
@@ -355,7 +404,10 @@ def _to_xml_response(
         lvu.set("message", getattr(resp, "message", "LVF temporarily cannot fulfill validation request"))
         lvu.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
         path_el = etree.SubElement(root, f"{{{lost_xml._NS_LOST}}}path")
-        via_el  = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
+        for via_source in (upstream_vias or []):
+            v = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
+            v.set("source", via_source)
+        via_el = etree.SubElement(path_el, f"{{{lost_xml._NS_LOST}}}via")
         via_el.set("source", runtime_state._server_uri)
         tree = root
     else:
@@ -414,6 +466,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     timestamp = runtime_state.now()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
+    _upstream_vias = _extract_path_vias_safe(xml_bytes)
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
@@ -475,6 +528,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                 message="LVF is reloading GIS data — service will resume automatically"
             ),
             status=200,
+            upstream_vias=_upstream_vias,
         ).body)
 
     schema_error = _validate_schema(xml_bytes)
@@ -486,7 +540,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             malformed_query=xml_bytes.decode("utf-8", errors="replace")[:2048],
         ))
         return _respond(
-            _to_xml_response(BadRequestResponse(message=schema_error), status=200).body,
+            _to_xml_response(BadRequestResponse(message=schema_error), status=200, upstream_vias=_upstream_vias).body,
             response_status="400",
         )
 
@@ -500,7 +554,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             malformed_query=xml_bytes.decode("utf-8", errors="replace")[:2048],
         ))
         return _respond(
-            _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body,
+            _to_xml_response(BadRequestResponse(message=str(exc)), status=200, upstream_vias=_upstream_vias).body,
             response_status="400",
         )
 
@@ -522,12 +576,12 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     ))
 
     if req.validate_location != "true":
-        return _respond(_to_xml_response(ForbiddenResponse(), status=200).body)
+        return _respond(_to_xml_response(ForbiddenResponse(), status=200, upstream_vias=_upstream_vias).body)
 
     if runtime_state._forest_guide_mode:
         effective_urn, _ = _resolve_service_urn(req.service_urn)
         if effective_urn.lower() != "urn:service:sos":
-            return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200).body)
+            return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200, upstream_vias=_upstream_vias).body)
         child_match = fed_coverage._lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
@@ -536,7 +590,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200,
+                    upstream_vias=_upstream_vias,
                 ).body)
             log.warning(
                 "Forest Guide: child coverage match found but lost_server is empty "
@@ -546,6 +601,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
         return _respond(_to_xml_response(
             NotFoundResponse(message="No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address."),
             status=200,
+            upstream_vias=_upstream_vias,
         ).body)
 
     if fed_coverage._child_coverage and lifecycle._routing_only:
@@ -559,7 +615,8 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
                 if recursive:
                     return _respond(_recurse_to_uri_outgoing(xml_bytes, child_uri))
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200,
+                    upstream_vias=_upstream_vias,
                 ).body)
             log.warning(
                 "LoST-Sync: child coverage match found but lost_server is empty "
@@ -572,13 +629,15 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
             if recursive:
                 return _respond(_recurse_outgoing(xml_bytes))
             return _respond(_to_xml_response(
-                RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri), status=200
+                RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri), status=200,
+                upstream_vias=_upstream_vias,
             ).body)
         return _respond(_to_xml_response(
             LocationValidationUnavailableResponse(
                 message="This node has no GIS data and no configured parent for this location"
             ),
             status=200,
+            upstream_vias=_upstream_vias,
         ).body)
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
@@ -591,11 +650,11 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
 
     g0 = gate0.check(effective_urn, gis_provisioning._boundaries, now)
     if g0 is not None:
-        return _respond(_to_xml_response(g0, status=200).body)
+        return _respond(_to_xml_response(g0, status=200, upstream_vias=_upstream_vias).body)
 
     g1 = gate1.check(req.civic_address)
     if g1 is not None:
-        return _respond(_to_xml_response(g1, status=200).body)
+        return _respond(_to_xml_response(g1, status=200, upstream_vias=_upstream_vias).body)
 
     matched_boundaries = [
         b for b in gis_provisioning._boundaries
@@ -610,7 +669,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if ooc is not None:
         if recursive and isinstance(ooc, RedirectResponse):
             return _respond(_recurse_outgoing(xml_bytes))
-        return _respond(_to_xml_response(ooc, status=200).body)
+        return _respond(_to_xml_response(ooc, status=200, upstream_vias=_upstream_vias).body)
 
     final = response_assembly.assemble(
         g2,
@@ -626,7 +685,7 @@ def handle_find_service(xml_bytes: bytes) -> bytes:
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    return _respond(_to_xml_response(final, status=200, as_of_used=as_of_used).body)
+    return _respond(_to_xml_response(final, status=200, as_of_used=as_of_used, upstream_vias=_upstream_vias, location_id=req.location_id).body)
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +698,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     timestamp = runtime_state.now()
     call_id: Optional[str] = None
     incident_tracking_id: Optional[str] = None
+    _upstream_vias = _extract_path_vias_safe(xml_bytes)
 
     def _respond(result: bytes, *, response_status: Optional[str] = None) -> bytes:
         emit_log_event(make_response_event(
@@ -701,6 +761,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
                 message="LVF is busy loading newer GIS data — service will resume automatically"
             ),
             status=200,
+            upstream_vias=_upstream_vias,
         ).body)
 
     schema_error = _validate_schema(xml_bytes)
@@ -713,7 +774,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             ip_address_port=client_addr,
         ))
         return _respond(
-            _to_xml_response(BadRequestResponse(message=schema_error), status=200).body,
+            _to_xml_response(BadRequestResponse(message=schema_error), status=200, upstream_vias=_upstream_vias).body,
             response_status="400",
         )
 
@@ -728,7 +789,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             ip_address_port=client_addr,
         ))
         return _respond(
-            _to_xml_response(BadRequestResponse(message=str(exc)), status=200).body,
+            _to_xml_response(BadRequestResponse(message=str(exc)), status=200, upstream_vias=_upstream_vias).body,
             response_status="400",
         )
 
@@ -751,12 +812,12 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     ))
 
     if req.validate_location != "true":
-        return _respond(_to_xml_response(ForbiddenResponse(), status=200).body)
+        return _respond(_to_xml_response(ForbiddenResponse(), status=200, upstream_vias=_upstream_vias).body)
 
     if runtime_state._forest_guide_mode:
         effective_urn, _ = _resolve_service_urn(req.service_urn)
         if effective_urn.lower() != "urn:service:sos":
-            return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200).body)
+            return _respond(_to_xml_response(ServiceNotImplementedResponse(), status=200, upstream_vias=_upstream_vias).body)
         child_match = fed_coverage._lookup_child_coverage(
             req.civic_address.country, req.civic_address.a1, req.civic_address.a2,
             req.civic_address.a3, req.civic_address.a4, req.civic_address.a5,
@@ -765,7 +826,8 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             child_uri = child_match.get("lost_server", "")
             if child_uri:
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200,
+                    upstream_vias=_upstream_vias,
                 ).body)
             log.warning(
                 "Forest Guide: child coverage match found but lost_server is empty "
@@ -775,6 +837,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
         return _respond(_to_xml_response(
             NotFoundResponse(message="No authoritative LVF tree found for this location. The Forest Guide has no registered coverage region matching the submitted civic address."),
             status=200,
+            upstream_vias=_upstream_vias,
         ).body)
 
     effective_urn, is_alias = _resolve_service_urn(req.service_urn)
@@ -790,7 +853,8 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
                 if recursive:
                     return _respond(await _recurse_to_uri_out(xml_bytes, child_uri))
                 return _respond(_to_xml_response(
-                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200
+                    RedirectResponse(target=child_uri, source=runtime_state._server_uri), status=200,
+                    upstream_vias=_upstream_vias,
                 ).body)
             log.warning(
                 "LoST-Sync: child coverage match found but lost_server is empty "
@@ -803,13 +867,15 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
             if recursive:
                 return _respond(await _recurse_out(xml_bytes))
             return _respond(_to_xml_response(
-                RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri), status=200
+                RedirectResponse(target=runtime_state._parent_uri, source=runtime_state._server_uri), status=200,
+                upstream_vias=_upstream_vias,
             ).body)
         return _respond(_to_xml_response(
             LocationValidationUnavailableResponse(
                 message="This node has no GIS data and no configured parent for this location"
             ),
             status=200,
+            upstream_vias=_upstream_vias,
         ).body)
 
     now = runtime_state.now()
@@ -820,11 +886,11 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
 
     g0 = gate0.check(effective_urn, gis_provisioning._boundaries, now)
     if g0 is not None:
-        return _respond(_to_xml_response(g0, status=200).body)
+        return _respond(_to_xml_response(g0, status=200, upstream_vias=_upstream_vias).body)
 
     g1 = gate1.check(req.civic_address)
     if g1 is not None:
-        return _respond(_to_xml_response(g1, status=200).body)
+        return _respond(_to_xml_response(g1, status=200, upstream_vias=_upstream_vias).body)
 
     matched_boundaries = [
         b for b in gis_provisioning._boundaries
@@ -839,7 +905,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     if ooc is not None:
         if recursive and isinstance(ooc, RedirectResponse):
             return _respond(await _recurse_out(xml_bytes))
-        return _respond(_to_xml_response(ooc, status=200).body)
+        return _respond(_to_xml_response(ooc, status=200, upstream_vias=_upstream_vias).body)
 
     final = response_assembly.assemble(
         g2,
@@ -855,7 +921,7 @@ async def handle_find_service_async(xml_bytes: bytes, client_addr: Optional[str]
     if is_alias and final.type == "locationValidation":
         for m in final.mapping:
             m.service_urn = req.service_urn
-    response_bytes = _to_xml_response(final, status=200, as_of_used=as_of_used).body
+    response_bytes = _to_xml_response(final, status=200, as_of_used=as_of_used, upstream_vias=_upstream_vias, location_id=req.location_id).body
     if final.type == "notFound":
         asyncio.create_task(file_lost_dr(
             query=LoSTQuery.findService,

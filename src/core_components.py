@@ -73,7 +73,15 @@ def build_core_components() -> CoreComponents:
     )
 
     state_store = InProcessStateStore()
-    element_notifier = ElementStateNotifier(identity, state_store, min_notify_interval=1.0)
+
+    logging_client = LoggingClient(
+        identity=identity,
+        logging_service_uri=os.environ.get("LVF_LOGGING_SERVICE_URI", "") or None,
+    )
+
+    element_notifier = ElementStateNotifier(
+        identity, state_store, min_notify_interval=1.0, logging_client=logging_client,
+    )
     service_domain = os.environ.get("LVF_SERVICE_DOMAIN", identity.element_id)
     service_notifier = ServiceStateNotifier(
         service=service_domain,
@@ -83,17 +91,14 @@ def build_core_components() -> CoreComponents:
         store=state_store,
         min_notify_interval=1.0,
         supports_security_posture=False,
+        logging_client=logging_client,
     )
 
     discrepancy = DiscrepancyReporting(
         identity=identity,
         contact_jcard=_build_dr_contact_jcard(),
         agent_id=os.environ.get("LVF_AGENCY_ID") or None,
-    )
-
-    logging_client = LoggingClient(
-        identity=identity,
-        logging_service_uri=os.environ.get("LVF_LOGGING_SERVICE_URI", "") or None,
+        logging_client=logging_client,
     )
 
     return CoreComponents(
