@@ -254,11 +254,13 @@ def _complete_location_rcl(parent: etree._Element, data) -> None:
 
 
 def _emit_complete_location(parent: etree._Element, elements: list[tuple[str, str, str]]) -> None:
+    # draft-ietf-ecrit-similar-location-19: completeLocation is typed as
+    # lost1:locationInformation — civicAddress is its DIRECT child and
+    # "profile" is an attribute on completeLocation itself. No intermediate
+    # <location> element (that was a prior defect, corrected here).
     cl = etree.SubElement(parent, f"{{{lost_xml._NS_RLI}}}completeLocation", nsmap={"rli": lost_xml._NS_RLI})
-    loc = etree.SubElement(cl, f"{{{lost_xml._NS_LOST}}}location")
-    loc.set("id", "complete")
-    loc.set("profile", "civic")
-    ca_el = etree.SubElement(loc, f"{{{lost_xml._NS_CA}}}civicAddress")
+    cl.set("profile", "civic")
+    ca_el = etree.SubElement(cl, f"{{{lost_xml._NS_CA}}}civicAddress")
     for clark, _, val in elements:
         e = etree.SubElement(ca_el, clark)
         e.text = val

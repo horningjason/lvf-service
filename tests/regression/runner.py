@@ -37,6 +37,13 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 _TEST_ID_RE = re.compile(r'^[A-Z0-9]+(?:-[A-Z0-9]+)+-\d{3}$')
 
 _NS_LOST = "urn:ietf:params:xml:ns:lost1"
+_NS_RLI = "urn:ietf:params:xml:ns:lost-rli1"
+_NS_CA  = "urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+
+# NOTE: _NS_CA intentionally matches whatever civicAddress namespace the
+# response serializer actually emits. If completeLocation comparisons show
+# spurious "no civicAddress found" diffs, verify this string against
+# src/lost/wire/lost_xml.py's _NS_CA — they must be identical.
 
 
 def _dispatch(xml_bytes: bytes) -> bytes:
@@ -53,6 +60,66 @@ def _dispatch(xml_bytes: bytes) -> bytes:
     return handle_find_service(xml_bytes)
 
 
+def _extract_path_vias(root: etree._Element) -> list[str]:
+    """Return the ordered list of <path><via source="..."/> values, or
+    an empty list if no <path> element is present. <path> is legal on
+    findServiceResponse, listServicesResponse, and
+    listServicesByLocationResponse per the RFC 5222 schema
+    (commonResponsePattern) — NOT on redirect or errors, which never
+    carry a <path> at all."""
+    path_el = root.find(f"{{{_NS_LOST}}}path")
+    if path_el is None:
+        return []
+    return [
+        via.get("source", "")
+        for via in path_el.findall(f"{{{_NS_LOST}}}via")
+    ]
+
+
+def _extract_complete_location(root: etree._Element) -> dict | None:
+    """Extract completeLocation structure for regression comparison, or
+    None if absent. Captures the properties that distinguish the
+    conformant shape (draft-ietf-ecrit-similar-location-19: profile on
+    completeLocation, civicAddress as its DIRECT child) from the prior
+    defect (an intervening <lost:location> wrapper):
+
+      - profile:        the 'profile' attribute on <completeLocation>
+      - has_location_wrapper: True if a <lost:location> element sits
+                        between completeLocation and civicAddress (the
+                        defect); must be False for a conformant response
+      - fields:         ordered list of (localname, value) for each
+                        civicAddress child, wherever civicAddress is found
+    """
+    lv = root.find(f"{{{_NS_LOST}}}locationValidation")
+    if lv is None:
+        return None
+    cl = lv.find(f"{{{_NS_RLI}}}completeLocation")
+    if cl is None:
+        return None
+
+    location_wrapper = cl.find(f"{{{_NS_LOST}}}location")
+    has_location_wrapper = location_wrapper is not None
+
+    # Find civicAddress wherever it lives (direct child = conformant;
+    # under a <location> wrapper = defect) so we can still report fields
+    # in both cases rather than silently reporting none.
+    ca = cl.find(f"{{{_NS_CA}}}civicAddress")
+    if ca is None and location_wrapper is not None:
+        ca = location_wrapper.find(f"{{{_NS_CA}}}civicAddress")
+
+    fields: list[tuple[str, str]] = []
+    if ca is not None:
+        for child in ca:
+            local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            fields.append((local, (child.text or "").strip()))
+
+    return {
+        "profile": cl.get("profile"),
+        "has_location_wrapper": has_location_wrapper,
+        "fields": fields,
+    }
+
+
 def _parse_outcome(xml_bytes: bytes) -> dict:
     """Extract comparable fields from a response XML blob."""
     root = etree.fromstring(xml_bytes)
@@ -64,17 +131,27 @@ def _parse_outcome(xml_bytes: bytes) -> dict:
             invalid_el   = lv.find(f"{{{_NS_LOST}}}invalid")
             unchecked_el = lv.find(f"{{{_NS_LOST}}}unchecked")
             mapping_el   = root.find(f"{{{_NS_LOST}}}mapping")
+            location_used_el = root.find(f"{{{_NS_LOST}}}locationUsed")
             return {
-                "outcome":   "locationValidation",
-                "valid":     sorted((valid_el.text or "").split())     if valid_el     is not None else [],
-                "invalid":   (invalid_el.text or "").strip()           if invalid_el   is not None else None,
-                "unchecked": sorted((unchecked_el.text or "").split()) if unchecked_el is not None else [],
-                "source_id": mapping_el.get("sourceId")                if mapping_el   is not None else None,
+                "outcome":      "locationValidation",
+                "valid":        sorted((valid_el.text or "").split())     if valid_el     is not None else [],
+                "invalid":      (invalid_el.text or "").strip()           if invalid_el   is not None else None,
+                "unchecked":    sorted((unchecked_el.text or "").split()) if unchecked_el is not None else [],
+                "source_id":    mapping_el.get("sourceId")                if mapping_el   is not None else None,
+                "location_used": location_used_el.get("id")               if location_used_el is not None else None,
+                "path_vias":    _extract_path_vias(root),
+                "complete_location": _extract_complete_location(root),
             }
         warnings = root.find(f"{{{_NS_LOST}}}warnings")
         if warnings is not None and warnings.find(f"{{{_NS_LOST}}}locationValidationUnavailable") is not None:
-            return {"outcome": "locationValidationUnavailable"}
-        return {"outcome": "findServiceResponse_unknown"}
+            return {
+                "outcome": "locationValidationUnavailable",
+                "path_vias": _extract_path_vias(root),
+            }
+        return {
+            "outcome": "findServiceResponse_unknown",
+            "path_vias": _extract_path_vias(root),
+        }
 
     if root.tag == f"{{{_NS_LOST}}}redirect":
         return {
@@ -85,7 +162,11 @@ def _parse_outcome(xml_bytes: bytes) -> dict:
     if root.tag == f"{{{_NS_LOST}}}listServicesResponse":
         sl = root.find(f"{{{_NS_LOST}}}serviceList")
         urns = sorted((sl.text or "").split()) if sl is not None else []
-        return {"outcome": "listServicesResponse", "service_list": urns}
+        return {
+            "outcome": "listServicesResponse",
+            "service_list": urns,
+            "path_vias": _extract_path_vias(root),
+        }
 
     if root.tag == f"{{{_NS_LOST}}}listServicesByLocationResponse":
         sl = root.find(f"{{{_NS_LOST}}}serviceList")
@@ -95,6 +176,7 @@ def _parse_outcome(xml_bytes: bytes) -> dict:
             "outcome": "listServicesByLocationResponse",
             "service_list": urns,
             "location_used": lu.get("id") if lu is not None else None,
+            "path_vias": _extract_path_vias(root),
         }
 
     if root.tag == f"{{{_NS_LOST}}}errors":
@@ -132,6 +214,11 @@ def _diff(actual: dict, golden: dict) -> list[str]:
                 diffs.append(
                     f"location_used: got '{actual.get('location_used')}', expected '{golden.get('location_used')}'"
                 )
+        if golden.get("path_vias") is not None:
+            if actual.get("path_vias") != golden.get("path_vias"):
+                diffs.append(
+                    f"path_vias: got {actual.get('path_vias')}, expected {golden.get('path_vias')}"
+                )
         return diffs
 
     if actual.get("valid") != golden.get("valid"):
@@ -152,6 +239,42 @@ def _diff(actual: dict, golden: dict) -> list[str]:
                 f"mapping sourceId: got '{actual.get('source_id')}', "
                 f"expected '{golden.get('source_id')}'"
             )
+    if actual.get("location_used") != golden.get("location_used"):
+        diffs.append(
+            f"location_used: got '{actual.get('location_used')}', "
+            f"expected '{golden.get('location_used')}'"
+        )
+    if golden.get("path_vias") is not None:
+        if actual.get("path_vias") != golden.get("path_vias"):
+            diffs.append(
+                f"path_vias: got {actual.get('path_vias')}, expected {golden.get('path_vias')}"
+            )
+
+    # completeLocation (draft-ietf-ecrit-similar-location-19). Compared only
+    # when the golden recorded one (None golden = "don't care", consistent
+    # with the source_id convention).
+    if golden.get("complete_location") is not None:
+        a_cl = actual.get("complete_location")
+        g_cl = golden.get("complete_location")
+        if a_cl is None:
+            diffs.append("complete_location: got none, expected present")
+        else:
+            if a_cl.get("has_location_wrapper"):
+                diffs.append(
+                    "complete_location: non-conformant <location> wrapper present "
+                    "between completeLocation and civicAddress (should be absent "
+                    "per draft-ietf-ecrit-similar-location-19)"
+                )
+            if a_cl.get("profile") != g_cl.get("profile"):
+                diffs.append(
+                    f"complete_location profile: got '{a_cl.get('profile')}', "
+                    f"expected '{g_cl.get('profile')}'"
+                )
+            if a_cl.get("fields") != g_cl.get("fields"):
+                diffs.append(
+                    f"complete_location fields: got {a_cl.get('fields')}, "
+                    f"expected {g_cl.get('fields')}"
+                )
     return diffs
 
 

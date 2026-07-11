@@ -127,10 +127,10 @@ def test_recursive_call_returns_lost_response():
 def test_recursive_response_appends_our_via_after_upstream():
     """
     When the parent returns a findServiceResponse, our server's <via> appears
-    LAST in the response <path> — RFC 5222 §6: the authoritative server (the
-    parent, here) copies the request's upstream vias verbatim and appends its
-    own after them. This server, as the recursing/forwarding node, does not
-    modify the response's <path> on the way back.
+    FIRST in the response <path> — RFC 5222 §6: this server is the
+    initial/forwarding receiver in this 2-hop scenario, so its <via>
+    identifies the start of the path, while the parent's <via> (the
+    authoritative answerer) is correctly last.
 
     Requires: parent LVF running at LVF_PARENT_URI/lost AND the parent
     returns a findServiceResponse (i.e. it has data for the submitted address
@@ -153,9 +153,11 @@ def test_recursive_response_appends_our_via_after_upstream():
 
     vias = path_el.findall(f"{{{_NS_LOST}}}via")
     assert len(vias) >= 1, "<path> must contain at least one <via>"
-    assert vias[-1].get("source") == _server_uri, (
-        f"Last <via> must identify this server ({_server_uri}), "
-        f"got '{vias[-1].get('source')}'"
+    assert vias[0].get("source") == _server_uri, (
+        f"First <via> must identify this server ({_server_uri}) — it is the "
+        f"initial/forwarding receiver in this 2-hop scenario; the parent's "
+        f"via (the authoritative answerer) is correctly last. Got "
+        f"'{vias[0].get('source')}'"
     )
 
 
@@ -204,7 +206,7 @@ def test_recursive_known_address_returns_valid():
 
 def test_recursive_known_address_via_appended():
     """
-    1522 8th Street North, Fargo — our <via> must be the LAST element in
+    1522 8th Street North, Fargo — our <via> must be the FIRST element in
     the forwarded response <path> (RFC 5222 §6 — see
     test_recursive_response_appends_our_via_after_upstream for the full
     rationale).
@@ -224,9 +226,10 @@ def test_recursive_known_address_via_appended():
 
     vias = path_el.findall(f"{{{_NS_LOST}}}via")
     assert len(vias) >= 1, "<path> must contain at least one <via>"
-    assert vias[-1].get("source") == _server_uri, (
-        f"Last <via> must be this server ({_server_uri}), "
-        f"got '{vias[-1].get('source')}'"
+    assert vias[0].get("source") == _server_uri, (
+        f"First <via> must be this server ({_server_uri}) — it is the "
+        f"initial/forwarding receiver here; the parent's via is correctly "
+        f"last. Got '{vias[0].get('source')}'"
     )
 
 
