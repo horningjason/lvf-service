@@ -58,12 +58,16 @@ def _add_via_to_request(body: bytes) -> bytes:
 
 
 def _make_errors_xml(error_type: str, message: str = "") -> bytes:
+    # RFC 5222 basicException/message pattern: the human-readable text is a
+    # "message" ATTRIBUTE (not element text), and xml:lang is grouped with
+    # it — both present together or neither. Mirrors
+    # response_xml._serialize_errors.
     root = etree.Element(f"{{{lost_xml._NS_LOST}}}errors", nsmap={None: lost_xml._NS_LOST})
     root.set("source", runtime_state._server_uri)
     err = etree.SubElement(root, f"{{{lost_xml._NS_LOST}}}{error_type}")
-    err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
     if message:
-        err.text = message
+        err.set("message", message)
+        err.set("{http://www.w3.org/XML/1998/namespace}lang", "en")
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 
 

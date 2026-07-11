@@ -202,6 +202,13 @@ runtime_state.logging_client   = app.state.core.logging_client
 app.add_middleware(LimitBodySize)
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(NoCacheMiddleware)
+
+from i3_fe_core.web_service.versions import build_version_entry, make_versions_route
+
+_lvf_version_major = int(os.environ.get("LVF_VERSION_MAJOR", "1"))
+_lvf_version_minor = int(os.environ.get("LVF_VERSION_MINOR", "0"))
+_lvf_build_fingerprint = os.environ.get("LVF_BUILD_FINGERPRINT", "lvf-service-dev")
+
 app.mount("/metrics", metrics.metrics_app())
 
 if os.environ.get("LVF_ENABLE_DR_SERVICE", "true").strip().lower() == "true":
@@ -211,11 +218,6 @@ if os.environ.get("LVF_ENABLE_DR_SERVICE", "true").strip().lower() == "true":
     # Route objects, not FastAPI path operations.
     from starlette.applications import Starlette
     from i3_fe_core.discrepancy import make_discrepancy_routes
-    from i3_fe_core.web_service.versions import build_version_entry, make_versions_route
-
-    _lvf_version_major = int(os.environ.get("LVF_VERSION_MAJOR", "1"))
-    _lvf_version_minor = int(os.environ.get("LVF_VERSION_MINOR", "0"))
-    _lvf_build_fingerprint = os.environ.get("LVF_BUILD_FINGERPRINT", "lvf-service-dev")
 
     _dr_routes = make_discrepancy_routes(app.state.core.discrepancy)
     # §4 MUST: "Each Web Service MUST implement an entry point called
@@ -236,6 +238,31 @@ if os.environ.get("LVF_ENABLE_DR_SERVICE", "true").strip().lower() == "true":
         )
     )
     app.mount("/dr", Starlette(routes=_dr_routes))
+
+# §4.12 MUST: "Each Web Service MUST implement an entry point called
+# 'Versions'." The LoST (/lost) and LoST-Sync (/sync) web services each
+# get their own Versions entry point at /lost/Versions and /sync/Versions.
+# Neither LoST (RFC 5222) nor LoST-Sync (RFC 6739) defines a serviceInfo
+# payload, so serviceInfo is omitted (conditional per §4.12); only the DR
+# service carries serviceInfo (requiredAlgorithms). All three services
+# share one build fingerprint (they are one code set) and report v1.0.
+from starlette.applications import Starlette as _Starlette
+
+_lost_version_entry = build_version_entry(_lvf_version_major, _lvf_version_minor)
+app.mount("/lost/Versions", _Starlette(routes=[
+    make_versions_route(
+        fingerprint_provider=_lvf_build_fingerprint,
+        versions_provider=[_lost_version_entry],
+        path="/",
+    )
+]))
+app.mount("/sync/Versions", _Starlette(routes=[
+    make_versions_route(
+        fingerprint_provider=_lvf_build_fingerprint,
+        versions_provider=[_lost_version_entry],
+        path="/",
+    )
+]))
 
 
 @app.get("/health")
