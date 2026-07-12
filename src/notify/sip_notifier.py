@@ -23,9 +23,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
+from lxml import etree
 from sipmessage import Address, CSeq, MediaType, Message, Parameters, Request, Response, URI, Via
 
 from i3_fe_core.notify import SipNotifier, SipResponse, SipSubscribeRequest, SipSubscription
+from src.lost.wire import lost_xml
 from i3_fe_core.state.element_state import (
     EVENT_PACKAGE_NAME as _ELEMENT_EVENT_PACKAGE,
     NOTIFY_MIME_TYPE as _ELEMENT_MIME_TYPE,
@@ -200,6 +202,8 @@ class SipWireAdapter:
             return
         if msg.method == "SUBSCRIBE":
             await self._handle_subscribe(msg, addr, send_fn, transport)
+        elif msg.method == "OPTIONS":
+            self._handle_options(msg, send_fn)
         else:
             log.debug("SIP: ignored %s from %s", msg.method, addr)
 
@@ -224,6 +228,8 @@ class SipWireAdapter:
         # 1.0s floor is our own flood-protection safeguard on interval
         # values subscribers do request, not something the spec requires.
         requested_interval = _parse_min_interval(event_header)
+        if requested_interval <= 0:
+            requested_interval = _parse_min_interval_from_body(req.body)
         min_interval = max(requested_interval, 1.0) if requested_interval > 0 else 0.0
 
         remote_host, remote_port = addr[0], addr[1]
@@ -296,6 +302,13 @@ class SipWireAdapter:
             return True
         allowed = {u.strip() for u in allowed_raw.split(",") if u.strip()}
         return request.subscriber_uri in allowed
+
+    # ── OPTIONS handling ──────────────────────────────────────────────────────
+
+    def _handle_options(self, req: Request, send_fn: Callable[[bytes], None]) -> None:
+        """RFC 3261 §11: any live element MUST respond to OPTIONS. Transport-level
+        keepalive only — stateless reply, no dialog, no core/state/logging involvement."""
+        send_fn(bytes(_options_response(req)))
 
     # ── NOTIFY delivery ───────────────────────────────────────────────────────
 
@@ -437,6 +450,25 @@ def _parse_min_interval(event_header: str) -> float:
     return 0.0
 
 
+_NS_FILTER = "urn:ietf:params:xml:ns:simple-filter"
+
+
+def _parse_min_interval_from_body(xml_bytes: Optional[bytes]) -> float:
+    """RFC 4661 filter-body fallback for the min-interval a subscriber requests,
+    used when the Event header doesn't carry a min-interval param."""
+    if not xml_bytes:
+        return 0.0
+    try:
+        root = etree.fromstring(xml_bytes, parser=lost_xml._XML_PARSER)
+        el = root.find(f".//{{{_NS_FILTER}}}filter/{{{_NS_FILTER}}}what/{{{_NS_FILTER}}}min-interval")
+        if el is None or el.text is None:
+            return 0.0
+        return float(el.text.strip())
+    except (etree.XMLSyntaxError, ValueError) as exc:
+        log.debug("SIP: malformed filter body, ignoring min-interval: %s", exc)
+        return 0.0
+
+
 def _parse_contact_uri(contact_uri: str, fallback_host: str, fallback_port: int) -> URI:
     if contact_uri:
         try:
@@ -478,6 +510,19 @@ def _ok_response(req: Request, expires: int, to_addr_with_tag: str) -> Response:
     event_val = req.headers.get("Event")
     if event_val:
         resp.headers.add("Event", event_val)
+    resp.content_length = 0
+    return resp
+
+
+def _options_response(req: Request) -> Response:
+    resp = Response(200, "OK")
+    if req.via:
+        resp.via = req.via
+    resp.from_address = req.from_address
+    resp.to_address = req.to_address
+    resp.call_id = req.call_id
+    resp.cseq = req.cseq
+    resp.headers.add("Allow", "SUBSCRIBE, OPTIONS")
     resp.content_length = 0
     return resp
 
