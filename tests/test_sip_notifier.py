@@ -291,9 +291,9 @@ class TestUnsubscribe:
 
 class TestNotifyOnStateChange:
     def test_element_state_change_triggers_notify(self):
-        """The wire adapter floors min_notify_interval at 1.0s (decision 5), so
-        the watchdog/coalescing timer — not an immediate send — delivers this
-        NOTIFY; the initial subscribe NOTIFY already consumed the rate window."""
+        """No min-interval was requested in the SUBSCRIBE (§2.4.1: the watchdog
+        filter only applies "if specified"), so this delivers immediately —
+        no floor, no wait for a watchdog timer."""
         adapter = _make_adapter()
         notifies: List[bytes] = []
 
@@ -306,7 +306,7 @@ class TestNotifyOnStateChange:
             await _send(adapter, _make_subscribe(event=EVENT_ELEMENT, call_id="elem@host"))
             notifies.clear()
             adapter._element_notifier.set_state(ElementState.SERVICE_DISRUPTION, "test")
-            await asyncio.sleep(1.1)
+            await asyncio.sleep(0)
 
         asyncio.run(run())
 
@@ -316,8 +316,8 @@ class TestNotifyOnStateChange:
         assert payload["state"] == "ServiceDisruption"
 
     def test_service_state_change_triggers_notify(self):
-        """See test_element_state_change_triggers_notify: the 1.0s min-interval
-        floor means this NOTIFY comes from the watchdog timer, not immediately."""
+        """See test_element_state_change_triggers_notify: no min-interval
+        requested means immediate delivery, same reasoning applies here."""
         adapter = _make_adapter()
         notifies: List[bytes] = []
 
@@ -330,13 +330,67 @@ class TestNotifyOnStateChange:
             await _send(adapter, _make_subscribe(event=EVENT_SERVICE, call_id="svc@host"))
             notifies.clear()
             adapter._service_notifier.set_state(ServiceState.OVERLOADED, "maintenance")
-            await asyncio.sleep(1.1)
+            await asyncio.sleep(0)
 
         asyncio.run(run())
 
         assert notifies
         payload = json.loads(Message.parse(notifies[0]).body)
         assert payload["serviceState"]["state"] == "Overloaded"
+
+    def test_unrequested_min_interval_does_not_force_heartbeat(self):
+        """§2.4.1/§2.4.2: 'Filter requests MAY specify a minimum notification
+        interval. The element MUST generate a NOTIFY meeting this filter, if
+        specified.' No filter was specified here, so nothing should arrive
+        without an actual state change — the watchdog is opt-in, not a
+        server-imposed default."""
+        adapter = _make_adapter()
+        notifies: List[bytes] = []
+
+        async def mock_transmit(data, ctx):
+            notifies.append(data)
+
+        adapter._transmit = mock_transmit
+
+        async def run():
+            await _send(adapter, _make_subscribe(event=EVENT_ELEMENT, call_id="quiet@host"))
+            notifies.clear()
+            await asyncio.sleep(1.2)  # longer than the old 1.0s floor would have used
+
+        asyncio.run(run())
+
+        assert not notifies, "No NOTIFY should be sent absent a real state change or a requested filter"
+
+    def test_explicit_min_interval_is_still_floored_and_watchdogs(self):
+        """A subscriber that DOES request a fast min-interval is still floored
+        at 1.0s (flood protection) — but unlike the no-filter case, MUST
+        watchdog per §2.4.1/§2.4.2 since the subscriber explicitly asked for
+        a filtered interval."""
+        adapter = _make_adapter()
+        notifies: List[bytes] = []
+
+        async def mock_transmit(data, ctx):
+            notifies.append(data)
+
+        adapter._transmit = mock_transmit
+
+        async def run():
+            await _send(
+                adapter,
+                _make_subscribe(event=f"{EVENT_ELEMENT};min-interval=0.1", call_id="fast@host"),
+            )
+            notifies.clear()
+            adapter._element_notifier.set_state(ElementState.SERVICE_DISRUPTION, "test")
+            adapter._element_notifier.set_state(ElementState.NORMAL, "recovered")
+            await asyncio.sleep(1.2)
+
+        asyncio.run(run())
+
+        # Rapid changes within the 1.0s floor coalesce to a single NOTIFY
+        # carrying the latest state, not one per set_state() call.
+        assert len(notifies) == 1, f"Expected exactly one coalesced NOTIFY, got {len(notifies)}"
+        payload = json.loads(Message.parse(notifies[0]).body)
+        assert payload["state"] == "Normal"
 
     def test_element_change_does_not_notify_service_subscribers(self):
         adapter = _make_adapter()

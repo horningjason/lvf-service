@@ -1,7 +1,7 @@
 # LVF — Location Validation Function
 
 This repository contains an open reference implementation of the NG9-1-1 Location Validation Function (LVF) 
-as specified in `references/LVF_Algorithm_Specification_v75.docx`. Validates civic PIDF-LO addresses against provisioned
+as specified in `references/LVF_Algorithm_Specification_v79.docx`. Validates civic PIDF-LO addresses against provisioned
 GIS data using the LoST protocol (RFC 5222). The implementation can be configured to run as a child, parent, 
 root AMS or forest guide.  When operating in forest guide mode, the service is only configured to support
 queries relevant to LVF and location validation.
@@ -200,6 +200,9 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SERVER_URI` | No | `lostserver.example.com` | Server URI in `<path>` and `<errors source>` |
 | `LVF_AGENCY_ID` | No | — | DNS-style agency identifier (e.g. `nd911.nd.gov`). Populates `agencyId` in i3 LogEvents (NENA-STA-010.3f-2021 §4.12.3.1). A WARNING is logged at startup if unset |
 | `LVF_DISPLAY_NAME_LANG` | No | `en` | `xml:lang` on `<displayName>` elements |
+| `LVF_SERVICE_DOMAIN` | No | `LVF_SERVER_URI` value | `service`/`domain`/`service_id` reported by the i3 `ServiceState` notifier (§2.4.2). Defaults to `LVF_SERVER_URI` when unset |
+| `LVF_VERSION_MAJOR` / `LVF_VERSION_MINOR` | No | `1` / `0` | Version reported by the i3 §4.12 `Versions` entry points (`/lost/Versions`, `/sync/Versions`, `/dr/Versions`). Bump major (reset minor to `0`) for breaking web-service changes, minor for backwards-compatible ones |
+| `LVF_BUILD_FINGERPRINT` | No | `lvf-service-dev` | Build/vendor identifier reported as `fingerprint` in `Versions` responses |
 | `LVF_LOG_LEVEL` | No | `INFO` | Log level for all LVF loggers (`src.*`). Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Does not affect uvicorn's own access log. `DEBUG` surfaces every gate decision and sync push/pull detail; `INFO` covers startup progress and GIS load counts; `WARNING` limits output to anomalies and recoverable failures only |
 | **Process Management** | | | |
 | `LVF_WORKERS` | No | `1` | Number of gunicorn worker processes on this machine (read by `gunicorn.conf.py`). `1` == single-process behavior. A leaf/child node may use ~CPU-core count; a Forest Guide gets no CPU-parallelism benefit from more than 1 (no GIS validation) but multi-worker is supported there too. Ignored by `python main.py` (always single-process). Multi-worker requires **Linux/Docker** — gunicorn is POSIX-only and does not run on Windows |
@@ -371,6 +374,7 @@ See `tests/regression/README.md` for full details on seeding golden files.
 | `GET` | `/coverage/civic` | Civic coverage lookup table |
 | `GET` | `/coverage/civic/explain` | Diagnose RCL segment coverage for a given admin hierarchy |
 | `GET` | `/metrics` | Prometheus exposition-format metrics (operations tooling only — no spec/protocol impact). Correct under multi-worker via prometheus_client multiprocess mode; see [Metrics](#metrics) below |
+| `GET` | `/lost/Versions`, `/sync/Versions`, `/dr/Versions` | i3 §4.12 `Versions` entry point, one per web service (`/dr/Versions` only when `LVF_ENABLE_DR_SERVICE=true`). Reports `LVF_VERSION_MAJOR.LVF_VERSION_MINOR` and `LVF_BUILD_FINGERPRINT` |
 
 ---
 

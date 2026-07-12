@@ -15,14 +15,14 @@ requests under FCC Report and Order 24-78, and a longer-term problem for any 911
 might switch LVF providers and find that validation results change.
 
 This repository is an attempt to close that gap. The algorithm is specified in detail in
-`references/LVF_Algorithm_Specification_v75.docx`, and this codebase is a normative implementation of that
+`references/LVF_Algorithm_Specification_v79.docx`, and this codebase is a normative implementation of that
 specification. Where the code and the spec conflict, the spec governs.
 
 ---
 
 ## 2. The Algorithm Specification
 
-`references/LVF_Algorithm_Specification_v75.docx` (in this repository) is the authoritative description of
+`references/LVF_Algorithm_Specification_v79.docx` (in this repository) is the authoritative description of
 the algorithm. It defines:
 
 - The three-gate structure (Pre-Gate-0 → Gate 0 → Gate 1 → Gate 2)

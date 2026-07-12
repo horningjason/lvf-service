@@ -216,7 +216,15 @@ class SipWireAdapter:
         event_package = event_header.split(";")[0].strip()
         call_id = req.call_id or ""
 
-        min_interval = max(_parse_min_interval(event_header), 1.0)
+        # §2.4.1/§2.4.2: "Filter requests MAY specify a minimum notification
+        # interval. The element MUST generate a NOTIFY meeting this filter,
+        # if specified." The watchdog/heartbeat behavior only applies when
+        # the subscriber actually asked for one — an unspecified interval
+        # (0.0) must stay off, not get floored into a forced heartbeat. The
+        # 1.0s floor is our own flood-protection safeguard on interval
+        # values subscribers do request, not something the spec requires.
+        requested_interval = _parse_min_interval(event_header)
+        min_interval = max(requested_interval, 1.0) if requested_interval > 0 else 0.0
 
         remote_host, remote_port = addr[0], addr[1]
         contact_uri = ""
