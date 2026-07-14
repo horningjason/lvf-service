@@ -1,5 +1,5 @@
 # i3 shared core (pinned to GitHub tag)
-i3-fe-core @ git+https://github.com/horningjason/i3-fe-core.git@v0.3.0
+i3-fe-core @ git+https://github.com/horningjason/i3-fe-core.git@v0.4.0
 
 # Core service
 fastapi==0.136.1
