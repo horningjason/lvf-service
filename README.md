@@ -98,6 +98,54 @@ uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
+## Working with i3-fe-core
+
+LVF's cross-cutting i3 obligations — NTP/timestamps, ElementState/ServiceState, LogEvent
+logging, SIP SUBSCRIBE/NOTIFY, and Discrepancy Reporting — live in a separate shared library,
+**[`i3-fe-core`](https://github.com/horningjason/i3-fe-core)**, not in this repo. LVF consumes
+it as a pinned dependency and wires it in via `src/core_components.py`; it keeps its own FastAPI
+app and all LoST/GIS domain logic. See `CLAUDE.md` → *Architecture — Shared i3 Core* for how the
+wiring works.
+
+**Standard install (what `pip install -r requirements.txt` does).** `requirements.txt` pins core
+directly off GitHub:
+
+```
+i3-fe-core @ git+https://github.com/horningjason/i3-fe-core.git@v0.3.0
+```
+
+No separate clone or setup step is needed — `pip install -r requirements.txt` resolves it like
+any other dependency. This does require network access to GitHub at install time. `horningjason/i3-fe-core`
+is public today, so no credentials are needed; if it's ever made private, installing will need
+auth for that host (e.g. a PAT embedded in the URL, or an SSH deploy key with the requirement
+rewritten to `git+ssh://`).
+
+**Developing against an unreleased core change.** If a change spans both repos (e.g. LVF needs a
+new core notifier before it's tagged), point `pip` at a local checkout instead of the pinned tag:
+
+```powershell
+# Clone i3-fe-core as a sibling directory of lvf-service, then:
+pip uninstall i3-fe-core
+pip install -e ../i3-fe-core
+```
+
+`-e` installs core in editable mode, so edits in the sibling checkout take effect on the next
+process restart — no reinstall needed. **Do not commit `requirements.txt` pointed at a local
+path** — revert it to the `git+https://...@vX.Y.Z` line before committing.
+
+**Upgrading the pinned tag.**
+
+1. Tag the desired commit in `i3-fe-core` (or use an existing tag).
+2. Update the `@vX.Y.Z` suffix in `requirements.txt`.
+3. `pip install -r requirements.txt` (or rebuild the Docker image).
+4. Run `python -m tests.regression.runner` — it exercises every core-backed code path (logging,
+   state notifications, SIP, discrepancy reporting) indirectly through `handle_find_service()`.
+5. Smoke-test what the regression suite doesn't cover directly: `tests/smoke/sip_smoke.py` (SIP
+   SUBSCRIBE/NOTIFY) and `tests/smoke/dr_smoke.py` (`/dr` Discrepancy Reporting) against a
+   running instance.
+
+---
+
 ## Running: Single Worker vs. Multiple Workers
 
 The LVF supports running multiple worker processes on a single machine. Every node type
@@ -454,11 +502,10 @@ tests/                      Test XML inputs and regression infrastructure
   regression/seed.py          Golden file seeder
 ```
 
-> **Shared core.** Cross-cutting i3 concerns — NTP/timestamps, ElementState/ServiceState,
-> LogEvent logging, SIP SUBSCRIBE/NOTIFY, and Discrepancy Reporting — are **not** in this repo.
-> They come from the pinned **`i3-fe-core`** library (`requirements.txt`) and are wired in via
-> `core_components.py`. LVF keeps its own FastAPI app and all LoST/GIS domain logic. See
-> `CLAUDE.md` → *Architecture — Shared i3 Core* for the full picture.
+> **Shared core.** Cross-cutting i3 concerns are not in this repo — they come from the pinned
+> **`i3-fe-core`** library. See [Working with i3-fe-core](#working-with-i3-fe-core) above for
+> install/upgrade instructions, and `CLAUDE.md` → *Architecture — Shared i3 Core* for the full
+> wiring picture.
 
 ---
 

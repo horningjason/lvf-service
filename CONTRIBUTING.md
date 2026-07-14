@@ -10,6 +10,11 @@ coverage.
 
 For development setup and running the service, see the [Quick Start — Python](README.md#quick-start--python) section of the README.
 
+If your change touches the shared i3 plumbing (NTP, state notifications, logging, SIP,
+discrepancy reporting), it likely lives in the separate `i3-fe-core` repo rather than here — see
+[Working with i3-fe-core](README.md#working-with-i3-fe-core) for the pinned-dependency install and
+the local-editable-checkout workflow for changes spanning both repos.
+
 ## Running and Adding Tests
 
 The regression suite compares each request in `tests/requests/` against a golden file.
