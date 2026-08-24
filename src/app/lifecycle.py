@@ -191,6 +191,11 @@ async def lifespan_startup() -> None:
     else:
         log.info("Worker is a non-leader — another worker runs SIP notifier and startup sync")
 
+    # Ahead of the Forest Guide branch below, which returns early: every role
+    # that can receive coverage needs this warning, and Forest Guides receive
+    # the most of it.
+    fed_coverage._warn_if_no_allowed_sources()
+
     if role is NodeRole.FOREST_GUIDE:
         _enter_forest_guide_mode()
         gpkg_env = os.environ.get("LVF_GPKG_PATH")

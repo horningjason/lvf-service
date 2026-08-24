@@ -27,7 +27,7 @@ from src.lost import list_services, list_services_by_location, get_service_bound
 from src.gis import provisioning as gis_provisioning
 from src.observability import metrics
 from src.validation.models import CivicCoverageEntry
-from src.core_components import build_core_components
+from src.core_components import build_core_components, build_tls_settings, validate_tls_files
 from src.logging.log_events import generate_query_id
 from src.logging.logger import emit_log_event, make_query_event, make_response_event
 
@@ -57,31 +57,12 @@ def _record_lost_outcome(result: bytes) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    tls_mode = os.environ.get("LVF_TLS_MODE", "disabled").lower()
-    log.info("TLS mode: %s", tls_mode)
-    if tls_mode in ("tls", "mtls"):
-        cert_file = os.environ.get("LVF_TLS_CERT_FILE", "")
-        key_file  = os.environ.get("LVF_TLS_KEY_FILE",  "")
-        if not cert_file or not os.path.exists(cert_file):
-            log.error(
-                "LVF_TLS_CERT_FILE must be set and file must exist (got: %r) — aborting startup",
-                cert_file,
-            )
-            raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CERT_FILE")
-        if not key_file or not os.path.exists(key_file):
-            log.error(
-                "LVF_TLS_KEY_FILE must be set and file must exist (got: %r) — aborting startup",
-                key_file,
-            )
-            raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_KEY_FILE")
-        if tls_mode == "mtls":
-            ca_file = os.environ.get("LVF_TLS_CA_FILE", "")
-            if not ca_file or not os.path.exists(ca_file):
-                log.error(
-                    "LVF_TLS_CA_FILE must be set and file must exist for mtls mode (got: %r) — aborting startup",
-                    ca_file,
-                )
-                raise RuntimeError("TLS configuration error: missing or invalid LVF_TLS_CA_FILE")
+    tls_settings = build_tls_settings()
+    log.info("TLS mode: %s", os.environ.get("LVF_TLS_MODE", "disabled").lower())
+    tls_error = validate_tls_files(tls_settings)
+    if tls_error is not None:
+        log.error("%s — aborting startup", tls_error)
+        raise RuntimeError(f"TLS configuration error: {tls_error}")
 
     ntp_client = NtpClient(servers=app.state.core.settings.ntp_servers)
     await ntp_client.start()

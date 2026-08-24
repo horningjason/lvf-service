@@ -26,7 +26,7 @@ from src import runtime_state
 from src.federation import coverage as fed_coverage
 from src.federation import recursion as fed_recursion
 from src.gis import provisioning as gis_provisioning
-from src.utils import outbound_client_cert, outbound_ssl_context
+from src.utils import outbound_ssl_context
 from src.logging.log_events import generate_query_id
 from src.logging.logger import emit_log_event, make_query_event, make_response_event
 
@@ -265,7 +265,7 @@ def _sync_error_response(error_type: str, message: str) -> Response:
     return Response(content=body, status_code=200, media_type="application/lostsync+xml")
 
 
-async def _handle_push_mappings(root: etree._Element) -> Response:
+async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
     mapping_els = root.findall(f"{{{lost_xml._NS_LOST}}}mapping")
     not_deleted: list[tuple[str, str]] = []
     last_source_id = ""
@@ -279,6 +279,27 @@ async def _handle_push_mappings(root: etree._Element) -> Response:
         parsed    = _parse_sync_mapping(mapping_el)
         last_source_id = parsed["source_id"]
         ops.append((is_delete, parsed))
+
+    # Peer authorization (§3.7.2, Appendix A.11). (source, sourceId) is asserted
+    # by the sender and the coverage store is keyed on it, so an unconstrained
+    # push lets any trust-anchored peer overwrite another child's entry or add a
+    # novel one that wins routing. Reject the WHOLE request on any unauthorized
+    # mapping rather than applying the remainder: a partial apply lets a forged
+    # mapping ride along with a valid one and still land its side effects
+    # (including the upstream propagation below).
+    for _is_delete, parsed in ops:
+        if not fed_coverage._is_source_permitted(parsed["source"], parsed["source_id"]):
+            log.warning(
+                "LoST-Sync: REJECTED pushMappings from %s — not authorized to assert "
+                "source=%r sourceId=%r (see %s). No mapping in this request was applied.",
+                client, parsed["source"], parsed["source_id"],
+                fed_coverage._ALLOWED_SOURCES_VAR,
+            )
+            return _sync_error_response(
+                "forbidden",
+                f"Not authorized to assert coverage for source={parsed['source']!r} "
+                f"sourceId={parsed['source_id']!r}.",
+            )
 
     def _apply(coverage: list[dict]) -> bool:
         changed = False
@@ -486,7 +507,7 @@ async def _push_coverage_to_parent() -> bool:
             query_adapter=push_body.decode("utf-8", errors="replace"),
         ))
         try:
-            async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context(), cert=outbound_client_cert()) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
                 resp = await client.post(
                     parent_sync_uri,
                     content=push_body,
@@ -590,7 +611,7 @@ async def _push_coverage_to_fg() -> bool:
             query_adapter=push_body.decode("utf-8", errors="replace"),
         ))
         try:
-            async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context(), cert=outbound_client_cert()) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
                 resp = await client.post(
                     fg_sync_uri,
                     content=push_body,
@@ -651,7 +672,7 @@ async def _pull_from_child(child_entry: str) -> bool:
         query_adapter=get_body.decode("utf-8", errors="replace"),
     ))
     try:
-        async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context(), cert=outbound_client_cert()) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
             resp = await client.post(
                 child_sync_url,
                 content=get_body,
@@ -691,18 +712,41 @@ async def _pull_from_child(child_entry: str) -> bool:
             _parse_sync_mapping(mapping_el, child_uri_hint=child_lost_url)
             for mapping_el in resp_root.findall(f"{{{lost_xml._NS_LOST}}}mapping")
         ]
-        count = len(parsed_list)
+
+        # Peer authorization (§3.7.2, Appendix A.11). The pull path ingests
+        # exactly as the push path does, and a configured child can return
+        # mappings claiming to be any OTHER child, so the same constraint
+        # applies here. Skip unauthorized mappings rather than abandoning the
+        # pull: this sync is our own initiative against a configured peer, and
+        # discarding its legitimate mappings over one bad one would be a
+        # self-inflicted outage.
+        permitted_list = []
+        for parsed in parsed_list:
+            if fed_coverage._is_source_permitted(parsed["source"], parsed["source_id"]):
+                permitted_list.append(parsed)
+            else:
+                log.warning(
+                    "LoST-Sync: SKIPPED mapping from %s — not authorized to assert "
+                    "source=%r sourceId=%r (see %s)",
+                    child_sync_url, parsed["source"], parsed["source_id"],
+                    fed_coverage._ALLOWED_SOURCES_VAR,
+                )
+        count = len(permitted_list)
 
         if count > 0:
             def _apply(coverage: list[dict]) -> bool:
-                for parsed in parsed_list:
+                for parsed in permitted_list:
                     fed_coverage._upsert_child_coverage(parsed, coverage)
                 return True
 
             fed_coverage._with_coverage_write(_apply)
             log.info("LoST-Sync: stored %d mapping(s) received from %s", count, child_sync_url)
         else:
-            log.info("LoST-Sync: no mappings received from %s", child_sync_url)
+            log.info(
+                "LoST-Sync: no mappings stored from %s (%d received, %d skipped by %s)",
+                child_sync_url, len(parsed_list), len(parsed_list) - count,
+                fed_coverage._ALLOWED_SOURCES_VAR,
+            )
         return True
 
     except Exception as exc:
@@ -843,7 +887,7 @@ async def handle_sync(body: bytes, client) -> Response:
 
     if root.tag == f"{{{lost_xml._NS_SYNC}}}pushMappings":
         log.info("LoST-Sync: received pushMappings from %s", client)
-        response = await _handle_push_mappings(root)
+        response = await _handle_push_mappings(root, client)
     elif root.tag == f"{{{lost_xml._NS_SYNC}}}getMappingsRequest":
         log.info("LoST-Sync: received getMappingsRequest from %s", client)
         response = await _handle_get_mappings(root)

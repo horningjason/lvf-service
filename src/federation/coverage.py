@@ -287,6 +287,121 @@ def _compare_timestamps(a: str, b: str) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# LoST-Sync peer authorization (§3.7.2, Appendix A.11)
+# ---------------------------------------------------------------------------
+#
+# RFC 6739 §5.2 merges coverage mappings keyed on the (source, sourceId) pair
+# carried in the mapping element itself. Those identifiers are asserted by the
+# sending peer. mTLS authenticates the channel, but it does not establish that
+# the peer on the far end is entitled to speak for the pair it claims. Left
+# unconstrained, any peer holding a certificate that chains to LVF_TLS_CA_FILE
+# can overwrite another child's coverage entry, or introduce a novel, more
+# specific entry that wins _lookup_child_coverage()'s longest-prefix match —
+# and child coverage drives routing before Gate 0 (§3.7.3), with the mapping's
+# own <uri> naming the destination. The pushing peer would choose where those
+# queries go.
+#
+# LVF_SYNC_ALLOWED_SOURCES is the operator-configured constraint. It is a
+# comma-separated list of records, each two or three '|'-delimited fields:
+#
+#     source|sourceId[|peerIdentity]
+#
+# The optional third field is the transport identity permitted to assert that
+# pair. It is parsed and retained but NOT yet enforced — see
+# _is_source_permitted() for why.
+
+_ALLOWED_SOURCES_VAR = "LVF_SYNC_ALLOWED_SOURCES"
+
+
+def _load_allowed_sources() -> dict[tuple[str, str], Optional[str]]:
+    """Parse LVF_SYNC_ALLOWED_SOURCES into {(source, sourceId): peerIdentity}.
+
+    peerIdentity is None when a record omits the third field. Malformed records
+    are logged and skipped rather than widening the result: a typo must never
+    grant access it did not spell out.
+
+    Read from the environment on every call rather than cached. The allowlist is
+    small and the parse is a handful of string splits, so the cost is
+    negligible, and this keeps the control correct when the environment changes
+    under a running process (and keeps tests from needing a cache-reset hook).
+    """
+    raw = os.environ.get(_ALLOWED_SOURCES_VAR, "").strip()
+    if not raw:
+        return {}
+
+    allowed: dict[tuple[str, str], Optional[str]] = {}
+    for record in raw.split(","):
+        record = record.strip()
+        if not record:
+            continue
+        fields = [f.strip() for f in record.split("|")]
+        if len(fields) not in (2, 3) or not fields[0] or not fields[1]:
+            log.warning(
+                "%s: ignoring malformed record %r — expected "
+                "'source|sourceId' or 'source|sourceId|peerIdentity'",
+                _ALLOWED_SOURCES_VAR, record,
+            )
+            continue
+        allowed[(fields[0], fields[1])] = fields[2] if len(fields) == 3 and fields[2] else None
+    return allowed
+
+
+def _is_source_permitted(source: str, source_id: str, peer: Optional[str] = None) -> bool:
+    """Is the connecting peer permitted to assert coverage for (source, sourceId)?
+
+    Fail-closed: an unset or empty LVF_SYNC_ALLOWED_SOURCES permits nothing, so
+    federation sync is inert until an operator configures it.
+    _warn_if_no_allowed_sources() logs a WARNING naming the variable at startup
+    when that is the case, so the silence is never unexplained.
+
+    Matching on both fields is exact and case-sensitive, deliberately. The
+    coverage store itself matches (source, sourceId) exactly (see
+    _upsert_child_coverage), so a case-insensitive allowlist would admit
+    '{abc}' against an allowlisted '{ABC}' and then file it as a SEPARATE store
+    entry — precisely the novel entry that can win the longest-prefix match.
+    The two comparisons have to agree.
+
+    `peer` is the verified transport identity of the connecting peer, or None
+    when it is not observable. It is None on every call today: uvicorn does not
+    implement the ASGI TLS extension, so the client certificate verified at the
+    handshake is unreachable from the application layer. The allowlist's third
+    field is therefore retained but not enforced; Appendix A.11 records what
+    closing that gap requires. Once a peer identity is available, a record that
+    names one will require it to match, with no change to provisioned config.
+    """
+    allowed = _load_allowed_sources()
+    if not allowed:
+        return False
+
+    key = (source, source_id)
+    if key not in allowed:
+        return False
+
+    expected_peer = allowed[key]
+    if expected_peer is None or peer is None:
+        return True
+    return peer == expected_peer
+
+
+def _warn_if_no_allowed_sources() -> None:
+    """WARN at startup when LVF_SYNC_ALLOWED_SOURCES is unset or empty.
+
+    Fail-closed means an unconfigured node accepts no coverage at all, which
+    from the operator's side is indistinguishable from a network fault. Name the
+    variable so the cause is obvious in the log.
+    """
+    if _load_allowed_sources():
+        return
+    log.warning(
+        "%s is not set — LoST-Sync federation is INERT on this node: every "
+        "inbound pushMappings will be rejected and every pulled mapping "
+        "skipped. Set it to the 'source|sourceId' pairs this node accepts "
+        "(see .env.example) for federation to function.",
+        _ALLOWED_SOURCES_VAR,
+    )
+
+
 def _upsert_child_coverage(parsed: dict, target: Optional[list] = None) -> bool:
     coverage = _child_coverage if target is None else target
     source    = parsed.get("source", "")

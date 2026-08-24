@@ -321,9 +321,20 @@ def _child_lost_uri(child_uri: str) -> str:
 
 
 async def _forward(xml_bytes: bytes, target_uri: str, server_uri: str) -> bytes:
-    """Forward listServicesByLocation request to target and return raw XML bytes."""
+    """Forward listServicesByLocation request to target and return raw XML bytes.
+
+    Uses the same outbound TLS context as every other peer-directed call in
+    src/federation/ (recursion, sync push/pull). This call previously passed
+    no `verify=` at all, which left httpx verifying against certifi's bundle:
+    against LVF's self-signed federation CA that FAILS the handshake rather
+    than silently accepting an unverified peer, so LVF_TLS_MODE=tls/mtls
+    deployments could not forward listServicesByLocation to a peer at all.
+    """
+    # Function-local to match this module's convention for src.* imports.
+    from src.utils import outbound_ssl_context
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=outbound_ssl_context()) as client:
             resp = await client.post(
                 target_uri,
                 content=xml_bytes,

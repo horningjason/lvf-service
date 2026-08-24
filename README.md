@@ -274,6 +274,7 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SYNC_CHILDREN` | No | — | Comma-separated child LVF `/sync` URLs to pull coverage from on startup. Makes this node a LoST-Sync parent |
 | `LVF_SYNC_SOURCE_ID_CIVIC` | No | — | Stable UUID for this node's civic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
 | `LVF_SYNC_SOURCE_ID_GEODETIC` | No | — | Stable UUID for this node's geodetic coverage region push to parent. Required to push; unused if `LVF_PARENT_URI` is unset |
+| `LVF_SYNC_ALLOWED_SOURCES` | **Yes, for federation** | — | Allowlist of the `(source, sourceId)` pairs this node accepts coverage mappings for, enforced on **both** ingestion paths: inbound `/sync` `pushMappings` and outbound `LVF_SYNC_CHILDREN` pulls. RFC 6739 keys the coverage store on the pair carried *inside the mapping*, which the sending peer asserts; mTLS authenticates the channel but does not establish that the peer may speak for the identity it claims. Child coverage drives routing before Gate 0 and the mapping's own `<uri>` names the destination, so without this any peer holding a certificate that chains to `LVF_TLS_CA_FILE` can point another child's territory at a server of its choosing. Format: comma-separated `source|sourceId[|peerIdentity]` records; `source` and `sourceId` match **exactly and case-sensitively**, because the coverage store matches them that way and a looser comparison would admit a case-variant pair as a separate entry. The optional third field is parsed and retained but **not yet enforced** — uvicorn implements no ASGI TLS extension, so the verified client certificate is unreachable at the application layer (see Appendix A.11 of the algorithm specification). **FAIL-CLOSED:** unset or empty accepts nothing — every inbound `pushMappings` is answered with `<forbidden>` and every pulled mapping is skipped. A startup WARNING names this variable when unset, so an inert federation is never silent. Leave unset only on a node with no federation role. Covered by `tests/security/test_sync_source_allowlist.py` |
 | **Root AMS Mode** | | | |
 | `LVF_ROOT_AMS` | No | `false` | When `true`, activates Root AMS mode. Suppresses programmatic GIS-derived push to `LVF_PARENT_URI` and instead pushes operator-declared coverage from provisioning files to `LVF_FOREST_GUIDE_URI`. Out-of-coverage redirect/recursion via `LVF_PARENT_URI` is unaffected |
 | `LVF_FOREST_GUIDE_URI` | No | — | U-NAPTR application unique string (DNS name) identifying the Forest Guide — e.g. `lvf-fg.example.com`. Resolved via U-NAPTR on first use; `/sync` is appended internally. Must not include a path or scheme. Only used when `LVF_ROOT_AMS=true` |
@@ -295,14 +296,69 @@ Copy `.env.example` to `.env` and configure:
 | `LVF_SIP_PORT` | No | `5060` | SIP port for SUBSCRIBE/NOTIFY. Set to `0` to disable the SIP listener entirely |
 | `LVF_SIP_ALLOWED_SUBSCRIBERS` | No | — | Comma-separated SIP URIs permitted to subscribe (e.g. `sip:esrp.example.com`). When unset, all SUBSCRIBE requests are accepted (appropriate for ESInet trust model where network-level access control is assumed) |
 | **TLS** | | | |
-| `LVF_TLS_MODE` | No | `disabled` | Transport mode. `disabled` = HTTP only (default). `tls` = HTTPS with server certificate. `mtls` = HTTPS where the server requests a client certificate (`CERT_OPTIONAL`) and presents its own client certificate on outbound calls to peer nodes. **Known limitation:** client certificate presence is not currently enforced on inbound connections (gunicorn/uvicorn use `CERT_OPTIONAL`; app-level enforcement was removed) — do not rely on `mtls` alone for inbound access control. |
+| `LVF_TLS_MODE` | No | `disabled` | Transport mode. `disabled` = HTTP only (default). `tls` = HTTPS with server certificate. `mtls` = HTTPS where the server requires and verifies a client certificate (`CERT_REQUIRED`) and presents its own client certificate on outbound calls to peer nodes. Enforced on both launch paths — plain uvicorn (`main.py`) and gunicorn+UvicornWorker (`src/app/lvf_uvicorn_worker.py`'s `LvfUvicornWorker`, which injects the `i3_fe_core` TLS context directly rather than going through gunicorn's `ssl_options` forwarding; see that module's docstring for why, including this repo's own earlier `CERT_REQUIRED` attempt that silently failed to take effect). A client presenting no certificate, or an untrusted one, is rejected at the handshake (i3 §5.4). Verified live in `tests/security/test_mtls_handshake.py` (gunicorn cases are POSIX-only — skipped on Windows, run on Linux/Docker). |
 | `LVF_TLS_CERT_FILE` | No | — | Path to the server certificate PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
 | `LVF_TLS_KEY_FILE` | No | — | Path to the server private key PEM file. Required when `LVF_TLS_MODE` is `tls` or `mtls`. |
-| `LVF_TLS_CA_FILE` | No | — | Path to the CA certificate bundle PEM file. Used to verify inbound client certificates (server-side mTLS) and outbound peer server certificates on calls to other LVF nodes (sync push/pull, recursion). Required when `LVF_TLS_MODE` is `mtls`. |
-| `LVF_TLS_CLIENT_CERT_FILE` | No | — | Path to the client certificate PEM file used for mTLS outbound calls. When set, this node presents this certificate when making outbound HTTPS requests to peer nodes (child→parent sync push, parent→FG push, recursion calls). Required when `LVF_TLS_MODE` is `mtls`. Not used for `tls` or `disabled`. |
-| `LVF_TLS_CLIENT_KEY_FILE` | No | — | Path to the client private key PEM file used for mTLS outbound calls. Must correspond to `LVF_TLS_CLIENT_CERT_FILE`. Required when `LVF_TLS_MODE` is `mtls`. Not used for `tls` or `disabled`. |
+| `LVF_TLS_CA_FILE` | No | — | Path to the CA certificate bundle PEM file. Used to verify inbound client certificates (server-side mTLS), and as the trust anchor for **every** outbound HTTPS call this node makes: peer LVF nodes (sync push/pull, recursion, `listServicesByLocation` forwarding), the i3 Logging Service (`LVF_LOGGING_SERVICE_URI`), and the Discrepancy Reporting endpoint (`LVF_DR_ENDPOINT`). Required when `LVF_TLS_MODE` is `mtls`. **Also honored under `tls`:** whenever this file exists, all outbound verification above is pinned to this CA. When unset, outbound calls fall back to the platform trust store. **Caution:** if this is your private federation CA and `LVF_LOGGING_SERVICE_URI`/`LVF_DR_ENDPOINT` point at an externally-operated service with a publicly-trusted certificate, that call will fail verification once this is set — see [Outbound (Egress) Transport Security](#outbound-egress-transport-security). |
+| `LVF_TLS_CLIENT_CERT_FILE` | No | — | Path to the client certificate PEM file this node presents on outbound HTTPS calls to peer nodes (child→parent sync push, parent→FG push, parent→child pull, recursion, `listServicesByLocation` forwarding). Required when `LVF_TLS_MODE` is `mtls`. **Presented whenever both this and `LVF_TLS_CLIENT_KEY_FILE` exist — deliberately independent of `LVF_TLS_MODE`**, so a node running in `tls` mode still presents its client identity to a peer that requires one. Gating this on the mode would silently stop presenting the certificate, and the failure would surface at the *peer* as a rejected handshake. Pinned by `tests/security/test_outbound_tls.py`. |
+| `LVF_TLS_CLIENT_KEY_FILE` | No | — | Path to the client private key PEM file used for outbound calls. Must correspond to `LVF_TLS_CLIENT_CERT_FILE`. Both must exist for either to take effect (see above). |
+| `LVF_GUNICORN_CERT_OPTIONAL_FALLBACK` | No | `false` | Break-glass ONLY. Under gunicorn+UvicornWorker with `LVF_TLS_MODE=mtls`, the listener enforces `CERT_REQUIRED` by default. Setting this to `true` forces `CERT_OPTIONAL` instead — a client presenting NO certificate is ACCEPTED, and i3 §5.4 mutual authentication is NOT enforced on that worker at all, silently, for every connection it handles. **MUST NOT be set in production.** Exists as a contingency for a deployment environment in which genuine `CERT_REQUIRED` enforcement is *observed* to fail, as a temporary aid while that failure is investigated. **No such failure has been reproduced** — the handshake suite passes clean on this repo's pins (see `tests/security/test_mtls_handshake.py`), so this switch currently has no known triggering case. If you find yourself needing it, report the environment that required it rather than leaving it set. `LvfUvicornWorker` logs a WARNING naming this variable on every worker that starts with it enabled, so its use is never silent. |
 
 † Required when `LVF_GPKG_PATH` points to an existing file; not needed in routing-only mode.
+
+### Outbound (Egress) Transport Security
+
+No variables to set here — this documents what the `LVF_TLS_*` variables above already
+guarantee on **outbound** calls, which until recently was undocumented.
+
+**Every** outbound HTTPS call this node makes as a client — child→parent sync push,
+parent→Forest Guide push, parent→child pull, recursion, `listServicesByLocation` forwarding,
+**and** (via the `LoggingClient`/`DiscrepancyReporting` wiring in `src/core_components.py`)
+i3 Logging Service POSTs (`LVF_LOGGING_SERVICE_URI`) and Discrepancy Report submissions
+(`LVF_DR_ENDPOINT`) — goes through a single `SSLContext` built by
+`i3_fe_core.security.tls.make_client_ssl_context()` (`src/utils.py::outbound_ssl_context`).
+It carries the same i3 §2.8.1 constraints as the inbound listener:
+
+| Constraint | Effect |
+|---|---|
+| **TLS 1.2 floor** | TLS 1.0 / 1.1 are refused |
+| **PFS-only TLS 1.2 ciphers** | ECDHE/DHE key exchange with AES-GCM or ChaCha20; `aNULL`, `eNULL`, 3DES, RC4, MD5 and DSS excluded. TLS 1.3 suites are always PFS and not configurable |
+| **Peer certificate always verified** | `CERT_REQUIRED` with hostname checking, against `LVF_TLS_CA_FILE` when set |
+| **Client identity** | Presented whenever `LVF_TLS_CLIENT_CERT_FILE` and `LVF_TLS_CLIENT_KEY_FILE` both exist — see those rows above |
+
+The Logging Service / DR clients are built only when `LVF_TLS_MODE != disabled` (the same
+signal that gates the inbound listener) — when disabled, they fall back to a plain default
+client, which is correct if those endpoints are configured as plain `http://`.
+
+**Design note — why this differs from the GCS's equivalent wiring.** The GCS's
+`core_components.py` wires its Logging Service/DR egress from its own *listener* `TLSSettings`
+(`make_client_ssl_context(settings.tls)`), because the GCS has no federation role and its
+element certificate already serves as both server and client identity. LVF already maintains a
+**distinct** outbound identity (`LVF_TLS_CLIENT_CERT_FILE`/`_KEY_FILE`) for its federation role,
+so LVF's Logging Service/DR egress reuses *that* path (`outbound_ssl_context()`) instead —
+one context, one identity, every outbound call, rather than presenting two different
+identities on two different classes of call. See `src/core_components.py`'s module docstring
+for the full rationale.
+
+**CA-scope caution:** because all outbound calls now share one trust anchor, a deployment that
+provisions `LVF_TLS_CA_FILE` as its private federation CA and also points
+`LVF_LOGGING_SERVICE_URI` or `LVF_DR_ENDPOINT` at an externally-operated `https://` service
+(the DR endpoint in particular is typically "the responding agency's `/Reports` service" —
+i.e. a different organization) will find that service's certificate verification **fails**
+unless it is signed by, or chains to, the same CA. There is currently no way to configure
+separate trust stores for federation vs. Logging Service/DR traffic. This is a real,
+currently-irreducible tradeoff of the single shared path, not an oversight.
+
+**Operational consequence:** a peer offering only non-PFS TLS 1.2 suites is now **refused**.
+Such a peer is already non-conformant with §2.8.1, but this failure mode is new — the
+previous implementation passed the CA path straight to httpx, which built a default context
+whose TLS 1.2 cipher list includes static-RSA key exchange and applied no PFS restriction.
+
+Certificates are read once per process, so **rotating them requires a restart** — the same
+constraint the listener already has.
+
+Verified live in `tests/security/test_outbound_tls.py`. Those tests run on Windows as well as
+Linux/Docker, unlike the gunicorn cases in `test_mtls_handshake.py`, which are POSIX-only.
 
 ---
 
