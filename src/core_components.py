@@ -70,6 +70,7 @@ from i3_fe_core.state.store import InProcessStateStore, StateStore
 from i3_fe_core.state.element_state import ElementStateNotifier
 from i3_fe_core.state.service_state import ServiceStateNotifier
 
+from src.federation import coverage as fed_coverage
 from src.utils import outbound_ssl_context
 
 _TLS_MODES = {"disabled": TLSMode.OFF, "tls": TLSMode.TLS, "mtls": TLSMode.MTLS}
@@ -200,8 +201,25 @@ def build_core_components() -> CoreComponents:
         http_client=_logging_http,
     )
 
+    # Leader gate for the §4.12.3 state-change LogEvents (core >= 0.4.0).
+    # In a multi-worker deployment every worker holds its own StateStore and
+    # transitions it independently, so without this the SAME transition is
+    # logged (and POSTed to LVF_LOGGING_SERVICE_URI) once per worker. The gate
+    # covers the LogEvent only — core still fans the NOTIFY body out to every
+    # local subscriber in every worker, which is what the SIP adapter needs.
+    #
+    # Read fed_coverage._is_leader through a lambda, never captured as a value:
+    # leadership is decided later, in lifespan_startup() -> _acquire_leadership(),
+    # long after build_core_components() runs at import time, and the module
+    # attribute is rebound (not mutated) when it is. On Windows / single-worker,
+    # fcntl is absent and _acquire_leadership() always reports True, so this is
+    # a no-op there — but it is False from import until that call, which is why
+    # nothing may emit a state LogEvent before lifespan_startup().
+    _is_leader = lambda: fed_coverage._is_leader  # noqa: E731
+
     element_notifier = ElementStateNotifier(
         identity, state_store, min_notify_interval=1.0, logging_client=logging_client,
+        is_leader=_is_leader,
     )
     service_domain = os.environ.get("LVF_SERVICE_DOMAIN", identity.element_id)
     service_notifier = ServiceStateNotifier(
@@ -213,6 +231,7 @@ def build_core_components() -> CoreComponents:
         min_notify_interval=1.0,
         supports_security_posture=False,
         logging_client=logging_client,
+        is_leader=_is_leader,
     )
 
     discrepancy = DiscrepancyReporting(

@@ -299,8 +299,23 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
                 f"sourceId={parsed['source_id']!r}.",
             )
 
-    def _apply(coverage: list[dict]) -> set:
+    def _apply(coverage: list[dict]) -> tuple[set, Optional[set]]:
         changed_ids: set = set()
+        # LoST profiles ("civic" / "geodetic-2d") this request actually changed.
+        # None is the widening sentinel meaning "could not tell — treat every
+        # profile as changed", so an unparseable profile degrades to the old
+        # push-both behavior rather than silently suppressing propagation.
+        changed_profiles: Optional[set] = set()
+
+        def _note_profile(profile: str) -> None:
+            nonlocal changed_profiles
+            if changed_profiles is None:
+                return
+            if profile:
+                changed_profiles.add(profile)
+            else:
+                changed_profiles = None
+
         for is_delete, parsed in ops:
             source    = parsed["source"]
             source_id = parsed["source_id"]
@@ -308,6 +323,10 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
                 found = False
                 for i, entry in enumerate(coverage):
                     if entry.get("source") == source and entry.get("source_id") == source_id:
+                        # A delete mapping carries no <serviceBoundary>, so the
+                        # profile comes from the entry being removed, not from
+                        # the request.
+                        _note_profile(entry.get("profile", ""))
                         coverage.pop(i)
                         found = True
                         changed_ids.add(source_id)
@@ -325,13 +344,20 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
             else:
                 if fed_coverage._upsert_child_coverage(parsed, coverage):
                     changed_ids.add(source_id)
-        return changed_ids
+                    _note_profile(parsed.get("profile", ""))
+        return changed_ids, changed_profiles
 
     # Which sourceId(s) actually changed the store — not just which mappings
-    # were present in this request. Threaded through to _push_coverage_to_fg()
-    # so a request that only touches one profile (civic or geodetic) doesn't
-    # trigger a re-push of the other, unchanged one upstream.
-    changed_source_ids = fed_coverage._with_coverage_write(_apply)
+    # were present in this request — and which PROFILE(s) those changes touched.
+    #
+    # The profile set is what is threaded through to _push_coverage_to_fg(), so a
+    # request that only touches one profile doesn't re-push the other, unchanged
+    # one upstream.  It is deliberately NOT the sourceId set: the ids here are
+    # the CHILD's (asserted in the mapping it pushed), whereas the FG push selects
+    # this node's OWN aggregate entry by LVF_SYNC_SOURCE_ID_CIVIC/GEODETIC.  Those
+    # two namespaces never intersect, so filtering the push by child sourceId
+    # would suppress every propagation rather than just the redundant half.
+    changed_source_ids, changed_profiles = fed_coverage._with_coverage_write(_apply)
 
     if changed_source_ids:
         changed_str = ", ".join(sorted(changed_source_ids))
@@ -340,7 +366,7 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
                 "Coverage propagation triggered by child push from %s, pushing upstream to %s",
                 changed_str, runtime_state._forest_guide_uri,
             )
-            asyncio.create_task(_push_coverage_to_fg(changed_source_ids))
+            asyncio.create_task(_push_coverage_to_fg(changed_profiles))
         elif not runtime_state._root_ams and runtime_state._parent_uri and not runtime_state._forest_guide_mode:
             log.info(
                 "Coverage propagation triggered by child push from %s, pushing upstream to %s",
@@ -556,15 +582,21 @@ async def _push_coverage_to_parent() -> bool:
     return attempted and all_ok
 
 
-async def _push_coverage_to_fg(changed_source_ids: Optional[set] = None) -> bool:
+async def _push_coverage_to_fg(changed_profiles: Optional[set] = None) -> bool:
     """Push AMS coverage to the Forest Guide.
 
-    `changed_source_ids`, when given, restricts the push to labels whose
-    LVF_SYNC_SOURCE_ID_* matches one of the ids in the set — used by
-    _handle_push_mappings() so a pushMappings request touching only one
-    profile (civic or geodetic) doesn't re-push the other, unchanged one.
-    None (the default, used by startup sync and the post-reload re-push)
-    pushes every configured label, unchanged from prior behavior.
+    `changed_profiles`, when given, is the set of LoST profiles ("civic",
+    "geodetic-2d") an inbound change actually touched, and restricts the push
+    to the matching label(s) — used by _handle_push_mappings() so a pushMappings
+    request touching only one profile doesn't re-push the other, unchanged one.
+    None (the default, used by startup sync and the post-reload re-push, and the
+    widening sentinel when a change's profile could not be determined) pushes
+    every configured label, unchanged from prior behavior.
+
+    Filtering is on profile rather than sourceId on purpose: the sourceIds an
+    inbound push carries are the CHILD's, while the entries selected below are
+    this node's own aggregate, keyed by LVF_SYNC_SOURCE_ID_CIVIC/GEODETIC. The
+    two never match, so a sourceId filter would suppress the push entirely.
     """
     if not fed_coverage._root_ams_active or not runtime_state._forest_guide_uri:
         return False
@@ -587,7 +619,7 @@ async def _push_coverage_to_fg(changed_source_ids: Optional[set] = None) -> bool
     ]:
         if not src_id:
             continue
-        if changed_source_ids is not None and src_id not in changed_source_ids:
+        if changed_profiles is not None and profile not in changed_profiles:
             continue
 
         entry = next(

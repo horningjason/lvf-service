@@ -111,7 +111,7 @@ wiring works.
 directly off GitHub:
 
 ```
-i3-fe-core @ git+https://github.com/horningjason/i3-fe-core.git@v0.3.0
+i3-fe-core @ git+https://github.com/horningjason/i3-fe-core.git@v0.4.2
 ```
 
 No separate clone or setup step is needed — `pip install -r requirements.txt` resolves it like

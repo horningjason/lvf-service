@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, Response
 from lxml import etree
 from starlette.middleware.base import BaseHTTPMiddleware
+from i3_fe_core.state.store import ElementState, ServiceState
 from i3_fe_core.time.ntp import NtpClient
 
 import src.lost.find_service as _fs
@@ -75,10 +76,39 @@ async def _lifespan(app: FastAPI):
     load_shed.start_recovery_watcher_if_needed()
     yield
 
-    # Shutdown — cancel every long-running background asyncio task this
-    # lifespan started, so the process exits promptly under gunicorn instead
-    # of idling until graceful_timeout. Daemon threads (the GIS dataset
-    # watcher, _watch_child_coverage) exit on their own and need no action here.
+    # Shutdown — announce GoingDown FIRST, then cancel every long-running
+    # background asyncio task this lifespan started, so the process exits
+    # promptly under gunicorn instead of idling until graceful_timeout. Daemon
+    # threads (the GIS dataset watcher, _watch_child_coverage) exit on their
+    # own and need no action here.
+
+    # §2.4 GoingDown announcement. Ordering is load-bearing: this must precede
+    # sip_notifier.stop() below, which tears down the very transport the NOTIFY
+    # goes out on — announce after that and subscribers learn nothing, they just
+    # watch the element disappear.
+    #
+    # immediate=True bypasses core's RFC 6446 rate filter. Without it a NOTIFY
+    # dispatched within min_notify_interval (1.0s) of the previous one is merely
+    # SCHEDULED via loop.call_later, and the loop stops before the timer fires —
+    # exactly the case a busy element hits on shutdown, and it fails silently.
+    #
+    # Leader-gated for the same reason the state LogEvents are (see
+    # core_components.build_core_components): every worker holds its own
+    # StateStore and would otherwise announce the same element-wide transition
+    # N times. The SIP notifier only runs on the leader anyway (_maybe_start_sip),
+    # so on a non-leader there is nothing to announce over.
+    if _fs._is_leader:
+        for label, notifier, going_down in (
+            ("element", runtime_state.element_notifier, ElementState.GOING_DOWN),
+            ("service", runtime_state.service_notifier, ServiceState.GOING_DOWN),
+        ):
+            if notifier is None:
+                continue
+            try:
+                notifier.set_state(going_down, "graceful shutdown", immediate=True)
+            except Exception as exc:
+                log.warning("Shutdown: %s GoingDown notification raised: %s", label, exc)
+
     sip_notifier = getattr(app.state, "sip_notifier", None)
     if sip_notifier is not None:
         try:
