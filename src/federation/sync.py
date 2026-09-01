@@ -268,7 +268,6 @@ def _sync_error_response(error_type: str, message: str) -> Response:
 async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
     mapping_els = root.findall(f"{{{lost_xml._NS_LOST}}}mapping")
     not_deleted: list[tuple[str, str]] = []
-    last_source_id = ""
 
     # Parse all mappings up front (cheap, lock-free), then apply the same
     # upsert/delete merge under the cross-process coverage write lock.
@@ -277,7 +276,6 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
         sb_el     = mapping_el.find(f"{{{lost_xml._NS_LOST}}}serviceBoundary")
         is_delete = sb_el is None
         parsed    = _parse_sync_mapping(mapping_el)
-        last_source_id = parsed["source_id"]
         ops.append((is_delete, parsed))
 
     # Peer authorization (§3.7.2, Appendix A.11). (source, sourceId) is asserted
@@ -301,8 +299,8 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
                 f"sourceId={parsed['source_id']!r}.",
             )
 
-    def _apply(coverage: list[dict]) -> bool:
-        changed = False
+    def _apply(coverage: list[dict]) -> set:
+        changed_ids: set = set()
         for is_delete, parsed in ops:
             source    = parsed["source"]
             source_id = parsed["source_id"]
@@ -312,7 +310,7 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
                     if entry.get("source") == source and entry.get("source_id") == source_id:
                         coverage.pop(i)
                         found = True
-                        changed = True
+                        changed_ids.add(source_id)
                         log.info(
                             "LoST-Sync: deleted coverage entry source=%s sourceId=%s",
                             source, source_id,
@@ -326,22 +324,27 @@ async def _handle_push_mappings(root: etree._Element, client=None) -> Response:
                     not_deleted.append((source, source_id))
             else:
                 if fed_coverage._upsert_child_coverage(parsed, coverage):
-                    changed = True
-        return changed
+                    changed_ids.add(source_id)
+        return changed_ids
 
-    coverage_changed = fed_coverage._with_coverage_write(_apply)
+    # Which sourceId(s) actually changed the store — not just which mappings
+    # were present in this request. Threaded through to _push_coverage_to_fg()
+    # so a request that only touches one profile (civic or geodetic) doesn't
+    # trigger a re-push of the other, unchanged one upstream.
+    changed_source_ids = fed_coverage._with_coverage_write(_apply)
 
-    if coverage_changed:
+    if changed_source_ids:
+        changed_str = ", ".join(sorted(changed_source_ids))
         if runtime_state._root_ams and fed_coverage._root_ams_active:
             log.info(
                 "Coverage propagation triggered by child push from %s, pushing upstream to %s",
-                last_source_id, runtime_state._forest_guide_uri,
+                changed_str, runtime_state._forest_guide_uri,
             )
-            asyncio.create_task(_push_coverage_to_fg())
+            asyncio.create_task(_push_coverage_to_fg(changed_source_ids))
         elif not runtime_state._root_ams and runtime_state._parent_uri and not runtime_state._forest_guide_mode:
             log.info(
                 "Coverage propagation triggered by child push from %s, pushing upstream to %s",
-                last_source_id, _get_parent_sync_uri(),
+                changed_str, _get_parent_sync_uri(),
             )
             asyncio.create_task(_push_coverage_to_parent())
 
@@ -553,7 +556,16 @@ async def _push_coverage_to_parent() -> bool:
     return attempted and all_ok
 
 
-async def _push_coverage_to_fg() -> bool:
+async def _push_coverage_to_fg(changed_source_ids: Optional[set] = None) -> bool:
+    """Push AMS coverage to the Forest Guide.
+
+    `changed_source_ids`, when given, restricts the push to labels whose
+    LVF_SYNC_SOURCE_ID_* matches one of the ids in the set — used by
+    _handle_push_mappings() so a pushMappings request touching only one
+    profile (civic or geodetic) doesn't re-push the other, unchanged one.
+    None (the default, used by startup sync and the post-reload re-push)
+    pushes every configured label, unchanged from prior behavior.
+    """
     if not fed_coverage._root_ams_active or not runtime_state._forest_guide_uri:
         return False
 
@@ -574,6 +586,8 @@ async def _push_coverage_to_fg() -> bool:
         ("geodetic", "geodetic-2d", sync_source_id_geodetic),
     ]:
         if not src_id:
+            continue
+        if changed_source_ids is not None and src_id not in changed_source_ids:
             continue
 
         entry = next(
